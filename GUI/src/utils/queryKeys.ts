@@ -4,7 +4,7 @@ import { InferenceRequest } from 'services/inference';
 
 
 export const authQueryKeys = {
-  USER_DETAILS: () => ['rag-search/auth/jwt/userinfo', 'prod'],
+  USER_DETAILS: () => ['auth/jwt/userinfo', 'prod'],
   USER_ROLES: (): string[] => ['/accounts/user-role', 'prod'],
 
 };
