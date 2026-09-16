@@ -1,13 +1,3 @@
-export const userManagementEndpoints = {
-  FETCH_USERS: (): string => `/accounts/users`,
-  ADD_USER: (): string => `/accounts/add`,
-  CHECK_ACCOUNT_AVAILABILITY: (): string => `/accounts/exists`,
-  EDIT_USER: (): string => `/accounts/edit`,
-  DELETE_USER: (): string => `/accounts/delete`,
-  FETCH_USER_ROLES: (): string => `/accounts/user-role`,
-};
-
-
 export const authEndpoints = {
   GET_EXTENDED_COOKIE: () :string => `/auth/jwt/extend`,
   LOGOUT: (): string => `/accounts/logout`

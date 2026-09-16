@@ -75,6 +75,31 @@ docker compose up -d
 curl http://localhost:8100/health
 ```
 
+### Logging in to the GUI
+
+The GUI has no login page. Authentication is a JWT stored in the `customJwtCookie`
+cookie, which the browser sends automatically on every request. To sign in locally,
+request a token and set the cookie manually:
+
+```bash
+curl -i -X POST -H "Content-Type: application/json" -d '{
+  "login": "EE30303039914",
+  "password": "ok"
+}' http://localhost:8086/rag-search/auth/login
+```
+
+Copy the token from the response body, then in the browser open
+DevTools → Application → Cookies → the GUI origin (`http://localhost:3003`) and add:
+
+| Field | Value |
+| --- | --- |
+| Name | `customJwtCookie` |
+| Value | the token returned by the curl above |
+| Path | `/` |
+
+Reload the page and the GUI will be authenticated. The token expires after the
+configured session length; repeat the steps above to get a new one.
+
 ### Environment configuration
 
 Configuration is supplied through environment files at the repository root:
