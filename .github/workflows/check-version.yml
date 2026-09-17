@@ -1,0 +1,78 @@
+name: Check Version
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+env:
+  BRANCH: ${{ github.head_ref || github.ref_name }}
+
+jobs:
+  build:
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Docker Setup BuildX
+        uses: docker/setup-buildx-action@v2
+
+      - name: Generate Changelog
+        run: npm run changelog
+
+      - name: Load environment variables
+        run: |
+          awk -v branch="${{ env.BRANCH }}" ' /^[0-9a-zA-Z]+$/ { current_branch = $0; } current_branch == branch && /^[A-Z_]+=/{ print $0; }' release.env >> $GITHUB_ENV
+
+      - name: Set repo
+        run: |
+           LOWER_CASE_GITHUB_REPOSITORY=$(echo $GITHUB_REPOSITORY | tr '[:upper:]' '[:lower:]')
+           echo "DOCKER_TAG_CUSTOM=ghcr.io/${LOWER_CASE_GITHUB_REPOSITORY}:v${{ env.MAJOR }}.${{ env.MINOR }}.${{ env.PATCH }}" >> $GITHUB_ENV
+           echo "$GITHUB_ENV"
+
+      - name: Build llm_orchestration_service image
+        run: |
+          echo "Building Docker image for branch: ${{ env.BRANCH }} major: ${{ env.MAJOR }} minor: ${{ env.MINOR }} patch: ${{ env.PATCH }}"
+          docker image build --tag $DOCKER_TAG_CUSTOM -f Dockerfile.llm_orchestration_service --no-cache .
+
+      - name: Build GUI image
+        run: |
+          echo "Building Docker image for branch: ${{ env.BRANCH }} major: ${{ env.MAJOR }} minor: ${{ env.MINOR }} patch: ${{ env.PATCH }}"
+          cd GUI && docker image build --tag $DOCKER_TAG_CUSTOM-gui -f Dockerfile.dev --no-cache .
+
+      - name: Build notification-server image
+        run: |
+          echo "Building Docker image for branch: ${{ env.BRANCH }} major: ${{ env.MAJOR }} minor: ${{ env.MINOR }} patch: ${{ env.PATCH }}"
+          cd notification-server && docker image build --tag $DOCKER_TAG_CUSTOM-notification-server --no-cache .
+
+      - name: Build vault-init image
+        run: |
+          echo "Building Docker image for branch: ${{ env.BRANCH }} major: ${{ env.MAJOR }} minor: ${{ env.MINOR }} patch: ${{ env.PATCH }}"
+          docker image build --tag $DOCKER_TAG_CUSTOM-vault-init -f Dockerfile.vault-init --no-cache .
+
+      - name: Log in to GitHub container registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u $ --password-stdin
+
+      - name: Push llm_orchestration_service image to GitHub Packages
+        run: docker push $DOCKER_TAG_CUSTOM
+
+      - name: Push GUI image to GitHub Packages
+        run: docker push $DOCKER_TAG_CUSTOM-gui
+
+      - name: Push notification-server image to GitHub Packages
+        run: docker push $DOCKER_TAG_CUSTOM-notification-server
+
+      - name: Push vault-init image to GitHub Packages
+        run: docker push $DOCKER_TAG_CUSTOM-vault-init
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ env.MAJOR }}.${{ env.MINOR }}.${{ env.PATCH }}
+          generate_release_notes: true
+          body_path: ${{ github.workspace }}/CHANGELOG.md
