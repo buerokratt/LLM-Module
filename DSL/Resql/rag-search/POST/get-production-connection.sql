@@ -1,5 +1,6 @@
 SELECT 
     id,
+    vault_uuid,
     connection_name,
     used_budget,
     monthly_budget,

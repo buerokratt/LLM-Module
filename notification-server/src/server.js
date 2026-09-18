@@ -82,4 +82,12 @@ const server = app.listen(serverConfig.port, () => {
   console.log(`LLM orchestration streaming at: /channels/:channelId/orchestrate/stream`);
 });
 
+// The SSE GET and the trigger POST are both long-lived by design, so Node's
+// default 300s requestTimeout would cut them off mid-answer. Disable the
+// per-request cap and let the upstream idle watchdog in streamingService.js
+// decide when a stream has genuinely stalled.
+server.requestTimeout = 0;
+server.headersTimeout = 65_000;
+server.keepAliveTimeout = 61_000;
+
 module.exports = server;

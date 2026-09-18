@@ -24,7 +24,9 @@ Layer 4: OOD      → Out-of-domain fallback (polite rejection)
 ```python
 # Non-streaming mode
 classification = await classifier.classify(query, history, language)
-response = await classifier.route_to_workflow(classification, request, is_streaming=False)
+response = await classifier.route_to_workflow(
+    classification, request, is_streaming=False
+)
 
 # Streaming mode
 classification = await classifier.classify(query, history, language)
@@ -153,14 +155,13 @@ embedding = orchestration_service.create_embeddings_for_indexer([query])
 # 2. Search Qdrant collection
 search_payload = {
     "vector": query_embedding,
-    "limit": 10,                       # Top 10 services (SEMANTIC_SEARCH_TOP_K)
-    "score_threshold": 0.2,            # Minimum similarity (SEMANTIC_SEARCH_THRESHOLD)
-    "with_payload": True
+    "limit": 10,  # Top 10 services (SEMANTIC_SEARCH_TOP_K)
+    "score_threshold": 0.2,  # Minimum similarity (SEMANTIC_SEARCH_THRESHOLD)
+    "with_payload": True,
 }
 
 response = qdrant_client.post(
-    f"/collections/{QDRANT_COLLECTION}/points/search",
-    json=search_payload
+    f"/collections/{QDRANT_COLLECTION}/points/search", json=search_payload
 )
 ```
 
@@ -182,12 +183,12 @@ Uses **DSPy + LLM** to intelligently match user query to a specific service and 
 ```python
 class ServiceIntentDetector(dspy.Signature):
     # Inputs
-    user_query: str                    # "How much is 100 EUR in USD?"
-    available_services: str            # JSON of service definitions
-    conversation_context: str          # Recent 3 conversation turns
-    
+    user_query: str  # "How much is 100 EUR in USD?"
+    available_services: str  # JSON of service definitions
+    conversation_context: str  # Recent 3 conversation turns
+
     # Output
-    intent_result: str                 # JSON: {matched_service_id, confidence, entities, reasoning}
+    intent_result: str  # JSON: {matched_service_id, confidence, entities, reasoning}
 ```
 
 ### LLM Call Flow
@@ -200,7 +201,7 @@ services_formatted = [
         "name": "Currency Conversion",
         "description": "Convert EUR to other currencies",
         "required_entities": ["target_currency"],
-        "examples": ["How much is EUR in USD?", "Convert EUR to JPY"]  # Top 3 examples
+        "examples": ["How much is EUR in USD?", "Convert EUR to JPY"],  # Top 3 examples
     }
 ]
 
@@ -216,7 +217,7 @@ with self.llm_manager.use_task_local():
     intent_result = intent_module.forward(
         user_query="How much is 100 EUR in USD?",
         services=services_formatted,
-        conversation_history=conversation_history
+        conversation_history=conversation_history,
     )
 ```
 
@@ -360,12 +361,12 @@ validation_errors = ["Entity 'target_currency' has empty value"]
 
 ```python
 {
-  "is_valid": True,                    # Always true (lenient validation)
-  "missing_entities": ["amount"],      # Will send empty strings
-  "extra_entities": ["random_field"],  # Will be ignored
-  "validation_errors": [               # Warnings only
-    "Entity 'amount' has empty value"
-  ]
+    "is_valid": True,  # Always true (lenient validation)
+    "missing_entities": ["amount"],  # Will send empty strings
+    "extra_entities": ["random_field"],  # Will be ignored
+    "validation_errors": [  # Warnings only
+        "Entity 'amount' has empty value"
+    ],
 }
 ```
 
@@ -393,11 +394,7 @@ Ruuter services expect parameters in specific order:
 entities_schema = ["target_currency", "source_currency", "amount"]
 
 # LLM extraction (unordered dict)
-entities_dict = {
-  "amount": "100",
-  "target_currency": "USD",
-  "source_currency": "EUR"
-}
+entities_dict = {"amount": "100", "target_currency": "USD", "source_currency": "EUR"}
 
 # Transform to ordered array
 entities_array = ["USD", "EUR", "100"]
@@ -409,9 +406,7 @@ entities_array = ["USD", "EUR", "100"]
 
 ```python
 def _transform_entities_to_array(
-    self,
-    entities_dict: Dict[str, str],
-    entity_order: List[str]
+    self, entities_dict: Dict[str, str], entity_order: List[str]
 ) -> List[str]:
     """Transform entity dict to ordered array."""
     if not entity_order:
@@ -461,7 +456,7 @@ def _construct_service_endpoint(self, service_name: str, chat_id: str) -> str:
 payload = {
     "chatId": chat_id,
     "authorId": author_id,
-    "input": entities_array,         # ["USD", "EUR", "100"]
+    "input": entities_array,  # ["USD", "EUR", "100"]
 }
 ```
 
@@ -540,10 +535,10 @@ entities_dict = {"target_currency": "THB"}
 #### 4. Entity Validation
 ```python
 validation_result = {
-  "is_valid": True,
-  "missing_entities": [],
-  "extra_entities": [],
-  "validation_errors": []
+    "is_valid": True,
+    "missing_entities": [],
+    "extra_entities": [],
+    "validation_errors": [],
 }
 ```
 
@@ -563,7 +558,7 @@ response = await _call_service_endpoint(
     http_method="POST",
     entities_array=["THB"],
     chat_id="...",
-    author_id="..."
+    author_id="...",
 )
 # Returns content string from Ruuter response
 ```
@@ -632,25 +627,25 @@ RUUTER_SERVICE_BASE_URL = "http://ruuter-public:8086/services"
 RAG_SEARCH_RUUTER_PUBLIC = "http://ruuter-public:8086/rag-search"
 
 # Service call timeouts
-SERVICE_CALL_TIMEOUT = 10             # seconds for external service calls
-SERVICE_DISCOVERY_TIMEOUT = 10.0      # seconds for service discovery
+SERVICE_CALL_TIMEOUT = 10  # seconds for external service calls
+SERVICE_DISCOVERY_TIMEOUT = 10.0  # seconds for service discovery
 
 # Service selection thresholds
-SERVICE_COUNT_THRESHOLD = 10          # Switch to semantic search if exceeded
-MAX_SERVICES_FOR_LLM_CONTEXT = 50    # Max services to pass to LLM
+SERVICE_COUNT_THRESHOLD = 10  # Switch to semantic search if exceeded
+MAX_SERVICES_FOR_LLM_CONTEXT = 50  # Max services to pass to LLM
 
 # Semantic search
 QDRANT_COLLECTION = "intent_collections"
-SEMANTIC_SEARCH_TOP_K = 10            # Top 10 relevant services
-SEMANTIC_SEARCH_THRESHOLD = 0.2       # Minimum similarity score
-QDRANT_TIMEOUT = 10.0                 # seconds
+SEMANTIC_SEARCH_TOP_K = 10  # Top 10 relevant services
+SEMANTIC_SEARCH_THRESHOLD = 0.2  # Minimum similarity score
+QDRANT_TIMEOUT = 10.0  # seconds
 
 # Hybrid search classification (see HYBRID_SEARCH_CLASSIFICATION.md)
-DENSE_MIN_THRESHOLD = 0.38            # Minimum cosine to consider service match
+DENSE_MIN_THRESHOLD = 0.38  # Minimum cosine to consider service match
 DENSE_HIGH_CONFIDENCE_THRESHOLD = 0.40  # Cosine for high-confidence path
-DENSE_SCORE_GAP_THRESHOLD = 0.05     # Required gap between top two services
-DENSE_SEARCH_TOP_K = 3               # Unique services from dense search
-HYBRID_SEARCH_TOP_K = 5              # Results from hybrid RRF search
+DENSE_SCORE_GAP_THRESHOLD = 0.05  # Required gap between top two services
+DENSE_SEARCH_TOP_K = 3  # Unique services from dense search
+HYBRID_SEARCH_TOP_K = 5  # Results from hybrid RRF search
 ```
 
 ---

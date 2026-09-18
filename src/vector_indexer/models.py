@@ -96,6 +96,14 @@ class ProcessingStats(BaseModel):
             return self.documents_processed / self.total_documents
         return 0.0
 
+    @property
+    def chunk_success_rate(self) -> float:
+        """Calculate chunk success rate (processed vs processed + failed)."""
+        total_chunks = self.total_chunks_processed + self.total_chunks_failed
+        if total_chunks > 0:
+            return self.total_chunks_processed / total_chunks
+        return 0.0
+
 
 class ProcessingError(BaseModel):
     """Error information for failed processing."""

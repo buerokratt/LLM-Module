@@ -13,3 +13,5 @@ databaseChangeLog:
       file: changelog/rag-search-script-v6-endpoints.sql
   - include:
       file: changelog/rag-search-script-v7-schema-migration.sql
+  - include:
+      file: changelog/rag-search-script-v8-uuid-vault-path.sql

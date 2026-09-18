@@ -1,0 +1,74 @@
+declaration:
+  call: declare
+  version: 0.1
+  description: "Store inference result"
+  method: post
+  accepts: json
+  returns: json
+  namespace: rag-search
+  allowlist:
+    body:
+      - field: vault_uuid
+        type: string
+        description: "Vault UUID for the LLM connection"
+      - field: user_question
+        type: string
+        description: "User's question/input"
+      - field: final_answer
+        type: string
+        description: "LLM's final generated answer"
+
+extract_request_data:
+  assign:
+    vault_uuid: ${incoming.body.vault_uuid}
+    user_question: ${incoming.body.user_question}
+    final_answer: ${incoming.body.final_answer}
+    created_at: ${new Date().toISOString()}
+  next: store_inference_result
+
+store_inference_result:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_RESQL]/store-testing-inference-result"
+    body:
+      vault_uuid: ${vault_uuid}
+      user_question: ${user_question}
+      final_answer: ${final_answer}
+      environment: "testing"
+      created_at: ${created_at}
+  result: store_result
+  next: check_status
+
+check_status:
+  switch:
+    - condition: ${200 <= store_result.response.statusCodeValue && store_result.response.statusCodeValue < 300}
+      next: format_success_response
+  next: format_failed_response
+
+format_success_response:
+  assign:
+    data_success: {
+      data: '${store_result.response.body[0]}',
+      operationSuccess: true,
+      statusCode: 200
+    }
+  next: return_success
+
+format_failed_response:
+  assign:
+    data_failed: {
+      data: '[]',
+      operationSuccess: false,
+      statusCode: 400
+    }
+  next: return_bad_request
+
+return_success:
+  return: ${data_success}
+  status: 200
+  next: end
+
+return_bad_request:
+  return: ${data_failed}
+  status: 400
+  next: end

@@ -105,6 +105,7 @@ unfixable = []
 "src/response_generator/response_generate.py" = ["N815", "ANN401"]  # Pydantic model fields + DSPy streamify Any type
 
 # Library interface patterns - legitimate Any usage
+"src/utils/observation_utils.py" = ["ANN401"]
 "src/contextual_retrieval/contextual_retrieval_api_client.py" = ["ANN401"]  # httpx **kwargs pass-through
 "src/tool_classifier/workflows/service_workflow.py" = ["ANN401"]  # LLMManager passed as Any - dynamic multi-provider LLM interface
 "src/guardrails/dspy_nemo_adapter.py" = ["ANN401"]  # LangChain LLM interface + DSPy dynamic types
@@ -117,6 +118,7 @@ unfixable = []
 
 
 "src/utils/api_tool_session_store.py" = ["ANN401"]  # Dynamic Pydantic model field updates via **kwargs
+"src/utils/atc_cache_store.py" = ["ANN401"]  # raw_response / return type are parsed JSON (dict or list) — Any is the correct annotation
 "src/tool_classifier/workflows/api_tool_workflow.py" = ["ANN401", "N815"]  # Dynamic guardrails adapter + orchestration service Any types; camelCase _MinimalRequest field for API contract
 
 [tool.ruff.format]

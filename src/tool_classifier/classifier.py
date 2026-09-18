@@ -12,12 +12,12 @@ from typing import (
     TYPE_CHECKING,
 )
 import httpx
-import asyncio
-from loguru import logger
 
+import asyncio
+
+from src.loki_logger import LokiLogger
 from llm_orchestrator_config.llm_manager import LLMManager
 from models.request_models import (
-    ConversationItem,
     OrchestrationRequest,
     OrchestrationResponse,
     TestOrchestrationResponse,
@@ -60,6 +60,10 @@ from tool_classifier.workflows import (
     OODWorkflowExecutor,
 )
 from llm_orchestrator_config.feature_flags import FeatureFlags
+from utils.atc_cache_store import ATCCacheStore
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="tool-classifier")
 
 if TYPE_CHECKING:
     from llm_orchestration_service import LLMOrchestrationService
@@ -122,6 +126,9 @@ class ToolClassifier:
         self.context_workflow = ContextWorkflowExecutor(
             llm_manager=llm_manager,
             orchestration_service=orchestration_service,
+            conversation_history_store=getattr(
+                orchestration_service, "conversation_history_store", None
+            ),
         )
         self.rag_workflow = RAGWorkflowExecutor(
             orchestration_service=orchestration_service,
@@ -153,7 +160,6 @@ class ToolClassifier:
     async def classify(
         self,
         query: str,
-        conversation_history: List[ConversationItem],
         language: str,
         request: Optional[OrchestrationRequest] = None,
     ) -> ClassificationResult:
@@ -171,7 +177,6 @@ class ToolClassifier:
 
         Args:
             query: User's query string
-            conversation_history: List of previous conversation messages
             language: Detected language code (e.g., 'en', 'et')
             request: Original orchestration request (needed for ATC search
                 which requires environment and connection_id for embedding).
@@ -221,6 +226,11 @@ class ToolClassifier:
                                 f"— abandoning old session"
                             )
                             await session_store.delete(request.chatId)
+                            if FeatureFlags.ATC_RESPONSE_CACHE_ENABLED:
+                                await ATCCacheStore().invalidate_l2(request.chatId)
+                                logger.info(
+                                    f"[{request.chatId}] ATC cache: L2 invalidated on intent switch"
+                                )
                             return new_api_match
 
                         logger.info(
@@ -903,7 +913,7 @@ class ToolClassifier:
         None to signal the caller to fall back to the single-endpoint path.
 
         Args:
-            sub_queries: Focused sub-queries from IntentDecomposer (2–3 items).
+            sub_queries: Focused sub-queries from IntentDecomposer (2-3 items).
             environment: LLM environment from the original request.
             connection_id: Connection ID from the original request.
             original_matched: The gate search result (used as fallback reference).
@@ -1123,7 +1133,9 @@ class ToolClassifier:
                     f"(Layer {layer_number})"
                 )
 
-                result = await next_workflow.execute_streaming(request, {}, time_metric)
+                result = await next_workflow.execute_streaming(
+                    request, context, time_metric
+                )
 
                 if result is not None:
                     logger.info(f"[{chat_id}] {next_name} streaming started")
@@ -1141,7 +1153,7 @@ class ToolClassifier:
             # Fallback to RAG on error
             logger.info(f"[{chat_id}] Falling back to RAG streaming due to error")
             streaming_result = await self.rag_workflow.execute_streaming(
-                request, {}, time_metric
+                request, context, time_metric
             )
             if streaming_result is not None:
                 async for chunk in streaming_result:

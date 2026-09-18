@@ -8,8 +8,11 @@ information disclosure while maintaining useful debugging capabilities.
 import re
 from typing import Dict, Any, Optional, Union
 from urllib.parse import urlparse, urlunparse
-from loguru import logger
+from src.loki_logger import LokiLogger
 import httpx
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="error-handler")
 
 
 class SecureErrorHandler:

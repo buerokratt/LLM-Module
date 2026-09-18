@@ -1,12 +1,14 @@
 """Enhanced error logging for vector indexer."""
 
 import json
-import sys
 from pathlib import Path
-from loguru import logger
+from loki_logger import LokiLogger
 
 from vector_indexer.config.config_loader import VectorIndexerConfig
 from vector_indexer.models import ProcessingError, ProcessingStats
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="error-logger")
 
 
 class ErrorLogger:
@@ -27,24 +29,10 @@ class ErrorLogger:
             Path(log_file).parent.mkdir(parents=True, exist_ok=True)
 
     def _setup_logging(self) -> None:
-        """Setup loguru logging with file output."""
-        logger.remove()  # Remove default handler
-
-        # Console logging
-        logger.add(
-            sys.stdout,
-            level=self.config.log_level,
-            format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-        )
-
-        # File logging
-        logger.add(
-            self.config.processing_log_file,
-            level=self.config.log_level,
-            format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
-            rotation="10 MB",
-            retention="7 days",
-        )
+        """Setup logging - LokiLogger handles all logging (console + Loki service)."""
+        # LokiLogger is already configured and handles console output + Loki integration
+        # No additional configuration needed
+        pass
 
     def log_document_failure(
         self, document_hash: str, error: str, retry_count: int = 0
@@ -158,15 +146,17 @@ class ErrorLogger:
                 stats_dict["end_time"] = stats.end_time.isoformat()
             stats_dict["duration"] = stats.duration
             stats_dict["success_rate"] = stats.success_rate
+            stats_dict["chunk_success_rate"] = stats.chunk_success_rate
 
             with open(self.config.stats_log_file, "w", encoding="utf-8") as f:
                 json.dump(stats_dict, f, indent=2)
 
             logger.info(
                 f"Processing completed - Success rate: {stats.success_rate:.1%}, "
+                f"Chunk success rate: {stats.chunk_success_rate:.1%}, "
                 f"Duration: {stats.duration}, "
                 f"Processed: {stats.documents_processed}/{stats.total_documents} documents, "
-                f"Chunks: {stats.total_chunks_processed}"
+                f"Chunks: {stats.total_chunks_processed} ok / {stats.total_chunks_failed} failed"
             )
         except Exception as e:
             logger.error(f"Failed to write stats log: {e}")

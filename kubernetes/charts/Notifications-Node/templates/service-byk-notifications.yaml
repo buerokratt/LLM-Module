@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.release_name }}
+  labels:
+    app: {{ .Values.release_name }}
+spec:
+  type: {{ .Values.notifications.service.type }}
+  ports:
+  - port: {{ .Values.notifications.service.port }}
+    targetPort: {{ .Values.notifications.service.targetPort }}
+    protocol: TCP
+    name: http
+  selector:
+    app: {{ .Values.release_name }}
+   

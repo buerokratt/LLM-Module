@@ -13,12 +13,14 @@ sys.path.append(str(Path(__file__).parent.parent.parent))
 sys.path.append(str(Path(__file__).parent.parent))
 
 import dspy
-from loguru import logger
-
+from src.loki_logger import LokiLogger
 from llm_orchestrator_config import LLMManager
 from optimizers.guardrails_optimizer import optimize_guardrails
 from optimizers.refiner_optimizer import optimize_refiner
 from optimizers.generator_optimizer import optimize_generator
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="run-all-optimizations")
 
 
 # Constants

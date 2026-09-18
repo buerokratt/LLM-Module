@@ -4,7 +4,10 @@ Diagnostic script to verify all paths are correct.
 
 from pathlib import Path
 from typing import Dict
-from loguru import logger
+from src.loki_logger import LokiLogger
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="check-paths")
 
 
 def get_directory_structure() -> tuple[Path, Path]:

@@ -371,7 +371,7 @@ path "auth/token/renew-self" { capabilities = ["update"] }
             "endpoint": azure_endpoint,
             "api_key": azure_api_key,
             "deployment_name": azure_deployment or "gpt-4o-mini",
-            "environment": "development",
+            "environment": "testing",
             "model": "gpt-4o-mini",
             "model_type": "chat",
             "api_version": "2024-02-15-preview",
@@ -384,11 +384,11 @@ path "auth/token/renew-self" { capabilities = ["update"] }
 
         client.secrets.kv.v2.create_or_update_secret(
             mount_point="secret",
-            path="llm/connections/azure_openai/development/evalconnection-1",
+            path="llm/connections/azure_openai/evalconnection-1",
             secret=llm_secret,
         )
         logger.info(
-            "LLM connection secret written to llm/connections/azure_openai/development/evalconnection-1"
+            "LLM connection secret written to llm/connections/azure_openai/evalconnection-1"
         )
 
         # ============================================================
@@ -401,7 +401,7 @@ path "auth/token/renew-self" { capabilities = ["update"] }
             "endpoint": azure_endpoint,
             "api_key": azure_api_key,
             "deployment_name": azure_embedding_deployment,  # This is the embedding deployment
-            "environment": "development",
+            "environment": "testing",
             "model": "text-embedding-3-large",
             "model_type": "embedding",
             "api_version": "2024-02-15-preview",
@@ -413,17 +413,17 @@ path "auth/token/renew-self" { capabilities = ["update"] }
         logger.info(f"  → model: {embedding_secret['model']}")
         logger.info(f"  → connection_id: {embedding_secret['connection_id']}")
         logger.info(
-            "  → Vault path: embeddings/connections/azure_openai/development/evalconnection-1"
+            "  → Vault path: embeddings/connections/azure_openai/evalconnection-1"
         )
 
         # Write to embeddings path with connection_id in the path
         client.secrets.kv.v2.create_or_update_secret(
             mount_point="secret",
-            path="embeddings/connections/azure_openai/development/evalconnection-1",
+            path="embeddings/connections/azure_openai/evalconnection-1",
             secret=embedding_secret,
         )
         logger.info(
-            "Embedding secret written to embeddings/connections/azure_openai/development/evalconnection-1"
+            "Embedding secret written to embeddings/connections/azure_openai/evalconnection-1"
         )
 
         # ============================================================

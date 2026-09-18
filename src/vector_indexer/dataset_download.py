@@ -4,7 +4,10 @@ import zipfile
 import tempfile
 from pathlib import Path
 import requests
-from loguru import logger
+from loki_logger import LokiLogger
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="dataset-download")
 
 
 def download_and_extract_dataset(signed_url: str) -> tuple[str, int]:

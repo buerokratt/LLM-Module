@@ -3,6 +3,21 @@
   margin: 0 auto;
   padding: 2rem;
 
+ .llm-connection-section {
+    width: 50%;
+    margin-bottom: 1.5rem;
+    p {
+      margin-bottom: 0.5rem;
+      font-weight: 500;
+      color: #333;
+    }
+  }
+  .llm-connection-controls {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+  }
+  
 .mcq-buttons {
   display: flex;
   flex-wrap: wrap;

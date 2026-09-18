@@ -161,15 +161,18 @@ chunking:
 async def generate_context_batch(self, document_content: str, chunks: List[str]):
     # Level 1: Batch processing (context_batch_size = 5)
     for i in range(0, len(chunks), self.config.context_batch_size):
-        batch = chunks[i:i + self.config.context_batch_size]
-        
+        batch = chunks[i : i + self.config.context_batch_size]
+
         # Level 2: Semaphore limiting (max_concurrent_chunks_per_doc = 5)
         semaphore = asyncio.Semaphore(self.config.max_concurrent_chunks_per_doc)
-        
+
         # Process batch concurrently with controlled limits
         batch_contexts = await asyncio.gather(
-            *[self._generate_context_with_retry(document_content, chunk) for chunk in batch],
-            return_exceptions=True
+            *[
+                self._generate_context_with_retry(document_content, chunk)
+                for chunk in batch
+            ],
+            return_exceptions=True,
         )
 ```
 
@@ -220,15 +223,15 @@ graph LR
 # Configuration-Driven Batch Optimization
 async def _create_embeddings_in_batches(self, contextual_contents: List[str]):
     all_embeddings = []
-    
+
     # Process in configurable batches (embedding_batch_size = 10)
     for i in range(0, len(contextual_contents), self.config.embedding_batch_size):
-        batch = contextual_contents[i:i + self.config.embedding_batch_size]
-        
+        batch = contextual_contents[i : i + self.config.embedding_batch_size]
+
         # API call with comprehensive error handling
         batch_response = await self.api_client.create_embeddings_batch(batch)
         all_embeddings.extend(batch_response["embeddings"])
-        
+
         # Configurable delay between batches
         if i + self.config.embedding_batch_size < len(contextual_contents):
             delay = self.config.processing.batch_delay_seconds  # 0.1s
@@ -298,9 +301,9 @@ graph TD
 ```python
 # Step 5: Add embeddings to chunks with full traceability
 for chunk, embedding in zip(contextual_chunks, embeddings_response["embeddings"]):
-    chunk.embedding = embedding                              # Vector data
-    chunk.embedding_model = embeddings_response["model_used"]  # Model traceability  
-    chunk.vector_dimensions = len(embedding)                 # Dimension validation
+    chunk.embedding = embedding  # Vector data
+    chunk.embedding_model = embeddings_response["model_used"]  # Model traceability
+    chunk.vector_dimensions = len(embedding)  # Dimension validation
     # Provider automatically detected from model name
 ```
 
@@ -315,18 +318,18 @@ self.collections_config = {
     "contextual_chunks_azure": {
         "vector_size": 3072,  # text-embedding-3-large (Azure)
         "distance": "Cosine",
-        "models": ["text-embedding-3-large", "text-embedding-ada-002"]
+        "models": ["text-embedding-3-large", "text-embedding-ada-002"],
     },
     "contextual_chunks_aws": {
         "vector_size": 1024,  # amazon.titan-embed-text-v2:0
-        "distance": "Cosine", 
-        "models": ["amazon.titan-embed-text-v2:0", "amazon.titan-embed-text-v1"]
+        "distance": "Cosine",
+        "models": ["amazon.titan-embed-text-v2:0", "amazon.titan-embed-text-v1"],
     },
     "contextual_chunks_openai": {
         "vector_size": 1536,  # text-embedding-3-small (Direct OpenAI)
         "distance": "Cosine",
-        "models": ["text-embedding-3-small", "text-embedding-ada-002"]
-    }
+        "models": ["text-embedding-3-small", "text-embedding-ada-002"],
+    },
 }
 ```
 
@@ -336,9 +339,9 @@ self.collections_config = {
 point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, chunk.chunk_id))
 
 point = {
-    "id": point_id,                                # Deterministic UUID
-    "vector": chunk.embedding,                     # Provider-specific dimensions
-    "payload": self._create_chunk_payload(chunk)   # Rich metadata
+    "id": point_id,  # Deterministic UUID
+    "vector": chunk.embedding,  # Provider-specific dimensions
+    "payload": self._create_chunk_payload(chunk),  # Rich metadata
 }
 ```
 
@@ -347,15 +350,15 @@ point = {
 # Production-Grade Batch Processing
 batch_size = 100  # Prevents request timeout issues
 for i in range(0, len(points), batch_size):
-    batch = points[i:i + batch_size]
-    
+    batch = points[i : i + batch_size]
+
     # Comprehensive request logging for debugging
     logger.info(f"=== QDRANT HTTP REQUEST PAYLOAD DEBUG ===")
     logger.info(f"Batch size: {len(batch)} points")
-    
+
     response = await self.client.put(
         f"{self.qdrant_url}/collections/{collection_name}/points",
-        json={"points": batch}
+        json={"points": batch},
     )
 ```
 
@@ -367,22 +370,19 @@ for i in range(0, len(points), batch_size):
     "document_hash": "2e9493512b7f01aecdc66bbca60b5b6b75d966f8",
     "chunk_index": 0,
     "total_chunks": 25,
-    
     # Anthropic Contextual Retrieval Content
     "original_content": "FAQ about supporting children and families...",
     "contextual_content": "Estonian family support policies context. FAQ about...",
     "context_only": "Estonian family support policies context.",
-    
     # Model & Processing Metadata
-    "embedding_model": "text-embedding-3-large", 
+    "embedding_model": "text-embedding-3-large",
     "vector_dimensions": 3072,
     "processing_timestamp": "2025-10-09T12:00:00Z",
     "tokens_count": 150,
-    
     # Document Source Information
     "document_url": "https://sm.ee/en/faq-about-supporting-children-and-families",
     "dataset_collection": "sm_someuuid",
-    "file_type": "html_cleaned"
+    "file_type": "html_cleaned",
 }
 ```
 
@@ -486,9 +486,9 @@ The Vector Indexer leverages existing LLM configuration through API calls:
    ```python
    # Process chunks in batches of 5 with concurrent API calls
    for batch in chunks_batches(5):
-       contexts = await asyncio.gather(*[
-           api_client.generate_context(document, chunk) for chunk in batch
-       ])
+       contexts = await asyncio.gather(
+           *[api_client.generate_context(document, chunk) for chunk in batch]
+       )
    ```
 
 5. **Contextual Chunk Creation**
@@ -547,12 +547,12 @@ logs/
 collections = {
     "contextual_chunks_azure": {
         "vectors": {"size": 1536, "distance": "Cosine"},  # text-embedding-3-large
-        "model": "text-embedding-3-large"
+        "model": "text-embedding-3-large",
     },
     "contextual_chunks_aws": {
         "vectors": {"size": 1024, "distance": "Cosine"},  # amazon.titan-embed-text-v2:0
-        "model": "amazon.titan-embed-text-v2:0"
-    }
+        "model": "amazon.titan-embed-text-v2:0",
+    },
 }
 ```
 
@@ -572,7 +572,7 @@ collections = {
     "embedding_model": "text-embedding-3-large",
     "vector_dimensions": 1536,
     "processing_timestamp": "2025-10-08T12:00:00Z",
-    "tokens_count": 150
+    "tokens_count": 150,
 }
 ```
 
@@ -692,9 +692,9 @@ vector_indexer:
 class ResourceOptimizedProcessor:
     def __init__(self):
         # Process in streaming fashion - never load all documents
-        self.max_memory_chunks = 100          # Chunk buffer limit
-        self.gc_frequency = 50                # Garbage collection interval
-        
+        self.max_memory_chunks = 100  # Chunk buffer limit
+        self.gc_frequency = 50  # Garbage collection interval
+
     async def process_documents_streaming(self):
         """Memory-efficient document processing"""
         async for document_batch in self.stream_documents():
@@ -720,22 +720,22 @@ class ResourceOptimizedProcessor:
         "embeddings_created": 26834,
         "qdrant_points_stored": 26834,
         "processing_duration_minutes": 186.5,
-        "average_chunks_per_document": 21.6
+        "average_chunks_per_document": 21.6,
     },
     "performance_metrics": {
         "context_generation_rate_per_minute": 14.4,
         "embedding_creation_rate_per_minute": 187.3,
         "end_to_end_documents_per_hour": 10.1,
         "api_success_rate": 99.7,
-        "average_response_time_ms": 850
+        "average_response_time_ms": 850,
     },
     "error_analysis": {
         "api_timeouts": 2,
         "rate_limit_hits": 1,
         "embedding_dimension_mismatches": 0,
         "qdrant_storage_failures": 0,
-        "context_generation_failures": 2
-    }
+        "context_generation_failures": 2,
+    },
 }
 ```
 
@@ -773,7 +773,7 @@ logger.info(
     document_hash="2e9493512b7f01aecdc66bbca60b5b6b75d966f8",
     document_path="datasets/sm_someuuid/2e9493.../cleaned.txt",
     chunk_count=23,
-    processing_id="proc_20241009_120034_789"
+    processing_id="proc_20241009_120034_789",
 )
 
 logger.info(
@@ -782,7 +782,7 @@ logger.info(
     model_used="claude-3-haiku-20240307",
     context_tokens=75,
     generation_time_ms=1247,
-    cached_response=False
+    cached_response=False,
 )
 ```
 

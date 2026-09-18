@@ -1,0 +1,84 @@
+declaration:
+  call: declare
+  version: 0.1
+  description: "Get paginated list of LLM connections"
+  method: get
+  accepts: json
+  returns: json
+  namespace: rag-search
+  allowlist:
+    params:
+      - field: pageNumber
+        type: number
+        description: "Page number (1-based)"
+      - field: pageSize
+        type: number
+        description: "Number of items per page"
+      - field: sortBy
+        type: string
+        description: "Field to sort by (e.g. 'llm_platform', 'created_at')"
+      - field: sortOrder
+        type: string
+        description: "Sort order: 'asc' or 'desc'"
+      - field: llmPlatform
+        type: string
+        description: "Filter by LLM platform"
+      - field: llmModel
+        type: string
+        description: "Filter by LLM model"
+      - field: environment
+        type: string
+        description: "Filter by deployment environment"
+
+extract_request_data:
+  assign:
+    pageNumber: ${Number(incoming.params.pageNumber) ?? 1}
+    pageSize: ${Number(incoming.params.pageSize) ?? 10}
+    sortBy: ${incoming.params.sortBy ?? "created_at"}
+    sortOrder: ${incoming.params.sortOrder ?? "desc"}
+    sorting: ${sortBy + " " + sortOrder}
+    llmPlatform: ${incoming.params.llmPlatform ?? ""}
+    llmModel: ${incoming.params.llmModel ?? ""}
+    environment: ${incoming.params.environment ?? ""}
+  next: validate_page_params
+
+validate_page_params:
+  switch:
+    - condition: ${pageNumber < 1}
+      next: return_invalid_page
+    - condition: ${pageSize < 1 || pageSize > 100}
+      next: return_invalid_page_size
+  next: get_llm_connections
+
+get_llm_connections:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_RESQL]/get-all-llm-connections-paginated"
+    body:
+      page: ${pageNumber}
+      page_size: ${pageSize}
+      sorting: ${sorting}
+      llm_platform: ${llmPlatform}
+      llm_model: ${llmModel}
+      environment: ${environment}
+  result: connections_result
+  next: transform_response
+
+transform_response:
+  assign:
+    response_data: ${connections_result.response.body}
+  next: return_success
+
+return_success:
+  return: ${response_data}
+  next: end
+
+return_invalid_page:
+  status: 400
+  return: "Page number must be greater than 0"
+  next: end
+
+return_invalid_page_size:
+  status: 400
+  return: "Page size must be between 1 and 100"
+  next: end

@@ -4,7 +4,28 @@ import json
 from typing import Any, Dict, List, Optional
 
 import dspy
-from loguru import logger
+from langfuse import observe
+from src.loki_logger import LokiLogger
+
+from src.utils.cost_utils import get_lm_usage_since
+from src.utils.observation_utils import update_observation_safe
+
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="intent-detector")
+
+
+def _get_current_model_name() -> str:
+    """Best-effort model name lookup from current DSPy LM."""
+    try:
+        lm = dspy.settings.lm
+        if lm and hasattr(lm, "model"):
+            model_name = lm.model
+            if isinstance(model_name, str) and model_name:
+                return model_name
+    except Exception:
+        pass
+    return "unknown"
 
 
 class ServiceIntentDetector(dspy.Signature):
@@ -46,6 +67,7 @@ class IntentDetectionModule(dspy.Module):
         super().__init__()
         self.detector = dspy.Predict(ServiceIntentDetector)
 
+    @observe(name="service_intent_detection_llm", as_type="generation")
     def forward(
         self,
         user_query: str,
@@ -76,6 +98,14 @@ class IntentDetectionModule(dspy.Module):
             services_formatted.append(service_entry)
 
         services_json = json.dumps(services_formatted, ensure_ascii=False, indent=2)
+
+        history_length_before = 0
+        try:
+            lm = dspy.settings.lm
+            if lm and hasattr(lm, "history"):
+                history_length_before = len(lm.history)
+        except Exception as e:
+            logger.warning(f"Failed to get LM history length for intent detection: {e}")
 
         # Format conversation history
         if conversation_history:
@@ -111,12 +141,45 @@ class IntentDetectionModule(dspy.Module):
             intent_data.setdefault("entities", {})
             intent_data.setdefault("reasoning", "")
 
+            usage = get_lm_usage_since(history_length_before)
+            update_observation_safe(
+                input_data={
+                    "user_query": user_query,
+                    "services_count": len(services),
+                },
+                output_data={
+                    "matched_service_id": intent_data.get("matched_service_id"),
+                    "confidence": intent_data.get("confidence", 0.0),
+                    "entities": intent_data.get("entities", {}),
+                },
+                metadata={
+                    "model": _get_current_model_name(),
+                    "usage": usage,
+                },
+            )
+
             return intent_data
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse intent JSON: {e}")
             if result:
                 logger.error(f"Raw response: {result.intent_result}")
+            usage = get_lm_usage_since(history_length_before)
+            update_observation_safe(
+                input_data={
+                    "user_query": user_query,
+                    "services_count": len(services),
+                },
+                output_data={
+                    "matched_service_id": None,
+                    "confidence": 0.0,
+                    "error": f"JSON parse error: {e}",
+                },
+                metadata={
+                    "model": _get_current_model_name(),
+                    "usage": usage,
+                },
+            )
             return {
                 "matched_service_id": None,
                 "confidence": 0.0,
@@ -125,6 +188,22 @@ class IntentDetectionModule(dspy.Module):
             }
         except Exception as e:
             logger.error(f"Intent detection forward failed: {e}", exc_info=True)
+            usage = get_lm_usage_since(history_length_before)
+            update_observation_safe(
+                input_data={
+                    "user_query": user_query,
+                    "services_count": len(services),
+                },
+                output_data={
+                    "matched_service_id": None,
+                    "confidence": 0.0,
+                    "error": f"Detection error: {e}",
+                },
+                metadata={
+                    "model": _get_current_model_name(),
+                    "usage": usage,
+                },
+            )
             return {
                 "matched_service_id": None,
                 "confidence": 0.0,

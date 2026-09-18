@@ -1,0 +1,100 @@
+declaration:
+  call: declare
+  version: 0.1
+  description: "Store production inference result with comprehensive data"
+  method: post
+  accepts: json
+  returns: json
+  namespace: rag-search
+  allowlist:
+    body:
+      - field: chat_id
+        type: string
+        description: "Chat ID"
+      - field: user_question
+        type: string
+        description: "User's raw question/input"
+      - field: refined_questions
+        type: object
+        description: "List of refined questions (LLM-generated)"
+      - field: conversation_history
+        type: object
+        description: "Prior messages array of {role, content}"
+      - field: ranked_chunks
+        type: object
+        description: "Retrieved chunks ranked with metadata"
+      - field: embedding_scores
+        type: object
+        description: "Distance scores for each chunk"
+      - field: final_answer
+        type: string
+        description: "LLM's final generated answer"
+     
+extract_request_data:
+  assign:
+    chat_id: ${incoming.body.chat_id}
+    user_question: ${incoming.body.user_question}
+    refined_questions: ${JSON.stringify(incoming.body.refined_questions) || null}
+    conversation_history: ${JSON.stringify(incoming.body.conversation_history) || null}
+    ranked_chunks: ${JSON.stringify(incoming.body.ranked_chunks) || null}
+    embedding_scores: ${JSON.stringify(incoming.body.embedding_scores) || null}
+    final_answer: ${incoming.body.final_answer}
+    created_at: ${new Date().toISOString()}
+  next: validate_required_fields
+
+validate_required_fields:
+  switch:
+    - condition: "${!user_question || !final_answer}"
+      next: return_bad_request
+  next: store_production_inference_result
+
+store_production_inference_result:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_RESQL]/store-production-inference-result"
+    body:
+      chat_id: ${chat_id}
+      user_question: ${user_question}
+      refined_questions: ${refined_questions}
+      conversation_history: ${conversation_history}
+      ranked_chunks: ${ranked_chunks}
+      embedding_scores: ${embedding_scores}
+      final_answer: ${final_answer}
+      environment: "production"
+      created_at: ${created_at}
+  result: store_result
+  next: check_status
+
+check_status:
+  switch:
+    - condition: ${200 <= store_result.response.statusCodeValue && store_result.response.statusCodeValue < 300}
+      next: format_success_response
+  next: format_failed_response
+
+format_success_response:
+  assign:
+    data_success: {
+      data: '${store_result.response.body[0]}',
+      operationSuccess: true,
+      statusCode: 200
+    }
+  next: return_success
+
+format_failed_response:
+  assign:
+    data_failed: {
+      data: '[]',
+      operationSuccess: false,
+      statusCode: 400
+    }
+  next: return_bad_request
+
+return_success:
+  return: ${data_success}
+  status: 200
+  next: end
+
+return_bad_request:
+  return: ${data_failed}
+  status: 400
+  next: end

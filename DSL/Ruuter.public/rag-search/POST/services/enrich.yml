@@ -75,13 +75,7 @@ execute_enrichment:
       is_common: ${service_is_common}
   result: enrichment_result
   on_error: handle_cron_error
-  next: check_enrichment_status
-
-check_enrichment_status:
-  switch:
-    - condition: ${200 <= enrichment_result.response.statusCodeValue && enrichment_result.response.statusCodeValue < 300}
-      next: assign_success
-  next: assign_cron_failure
+  next: assign_success
 
 handle_cron_error:
   log: "ERROR: Failed to queue enrichment job - ${enrichment_result.error || 'CronManager unreachable'}"
@@ -93,7 +87,7 @@ assign_cron_failure:
       success: false
       error: "ENRICHMENT_QUEUE_FAILED"
       message: "Failed to queue enrichment job. CronManager may be unavailable."
-      details: ${enrichment_result.error}
+      details: ${enrichment_result.error || 'CronManager unreachable'}
   next: return_server_error
 
 assign_success:

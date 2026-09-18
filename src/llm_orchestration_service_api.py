@@ -1,5 +1,6 @@
 """LLM Orchestration Service API - FastAPI application."""
 
+import asyncio
 import os
 import logging
 from contextlib import asynccontextmanager
@@ -9,16 +10,18 @@ from fastapi import FastAPI, HTTPException, status, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
-from loguru import logger
 import uvicorn
 
 from llm_orchestration_service import LLMOrchestrationService
+from llm_orchestrator_config.llm_manager import LLMManager
 from src.utils.redis_client import (
     init_redis_client,
     close_redis_client,
     check_redis_health,
 )
 from src.utils.api_tool_session_store import APIToolSessionStore
+from src.utils.conversation_history_store import ConversationHistoryStore
+from src.utils.conversation_summary_generator import create_incremental_summarizer
 from src.llm_orchestrator_config.llm_ochestrator_constants import (
     STREAMING_ALLOWED_ENVS,
     STREAM_TIMEOUT_MESSAGE,
@@ -35,7 +38,13 @@ from src.llm_orchestrator_config.llm_ochestrator_constants import (
 )
 from src.llm_orchestrator_config.stream_config import StreamConfig
 from src.llm_orchestrator_config.exceptions import StreamTimeoutError
-from src.utils.stream_timeout import stream_timeout
+
+# NOTE: imported via the bare package path, not "src.llm_orchestrator_config".
+# Both spellings resolve to separate module objects at runtime, so the class
+# imported here must match the one the config loader raises or `except` misses.
+from llm_orchestrator_config.exceptions import ConfigurationError
+from src.utils.stream_timeout import stream_timeout, with_heartbeat
+from src.utils.observation_utils import safe_observation_context
 from src.utils.error_utils import generate_error_id, log_error_with_context
 from src.utils.rate_limiter import RateLimiter
 from src.utils.prompt_config_loader import RefreshStatus
@@ -51,6 +60,11 @@ from models.request_models import (
     EmbeddingErrorResponse,
     DeepEvalTestOrchestrationResponse,
 )
+from src.utils.connection_id_fetcher import get_connection_id_fetcher
+from src.loki_logger import LokiLogger
+
+# Initialize Loki logger for centralized logging
+logger = LokiLogger(service_name="llm-orchestration-api")
 
 
 @asynccontextmanager
@@ -93,23 +107,50 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         await init_redis_client()
         app.state.session_store = APIToolSessionStore()
+
+        # Wire an incremental summarizer if the LLM manager singleton is available.
+        summarizer = None
+        try:
+            summarizer = create_incremental_summarizer(LLMManager())
+            logger.info("Incremental conversation summarizer initialized")
+        except Exception as e:
+            logger.warning(
+                f"Could not create incremental summarizer, continuing without it: {e}"
+            )
+
+        app.state.conversation_history_store = ConversationHistoryStore(
+            summarizer=summarizer
+        )
         logger.info("Redis session store initialized successfully")
     except Exception as e:
         logger.warning(f"Redis session store unavailable, continuing without it: {e}")
         app.state.session_store = None
+        app.state.conversation_history_store = None
 
-    # Expose session_store on the orchestration service so workflow executors
-    # (e.g. APIToolWorkflowExecutor) can reach it via self.orchestration_service.
+    # Expose session_store and conversation_history_store on the orchestration
+    # service so downstream components can reach them via self.orchestration_service.
     if (
         hasattr(app.state, "orchestration_service")
         and app.state.orchestration_service is not None
     ):
         app.state.orchestration_service.session_store = app.state.session_store
+        app.state.orchestration_service.conversation_history_store = (
+            app.state.conversation_history_store
+        )
 
     yield
 
     # Shutdown
     logger.info("Shutting down LLM Orchestration Service API")
+
+    # Await any in-flight incremental summary tasks to avoid lost work.
+    store = getattr(app.state, "conversation_history_store", None)
+    if store is not None and store._pending_tasks:
+        logger.info(
+            f"Waiting for {len(store._pending_tasks)} pending summary task(s) to complete..."
+        )
+        await asyncio.gather(*store._pending_tasks, return_exceptions=True)
+
     if (
         hasattr(app.state, "orchestration_service")
         and app.state.orchestration_service is not None
@@ -249,6 +290,22 @@ async def pydantic_validation_exception_handler(
             "type": "validation_error",
         },
     )
+
+
+@app.post("/cache/clear")
+async def clear_connection_cache() -> dict[str, str]:
+    """Clear cached connection IDs and vault UUIDs."""
+    try:
+        fetcher = get_connection_id_fetcher()
+        fetcher.clear_cache()
+        logger.info("Connection cache cleared via /cache/clear endpoint")
+        return {"status": "ok", "message": "Connection cache cleared"}
+    except Exception as e:
+        logger.error(f"Failed to clear connection cache: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to clear connection cache",
+        ) from e
 
 
 @app.get("/health")
@@ -497,16 +554,27 @@ async def stream_orchestrated_response(
     from datetime import datetime
 
     def create_sse_error_stream(chat_id: str, error_message: str) -> str:
-        """Create SSE format error response."""
+        """Create an SSE error response, terminated by the END marker.
+
+        The END frame is what the notification server translates into the
+        browser's ``stream_end``. Without it an error frame is indistinguishable
+        from ordinary content, so the client keeps waiting on a stream that has
+        already finished - which is how an upstream timeout turned into a chat
+        that hung indefinitely. Every caller is a terminal error path, so
+        closing the stream here is always correct.
+        """
         from typing import Dict, Any
 
-        error_payload: Dict[str, Any] = {
-            "chatId": chat_id,
-            "payload": {"content": error_message},
-            "timestamp": str(int(datetime.now().timestamp() * 1000)),
-            "sentTo": [],
-        }
-        return f"data: {json_module.dumps(error_payload)}\n\n"
+        def frame(content: str) -> str:
+            payload: Dict[str, Any] = {
+                "chatId": chat_id,
+                "payload": {"content": content},
+                "timestamp": str(int(datetime.now().timestamp() * 1000)),
+                "sentTo": [],
+            }
+            return f"data: {json_module.dumps(payload)}\n\n"
+
+        return frame(error_message) + frame("END")
 
     try:
         logger.info(
@@ -514,11 +582,12 @@ async def stream_orchestrated_response(
             f"chatId: {request.chatId}, "
             f"environment: {request.environment}, "
             f"message: {request.message[:100]}..."
+            f"connection_id: {request.connection_id}"
         )
 
         # Streaming is only for allowed environments
         if request.environment not in STREAMING_ALLOWED_ENVS:
-            error_msg = f"Streaming is only available for production environment. Current environment: {request.environment}. Please use /orchestrate endpoint for non-streaming environments."
+            error_msg = f"Streaming is only available for production and testing environments. Current environment: {request.environment}. Please use /orchestrate endpoint for non-streaming environments."
             logger.warning(error_msg)
 
             async def env_error_stream() -> AsyncGenerator[str, None]:
@@ -620,33 +689,51 @@ async def stream_orchestrated_response(
         # Wrap streaming response with timeout
         async def timeout_wrapped_stream() -> AsyncGenerator[str, None]:
             """Generator wrapper with timeout enforcement."""
-            try:
-                async with stream_timeout(StreamConfig.MAX_STREAM_DURATION_SECONDS):
-                    async for (
-                        chunk
-                    ) in orchestration_service.stream_orchestration_response(request):
-                        yield chunk
-            except StreamTimeoutError as timeout_exc:
-                # StreamTimeoutError already has error_id
-                log_error_with_context(
-                    logger,
-                    timeout_exc.error_id,
-                    "streaming_timeout",
-                    request.chatId,
-                    timeout_exc,
-                )
-                # Send timeout message to client
-                yield create_sse_error_stream(request.chatId, STREAM_TIMEOUT_MESSAGE)
-            except Exception as stream_error:
-                error_id = generate_error_id()
-                log_error_with_context(
-                    logger, error_id, "streaming_error", request.chatId, stream_error
-                )
-                # Send generic error message to client
-                yield create_sse_error_stream(
-                    request.chatId,
-                    "I apologize, but I encountered an issue while generating your response. Please try again.",
-                )
+            with safe_observation_context(
+                as_type="generation",
+                name="streaming_generation",
+                input={"message": request.message[:500], "chat_id": request.chatId},
+            ):
+                try:
+                    async with stream_timeout(StreamConfig.MAX_STREAM_DURATION_SECONDS):
+                        # Heartbeat frames keep proxies from closing a slow stream,
+                        # and the idle budget fails fast on one that has truly
+                        # stalled rather than waiting out the total-duration cap.
+                        async for chunk in with_heartbeat(
+                            orchestration_service.stream_orchestration_response(
+                                request
+                            ),
+                            heartbeat_interval=StreamConfig.HEARTBEAT_INTERVAL_SECONDS,
+                            idle_timeout=StreamConfig.IDLE_TIMEOUT_SECONDS,
+                        ):
+                            yield chunk
+                except StreamTimeoutError as timeout_exc:
+                    # StreamTimeoutError already has error_id
+                    log_error_with_context(
+                        logger,
+                        timeout_exc.error_id,
+                        "streaming_timeout",
+                        request.chatId,
+                        timeout_exc,
+                    )
+                    # Send timeout message to client
+                    yield create_sse_error_stream(
+                        request.chatId, STREAM_TIMEOUT_MESSAGE
+                    )
+                except Exception as stream_error:
+                    error_id = generate_error_id()
+                    log_error_with_context(
+                        logger,
+                        error_id,
+                        "streaming_error",
+                        request.chatId,
+                        stream_error,
+                    )
+                    # Send generic error message to client
+                    yield create_sse_error_stream(
+                        request.chatId,
+                        "I apologize, but I encountered an issue while generating your response. Please try again.",
+                    )
 
         # Stream the response
         return StreamingResponse(
@@ -747,6 +834,13 @@ async def generate_context_with_caching(
 
         return ContextGenerationResponse(**result)
 
+    except ConfigurationError as e:
+        # No usable LLM connection for this environment. This is an operator
+        # action, not a transient fault - 503 with the reason so callers (e.g.
+        # the vector indexer) can stop retrying and surface something useful.
+        error_id = generate_error_id()
+        log_error_with_context(logger, error_id, "context_generation_endpoint", None, e)
+        raise HTTPException(status_code=503, detail=str(e)) from e
     except Exception as e:
         error_id = generate_error_id()
         log_error_with_context(logger, error_id, "context_generation_endpoint", None, e)

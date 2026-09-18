@@ -65,9 +65,9 @@ if session is None:
     # No active session → this is a fresh conversation
     ...
 else:
-    print(session.state)            # "collecting_params"
-    print(session.collected_params) # {"city": "Tallinn"}
-    print(session.turn_count)       # 2
+    print(session.state)  # "collecting_params"
+    print(session.collected_params)  # {"city": "Tallinn"}
+    print(session.turn_count)  # 2
 ```
 
 ---
@@ -129,12 +129,14 @@ session_store = request.app.state.session_store
 session = await session_store.get(request.chatId)
 if session is None:
     detected_endpoint = ...  # endpoint detected from user query
-    await session_store.save(APIToolSession(
-        chat_id=request.chatId,
-        state="collecting_params",
-        selected_endpoint=detected_endpoint,
-        turn_count=1,
-    ))
+    await session_store.save(
+        APIToolSession(
+            chat_id=request.chatId,
+            state="collecting_params",
+            selected_endpoint=detected_endpoint,
+            turn_count=1,
+        )
+    )
     return "Which city would you like weather for?"
 
 # --- Turn 2+ ---

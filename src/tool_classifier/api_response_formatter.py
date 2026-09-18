@@ -7,12 +7,32 @@ from typing import Any, AsyncIterator, Dict, List, Union
 import dspy
 import dspy.streaming
 from dspy.streaming import StreamListener
-from loguru import logger
-
+from langfuse import observe
+from src.utils.observation_utils import (
+    safe_observation_context,
+    update_observation_safe,
+)
+from src.loki_logger import LokiLogger
 from llm_orchestrator_config.llm_ochestrator_constants import get_localized_message
+from src.utils.cost_utils import get_lm_usage_since
+
+logger = LokiLogger(service_name="api-tool-calling")
 
 _MAX_ITEMS: int = 500
-_MAX_RESPONSE_BYTES: int = 50_000
+_MAX_RESPONSE_BYTES: int = 150_000
+
+
+def _get_current_model_name() -> str:
+    """Best-effort model name lookup from current DSPy LM."""
+    try:
+        lm = dspy.settings.lm
+        if lm and hasattr(lm, "model"):
+            model_name = lm.model
+            if isinstance(model_name, str) and model_name:
+                return model_name
+    except Exception:
+        pass
+    return "unknown"
 
 
 class APIResponseFormatterSignature(dspy.Signature):
@@ -35,7 +55,7 @@ class APIResponseFormatterSignature(dspy.Signature):
       message that no results were found for the query.
     - If api_response contains an error field or error status, explain the issue to the user
       in a friendly, non-technical way.
-    - If the data contains more than 20 items, summarize the key highlights rather than
+    - If the data contains more than 50 items, summarize the key highlights rather than
       listing every item. Always mention the total count when summarizing.
     - Output must be clean text — no markdown headers (##), no code blocks (```), no raw
       JSON. The answer must be ready for direct display to the user.
@@ -158,6 +178,7 @@ class APIResponseFormatterModule(dspy.Module):
         self.formatter = dspy.Predict(APIResponseFormatterSignature)
         self._custom_instructions = custom_instructions
 
+    @observe(name="api_response_formatting_llm", as_type="generation")
     def forward(
         self,
         user_query: str,
@@ -182,7 +203,19 @@ class APIResponseFormatterModule(dspy.Module):
         Returns:
             A clean, natural-language answer ready for display to the user.
         """
+
+        history_length_before = 0
+        try:
+            lm = dspy.settings.lm
+            if lm and hasattr(lm, "history"):
+                history_length_before = len(lm.history)
+        except Exception as e:
+            logger.warning(
+                f"Failed to get LM history length for response formatting: {e}"
+            )
+
         collected_params = collected_params or {}
+
         try:
             normalized = self._normalize_response(api_response)
             normalized = self._annotate_empty(normalized)
@@ -198,11 +231,46 @@ class APIResponseFormatterModule(dspy.Module):
                 custom_instructions=self._custom_instructions,
                 query_params_context=params_context,
             )
-            return result.formatted_answer  # type: ignore[no-any-return]
+            formatted_answer = result.formatted_answer
+            usage = get_lm_usage_since(history_length_before)
+            update_observation_safe(
+                input_data={
+                    "user_query": user_query,
+                    "api_response": api_response,
+                    "endpoint_description": endpoint_description,
+                    "response_language": response_language,
+                },
+                output_data={
+                    "formatted_answer_preview": str(formatted_answer)[:500],
+                },
+                metadata={
+                    "model": _get_current_model_name(),
+                    "usage": usage,
+                    "num_calls": usage.get("num_calls", 0),
+                    "streaming": False,
+                },
+            )
+            return formatted_answer  # type: ignore[no-any-return]
 
         except Exception as e:
             logger.error(
                 f"APIResponseFormatterModule.forward failed: {e}", exc_info=True
+            )
+            usage = get_lm_usage_since(history_length_before)
+            update_observation_safe(
+                input_data={
+                    "user_query": user_query,
+                    "endpoint_description": endpoint_description,
+                    "detected_language": detected_language,
+                    "api_response": api_response,
+                },
+                output_data={"error": str(e)},
+                metadata={
+                    "model": _get_current_model_name(),
+                    "usage": usage,
+                    "num_calls": usage.get("num_calls", 0),
+                    "streaming": False,
+                },
             )
             safe_language = (
                 detected_language
@@ -266,76 +334,194 @@ class APIResponseFormatterModule(dspy.Module):
             else "en"
         )
         output_stream = None
-        try:
-            normalized = self._normalize_response(api_response)
-            normalized = self._annotate_empty(normalized)
-            normalized = self._truncate_if_needed(normalized)
-            response_language = _LANGUAGE_NAMES.get(detected_language, "English")
-            params_context = build_params_context(collected_params)
 
-            stream_predictor = self._get_stream_predictor()
-            output_stream = stream_predictor(
-                user_query=user_query,
-                api_response=normalized,
-                endpoint_description=endpoint_description,
-                response_language=response_language,
-                custom_instructions=self._custom_instructions,
-                query_params_context=params_context,
-            )
+        with safe_observation_context(
+            as_type="generation",
+            name="api_response_formatting_streaming",
+            input={
+                "user_query": user_query[:500],
+                "endpoint_description": endpoint_description,
+                "detected_language": detected_language,
+            },
+        ) as generation:
+            output_stream = None
 
-            stream_started = False
-            token_count = 0
-            async for chunk in output_stream:
-                if isinstance(chunk, dspy.streaming.StreamResponse):
-                    if chunk.signature_field_name == "formatted_answer":
-                        stream_started = True
-                        token_count += 1
-                        yield chunk.chunk
-                elif isinstance(chunk, dspy.Prediction):
-                    # dspy.streamify did not stream individual tokens — yield the
-                    # full answer from the final Prediction as a single frame.
-                    if not stream_started:
-                        answer = getattr(chunk, "formatted_answer", None)
-                        if answer:
-                            logger.info(
-                                "APIResponseFormatterModule.stream_forward: "
-                                "no StreamResponse tokens — yielding full Prediction answer"
-                            )
-                            stream_started = True
-                            yield answer
-
-            if stream_started and token_count > 0:
-                logger.debug(
-                    f"APIResponseFormatterModule.stream_forward: streamed {token_count} tokens"
-                )
-
-            if not stream_started:
-                # Last-resort fallback: blocking forward() — covers cases where
-                # dspy.streamify yields neither StreamResponse nor Prediction.
+            history_length_before = 0
+            try:
+                lm = dspy.settings.lm
+                if lm and hasattr(lm, "history"):
+                    history_length_before = len(lm.history)
+            except Exception as e:
                 logger.warning(
-                    "APIResponseFormatterModule.stream_forward: "
-                    "streamify produced no tokens and no Prediction — using blocking forward()"
+                    "Failed to get LM history length for response formatting streaming: "
+                    f"{e}"
                 )
-                result = self.forward(
-                    user_query=user_query,
-                    api_response=api_response,
-                    endpoint_description=endpoint_description,
-                    detected_language=detected_language,
-                    collected_params=collected_params,
-                )
-                yield result
+            try:
+                normalized = self._normalize_response(api_response)
+                normalized = self._annotate_empty(normalized)
+                normalized = self._truncate_if_needed(normalized)
+                response_language = _LANGUAGE_NAMES.get(detected_language, "English")
+                params_context = build_params_context(collected_params)
 
-        except Exception as e:
-            logger.error(
-                f"APIResponseFormatterModule.stream_forward failed: {e}", exc_info=True
-            )
-            yield get_localized_message(_FORMATTER_ERROR_MESSAGES, safe_language)
-        finally:
-            if output_stream is not None:
+                stream_predictor = self._get_stream_predictor()
+                output_stream = stream_predictor(
+                    user_query=user_query,
+                    api_response=normalized,
+                    endpoint_description=endpoint_description,
+                    response_language=response_language,
+                    custom_instructions=self._custom_instructions,
+                    query_params_context=params_context,
+                )
+
+                stream_started = False
+                token_count = 0
+                accumulated: list[str] = []
+                final_prediction: dspy.Prediction | None = None
+                async for chunk in output_stream:
+                    if isinstance(chunk, dspy.streaming.StreamResponse):
+                        if chunk.signature_field_name == "formatted_answer":
+                            stream_started = True
+                            token_count += 1
+                            accumulated.append(chunk.chunk)
+                            yield chunk.chunk
+                    elif isinstance(chunk, dspy.Prediction):
+                        final_prediction = chunk
+                        # dspy.streamify did not stream individual tokens — yield the
+                        # full answer from the final Prediction as a single frame.
+                        if not stream_started:
+                            answer = getattr(chunk, "formatted_answer", None)
+                            if answer:
+                                logger.info(
+                                    "APIResponseFormatterModule.stream_forward: "
+                                    "no StreamResponse tokens — yielding full Prediction answer"
+                                )
+                                stream_started = True
+                                accumulated.append(answer)
+                                yield answer
+
+                assembled_answer = "".join(accumulated)
+
+                if stream_started and token_count > 0:
+                    logger.debug(
+                        f"APIResponseFormatterModule.stream_forward: streamed {token_count} tokens"
+                    )
+                    # DSPy streaming can drop the last few tokens before EOS.
+                    # The final dspy.Prediction holds the authoritative complete answer.
+                    # Yield any tail that wasn't delivered as StreamResponse chunks.
+                    if final_prediction is not None:
+                        full_answer = getattr(
+                            final_prediction, "formatted_answer", None
+                        )
+                        if full_answer:
+                            streamed_text = assembled_answer
+                            if full_answer.startswith(streamed_text) and len(
+                                full_answer
+                            ) > len(streamed_text):
+                                tail = full_answer[len(streamed_text) :]
+                                if tail.strip():
+                                    logger.debug(
+                                        f"APIResponseFormatterModule.stream_forward: "
+                                        f"yielding {len(tail)} missing tail chars from Prediction"
+                                    )
+                                    assembled_answer += tail
+                                    yield tail
+                            elif streamed_text and not full_answer.startswith(
+                                streamed_text
+                            ):
+                                logger.warning(
+                                    "APIResponseFormatterModule.stream_forward: "
+                                    "streamed output is not a prefix of final Prediction; "
+                                    "skipping tail reconciliation"
+                                )
+
+                if not stream_started:
+                    # Last-resort fallback: blocking forward() — covers cases where
+                    # dspy.streamify yields neither StreamResponse nor Prediction.
+                    logger.warning(
+                        "APIResponseFormatterModule.stream_forward: "
+                        "streamify produced no tokens and no Prediction — using blocking forward()"
+                    )
+                    result = self.forward(
+                        user_query=user_query,
+                        api_response=api_response,
+                        endpoint_description=endpoint_description,
+                        detected_language=detected_language,
+                        collected_params=collected_params,
+                    )
+                    assembled_answer = result
+                    yield result
+
+                usage = get_lm_usage_since(history_length_before)
                 try:
-                    await output_stream.aclose()
-                except Exception as cleanup_error:
-                    logger.debug(f"Error during stream cleanup: {cleanup_error}")
+                    generation.update(
+                        input={
+                            "user_query": user_query,
+                            "api_response": api_response,
+                            "endpoint_description": endpoint_description,
+                            "detected_language": detected_language,
+                        },
+                        output=assembled_answer,
+                        metadata={
+                            "stream_started": stream_started,
+                            "chunk_count": token_count,
+                            "num_calls": usage.get("num_calls", 0),
+                            "streaming": True,
+                        },
+                        usage_details={
+                            "input": usage.get("total_prompt_tokens", 0),
+                            "output": usage.get("total_completion_tokens", 0),
+                            "total": usage.get("total_tokens", 0),
+                        },
+                        cost_details={
+                            "total": usage.get("total_cost", 0.0),
+                        },
+                    )
+                except Exception as update_error:
+                    logger.debug(
+                        "Langfuse generation update skipped for response formatting "
+                        f"streaming: {update_error}"
+                    )
+
+            except Exception as e:
+                logger.error(
+                    f"APIResponseFormatterModule.stream_forward failed: {e}",
+                    exc_info=True,
+                )
+                usage = get_lm_usage_since(history_length_before)
+                try:
+                    generation.update(
+                        input={
+                            "user_query": user_query,
+                            "api_response": api_response,
+                            "endpoint_description": endpoint_description,
+                            "detected_language": detected_language,
+                        },
+                        output={"error": str(e)},
+                        usage_details={
+                            "input": usage.get("total_prompt_tokens", 0),
+                            "output": usage.get("total_completion_tokens", 0),
+                            "total": usage.get("total_tokens", 0),
+                        },
+                        cost_details={
+                            "total": usage.get("total_cost", 0.0),
+                        },
+                        metadata={
+                            "num_calls": usage.get("num_calls", 0),
+                            "streaming": True,
+                        },
+                    )
+                except Exception as update_error:
+                    logger.debug(
+                        "Langfuse error update skipped for response formatting "
+                        f"streaming: {update_error}"
+                    )
+                yield get_localized_message(_FORMATTER_ERROR_MESSAGES, safe_language)
+            finally:
+                if output_stream is not None:
+                    try:
+                        await output_stream.aclose()
+                    except Exception as cleanup_error:
+                        logger.debug(f"Error during stream cleanup: {cleanup_error}")
 
     # ------------------------------------------------------------------
 
@@ -378,9 +564,14 @@ class APIResponseFormatterModule(dspy.Module):
 
         encoded = api_response_str.encode("utf-8")
         if len(encoded) > _MAX_RESPONSE_BYTES:
-            truncated_str = encoded[:_MAX_RESPONSE_BYTES].decode(
+            suffix = "\n[NOTE: Response truncated due to size limit]"
+            suffix_bytes = len(suffix.encode("utf-8"))
+            truncated_str = encoded[: _MAX_RESPONSE_BYTES - suffix_bytes].decode(
                 "utf-8", errors="ignore"
             )
-            return truncated_str + "\n[NOTE: Response truncated due to size limit]"
+            logger.warning(
+                f"API response exceeded byte limit: {len(encoded)} bytes — truncating to {len(truncated_str.encode('utf-8'))} bytes"
+            )
+            return truncated_str + suffix
 
         return api_response_str

@@ -6,6 +6,8 @@ Only the LLM layer (DSPy), Qdrant HTTP, and Redis are mocked.
 Covers:
 - Phase 2: Full multi-turn workflow, fast-path, streaming, cost tracking
 - Phase 4: Fallback chain regression tests
+- Parallel execution mode (ExecutionMode.PARALLEL end-to-end)
+- Test-endpoint session wipe guard
 """
 
 import json
@@ -17,13 +19,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from models.request_models import OrchestrationRequest, OrchestrationResponse
-from models.session_models import APIToolSession
+from models.session_models import APIToolSession, EndpointSessionState
 from tool_classifier.classifier import ToolClassifier
-from tool_classifier.enums import AgenticLoopStatus, WorkflowType
+from tool_classifier.enums import AgenticLoopStatus, ExecutionMode, WorkflowType
 from tool_classifier.models import (
     AgenticLoopResult,
     APICallResult,
     ClassificationResult,
+    MultiAPICallResult,
 )
 
 
@@ -127,6 +130,10 @@ def mock_orchestration_service(mock_session_store: AsyncMock) -> MagicMock:
 
     svc._execute_orchestration_pipeline = AsyncMock(side_effect=_mock_rag)
     svc._initialize_service_components = MagicMock(return_value={})
+    svc.handle_output_guardrails = AsyncMock(
+        side_effect=lambda _adapter, response, _req, _costs: response
+    )
+    svc.store_streaming_inference = AsyncMock()
 
     async def _mock_rag_stream(**kwargs: Any) -> AsyncGenerator[str, None]:
         yield 'data: {"chatId":"test","payload":{"content":"RAG stream answer"}}\n\n'
@@ -484,6 +491,9 @@ class TestAPIToolStreamingFlow:
             for token in ["It is ", "15°C ", "in Tallinn."]:
                 yield token
 
+        mock_formatter = MagicMock()
+        mock_formatter.stream_forward = _fake_stream_forward
+
         with (
             patch.object(
                 classifier.api_tool_workflow._api_caller,
@@ -491,10 +501,9 @@ class TestAPIToolStreamingFlow:
                 new_callable=AsyncMock,
                 return_value=api_call_result,
             ),
-            patch.object(
-                classifier.api_tool_workflow._formatter,
-                "stream_forward",
-                side_effect=_fake_stream_forward,
+            patch(
+                "tool_classifier.workflows.api_tool_workflow.APIResponseFormatterModule",
+                return_value=mock_formatter,
             ),
         ):
             stream = await classifier.route_to_workflow(
@@ -896,3 +905,323 @@ def _make_mock_loop(
     loop = MagicMock()
     loop.stream_run_turn = AsyncMock(return_value=(result, question_tokens))
     return loop
+
+
+# ---------------------------------------------------------------------------
+# TestParallelExecutionMode
+# ---------------------------------------------------------------------------
+
+
+class TestParallelExecutionMode:
+    """Full parallel path: classify → ExecutionMode.PARALLEL → MultiEndpointAgenticLoop
+    → MultiAPICaller → MultiResponseFormatterModule.
+
+    Only DSPy (formatter/extractor), Qdrant HTTP, and Redis are mocked.
+    """
+
+    @pytest.mark.asyncio
+    async def test_parallel_fast_path_no_required_params_both_apis_called(
+        self,
+        classifier: ToolClassifier,
+        mock_session_store: AsyncMock,
+    ) -> None:
+        """Both endpoints have no required params → immediate parallel API calls, no session."""
+
+        # Two endpoints with no required params
+        ep_weather_no_params = {**_ENDPOINT_WEATHER, "params": []}
+        ep_holidays_no_params = {**_ENDPOINT_HOLIDAYS, "params": []}
+
+        classification = ClassificationResult(
+            workflow=WorkflowType.API_TOOL_CALLING,
+            confidence=0.68,
+            metadata={
+                "execution_mode": ExecutionMode.PARALLEL,
+                "matched_endpoints": [ep_weather_no_params, ep_holidays_no_params],
+            },
+        )
+        request = _make_request("holidays AND weather")
+
+        weather_result = APICallResult(
+            success=True, status_code=200, response_data={"temp": 22}, error=None
+        )
+        holidays_result = APICallResult(
+            success=True,
+            status_code=200,
+            response_data={"holidays": ["Jõulupüha"]},
+            error=None,
+        )
+        multi_result = MultiAPICallResult(
+            results=[weather_result, holidays_result],
+            endpoints=[
+                {**ep_weather_no_params, "call_params": {}},
+                {**ep_holidays_no_params, "call_params": {}},
+            ],
+        )
+
+        with (
+            patch.object(
+                classifier.api_tool_workflow._api_caller.__class__,
+                "__init__",
+                return_value=None,
+            ),
+            patch(
+                "tool_classifier.workflows.api_tool_workflow.MultiAPICaller",
+            ) as mock_multi_caller_cls,
+            patch(
+                "tool_classifier.workflows.api_tool_workflow.asyncio.to_thread",
+                new_callable=AsyncMock,
+                return_value="It is 22°C and there are public holidays.",
+            ),
+        ):
+            mock_multi_caller_inst = AsyncMock()
+            mock_multi_caller_inst.call_all = AsyncMock(return_value=multi_result)
+            mock_multi_caller_cls.return_value = mock_multi_caller_inst
+
+            response = await classifier.route_to_workflow(
+                classification=classification,
+                request=request,
+                is_streaming=False,
+            )
+
+        assert isinstance(response, OrchestrationResponse)
+        assert response.content != ""
+        # No session created (fast path)
+        assert await mock_session_store.get(_CHAT_ID) is None
+
+    @pytest.mark.asyncio
+    async def test_parallel_session_created_when_params_needed(
+        self,
+        classifier: ToolClassifier,
+        mock_session_store: AsyncMock,
+    ) -> None:
+        """When endpoints have required params, a PARALLEL session is created and a
+        clarifying question is returned for the first turn."""
+
+        # Both endpoints have required params
+        classification = ClassificationResult(
+            workflow=WorkflowType.API_TOOL_CALLING,
+            confidence=0.68,
+            metadata={
+                "execution_mode": ExecutionMode.PARALLEL,
+                "matched_endpoints": [_ENDPOINT_HOLIDAYS, _ENDPOINT_WEATHER],
+            },
+        )
+        request = _make_request("holidays AND weather please")
+
+        loop_result = AgenticLoopResult(
+            status=AgenticLoopStatus.NEEDS_INPUT,
+            collected_params={},
+            clarifying_question="Which country for holidays?",
+            turn_count=1,
+        )
+
+        with patch(
+            "tool_classifier.workflows.api_tool_workflow.MultiEndpointAgenticLoop",
+        ) as mock_multi_loop_cls:
+            mock_multi_loop_inst = MagicMock()
+            mock_multi_loop_inst.stream_run_turn = AsyncMock(
+                return_value=(loop_result, ["Which", " country", "?"])
+            )
+            mock_multi_loop_cls.return_value = mock_multi_loop_inst
+
+            response = await classifier.route_to_workflow(
+                classification=classification,
+                request=request,
+                is_streaming=False,
+            )
+
+        assert isinstance(response, OrchestrationResponse)
+        assert response.content != ""
+        # Session created in Redis with parallel execution mode
+        session = await mock_session_store.get(_CHAT_ID)
+        assert session is not None
+        assert session.execution_mode == ExecutionMode.PARALLEL.value
+
+    @pytest.mark.asyncio
+    async def test_parallel_max_turns_falls_back_to_rag(
+        self,
+        classifier: ToolClassifier,
+        mock_session_store: AsyncMock,
+    ) -> None:
+        """Parallel loop MAX_TURNS_REACHED → session deleted → RAG fallback."""
+        # Seed a parallel session
+        session = APIToolSession(
+            chat_id=_CHAT_ID,
+            state="collecting_params",
+            selected_endpoint=_ENDPOINT_HOLIDAYS,
+            collected_params={},
+            turn_count=6,
+            max_turns=6,
+            awaiting_continuation=False,
+            detected_language="en",
+            original_query="holidays AND weather",
+            execution_mode=ExecutionMode.PARALLEL.value,
+            parallel_endpoints=[
+                EndpointSessionState(endpoint=_ENDPOINT_HOLIDAYS),
+                EndpointSessionState(endpoint=_ENDPOINT_WEATHER),
+            ],
+        )
+        await mock_session_store.save(session)
+
+        classification = ClassificationResult(
+            workflow=WorkflowType.API_TOOL_CALLING,
+            confidence=1.0,
+            metadata={"reason": "active_session_resume"},
+        )
+        request = _make_request("I give up")
+
+        max_turns_result = AgenticLoopResult(
+            status=AgenticLoopStatus.MAX_TURNS_REACHED,
+            collected_params={},
+            clarifying_question="",
+            turn_count=7,
+        )
+
+        with patch(
+            "tool_classifier.workflows.api_tool_workflow.MultiEndpointAgenticLoop",
+        ) as mock_multi_loop_cls:
+            mock_multi_loop_inst = MagicMock()
+            mock_multi_loop_inst.stream_run_turn = AsyncMock(
+                return_value=(max_turns_result, [])
+            )
+            mock_multi_loop_cls.return_value = mock_multi_loop_inst
+
+            response = await classifier.route_to_workflow(
+                classification=classification,
+                request=request,
+                is_streaming=False,
+            )
+
+        # Session deleted
+        assert await mock_session_store.get(_CHAT_ID) is None
+        # Falls back to RAG
+        assert isinstance(response, OrchestrationResponse)
+
+    @pytest.mark.asyncio
+    async def test_parallel_streaming_question_yields_sse_frames(
+        self,
+        classifier: ToolClassifier,
+        mock_session_store: AsyncMock,
+    ) -> None:
+        """Streaming parallel path: first turn → clarifying question → SSE frames."""
+
+        classification = ClassificationResult(
+            workflow=WorkflowType.API_TOOL_CALLING,
+            confidence=0.68,
+            metadata={
+                "execution_mode": ExecutionMode.PARALLEL,
+                "matched_endpoints": [_ENDPOINT_HOLIDAYS, _ENDPOINT_WEATHER],
+            },
+        )
+        request = _make_request("holidays AND weather")
+
+        loop_result = AgenticLoopResult(
+            status=AgenticLoopStatus.NEEDS_INPUT,
+            collected_params={},
+            clarifying_question="Which country for holidays?",
+            turn_count=1,
+        )
+
+        with patch(
+            "tool_classifier.workflows.api_tool_workflow.MultiEndpointAgenticLoop",
+        ) as mock_multi_loop_cls:
+            mock_multi_loop_inst = MagicMock()
+            mock_multi_loop_inst.stream_run_turn = AsyncMock(
+                return_value=(loop_result, ["Which", " country", "?"])
+            )
+            mock_multi_loop_cls.return_value = mock_multi_loop_inst
+
+            stream = await classifier.route_to_workflow(
+                classification=classification,
+                request=request,
+                is_streaming=True,
+            )
+            frames = [frame async for frame in stream]
+
+        assert len(frames) >= 1
+        for frame in frames:
+            assert frame.startswith("data: ") or frame.strip() == ""
+
+
+# ---------------------------------------------------------------------------
+# TestTestEndpointSessionWipe
+# ---------------------------------------------------------------------------
+
+
+class TestTestEndpointSessionWipe:
+    """Verify that the /orchestrate/test endpoint deletes any stale 'test-session'
+    in the API tool session store before each request so multi-turn state never
+    leaks between consecutive test API calls."""
+
+    @pytest.mark.asyncio
+    async def test_session_store_delete_called_with_test_session_key(self) -> None:
+        """The endpoint must call session_store.delete('test-session') on every request
+        regardless of whether a session exists."""
+        from httpx import AsyncClient, ASGITransport
+        from llm_orchestration_service_api import app
+
+        session_store_mock = AsyncMock()
+        session_store_mock.delete = AsyncMock(return_value=None)
+
+        # Minimal orchestration service mock that returns a valid response
+        orch_mock = AsyncMock()
+        orch_mock.process_orchestration_request = AsyncMock(
+            return_value=OrchestrationResponse(
+                chatId="test-session",
+                llmServiceActive=True,
+                questionOutOfLLMScope=False,
+                inputGuardFailed=False,
+                content="Test answer.",
+            )
+        )
+
+        app.state.orchestration_service = orch_mock
+        app.state.session_store = session_store_mock
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.post(
+                "/orchestrate/test",
+                json={"message": "hello", "environment": "production"},
+            )
+
+        # The endpoint must have called delete("test-session") before processing
+        session_store_mock.delete.assert_awaited_with("test-session")
+
+    @pytest.mark.asyncio
+    async def test_stale_session_cleared_before_request_not_after(self) -> None:
+        """If session_store.delete raises, the endpoint propagates the error as HTTP 500
+        because the wipe-guard is not wrapped in try/except."""
+        from httpx import AsyncClient, ASGITransport
+        from llm_orchestration_service_api import app
+
+        session_store_mock = AsyncMock()
+        session_store_mock.delete = AsyncMock(
+            side_effect=RuntimeError("Redis unavailable")
+        )
+
+        orch_mock = AsyncMock()
+        orch_mock.process_orchestration_request = AsyncMock(
+            return_value=OrchestrationResponse(
+                chatId="test-session",
+                llmServiceActive=True,
+                questionOutOfLLMScope=False,
+                inputGuardFailed=False,
+                content="Fallback answer.",
+            )
+        )
+
+        app.state.orchestration_service = orch_mock
+        app.state.session_store = session_store_mock
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/orchestrate/test",
+                json={"message": "hello", "environment": "production"},
+            )
+
+        # delete() raised → the unguarded await bubbles up as HTTP 500
+        assert resp.status_code == 500

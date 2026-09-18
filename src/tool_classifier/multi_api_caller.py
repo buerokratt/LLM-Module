@@ -1,9 +1,11 @@
 """MultiAPICaller — concurrent batch execution of multiple API endpoints."""
 
 import asyncio
+import time
 from typing import Any
 
-from loguru import logger
+from src.loki_logger import LokiLogger
+from src.utils.error_utils import generate_error_id
 
 from tool_classifier.api_caller import APICaller
 from tool_classifier.constants import (
@@ -11,8 +13,9 @@ from tool_classifier.constants import (
     MULTI_API_PARTIAL_FAILURE_MESSAGES,
 )
 from tool_classifier.models import APICallResult, MultiAPICallResult
-from src.utils.error_utils import generate_error_id, log_error_with_context
 from llm_orchestrator_config.llm_ochestrator_constants import get_localized_message
+
+logger = LokiLogger(service_name="api-tool-calling")
 
 
 class MultiAPICaller:
@@ -71,6 +74,12 @@ class MultiAPICaller:
         if not endpoints:
             return MultiAPICallResult(results=[], endpoints=[])
 
+        logger.info(
+            f"MultiAPICaller: batch started | event_type=multi_api_batch_started"
+            f" endpoint_count={len(endpoints)} batch_timeout={self._batch_timeout}"
+        )
+        _t0 = time.time()
+
         tasks: list[asyncio.Task[APICallResult]] = [
             asyncio.create_task(
                 self._api_caller.call(
@@ -95,8 +104,8 @@ class MultiAPICaller:
         except asyncio.TimeoutError:
             pending = [t for t in tasks if not t.done()]
             logger.warning(
-                f"[MultiAPICaller] Batch timeout ({self._batch_timeout}s) — "
-                f"cancelling {len(pending)} pending task(s)"
+                f"MultiAPICaller: batch timeout | event_type=multi_api_batch_timeout"
+                f" pending_count={len(pending)} batch_timeout={self._batch_timeout}"
             )
             for task in pending:
                 task.cancel()
@@ -128,9 +137,18 @@ class MultiAPICaller:
         had_failure = any(not r.success for r in results)
         if had_failure:
             logger.warning(
-                "[MultiAPICaller] Partial failure: "
-                f"{sum(not r.success for r in results)}/{len(results)} call(s) failed"
+                f"MultiAPICaller: partial failure | event_type=multi_api_partial_failure"
+                f" failed_count={sum(not r.success for r in results)} total_count={len(results)}"
             )
+
+        _duration_ms = round((time.time() - _t0) * 1000, 1)
+        logger.info(
+            f"MultiAPICaller: batch completed | event_type=multi_api_batch_completed"
+            f" endpoint_count={len(endpoints)}"
+            f" success_count={sum(r.success for r in results)}"
+            f" failed_count={sum(not r.success for r in results)}"
+            f" duration_ms={_duration_ms}"
+        )
 
         return MultiAPICallResult(results=results, endpoints=endpoints)
 
@@ -155,16 +173,11 @@ class MultiAPICaller:
             # Assume any non-exception value is already an APICallResult.
             return item  # type: ignore[return-value]
         error_id = generate_error_id()
-        exc: Exception = (
-            item if isinstance(item, Exception) else RuntimeError(str(item))
-        )
-        log_error_with_context(
-            logger,
-            error_id,
-            "multi_api_task_exception",
-            None,
-            exc,
-            {},
+        exc_type = type(item).__name__
+        exc_msg = str(item)
+        logger.error(
+            f"MultiAPICaller: task exception | event_type=multi_api_task_exception"
+            f" error_id={error_id} exc_type={exc_type} exc_msg={exc_msg!r}"
         )
         return APICallResult(
             success=False,

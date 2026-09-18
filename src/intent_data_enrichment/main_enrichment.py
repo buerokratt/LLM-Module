@@ -14,12 +14,16 @@ import sys
 import json
 import argparse
 import asyncio
+
 from typing import List
-from loguru import logger
+from src.loki_logger import LokiLogger
 
 from intent_data_enrichment.models import ServiceData, EnrichedService, EnrichmentResult
 from intent_data_enrichment.api_client import LLMAPIClient
 from intent_data_enrichment.qdrant_manager import QdrantManager
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="intent-enrichment-main")
 
 # Import sparse encoder from tool_classifier (shared module)
 sys.path.insert(0, "/app/src")

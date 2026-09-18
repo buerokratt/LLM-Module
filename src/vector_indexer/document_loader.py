@@ -6,11 +6,14 @@ from pathlib import Path
 from typing import List
 from urllib.parse import urlparse
 
-from loguru import logger
+from loki_logger import LokiLogger
 
 from vector_indexer.config.config_loader import VectorIndexerConfig
 from vector_indexer.models import DocumentInfo, ProcessingDocument
 from vector_indexer.constants import DocumentConstants
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="document-loader")
 
 
 class DocumentLoadError(Exception):

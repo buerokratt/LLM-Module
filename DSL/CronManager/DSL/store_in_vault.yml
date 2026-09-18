@@ -2,4 +2,4 @@ store_secrets:
   trigger: off
   type: exec
   command: "/app/scripts/store_secrets_in_vault.sh"
-  allowedEnvs: ['cookie', 'connectionId','llmPlatform', 'llmModel','secretKey','accessKey','deploymentName','targetUrl','apiKey','embeddingModel','embeddingPlatform','embeddingAccessKey','embeddingSecretKey','embeddingDeploymentName','embeddingTargetUri','embeddingAzureApiKey','deploymentEnvironment']
+  allowedEnvs: ['cookie','vaultUuid','llmPlatform', 'llmModel','secretKey','accessKey','deploymentName','targetUrl','apiKey','embeddingModel','embeddingPlatform','embeddingAccessKey','embeddingSecretKey','embeddingDeploymentName','embeddingTargetUri','embeddingAzureApiKey','deploymentEnvironment', 'vaultAgentUrl']

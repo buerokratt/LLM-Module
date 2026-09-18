@@ -2,4 +2,4 @@ agency_data_resync:
   trigger: "0 0 0/1 * * ?"
   # trigger: off
   type: exec
-  command: "../app/scripts/agency_data_resync.sh -s 10"
+  command: "/app/scripts/agency_data_resync.sh -s 10"

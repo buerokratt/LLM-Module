@@ -1,11 +1,13 @@
 """API Tool Calling Workflow Executor — Layer 2 of the classification chain."""
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from typing import (
     TYPE_CHECKING,
     Any,
     AsyncIterator,
+    Coroutine,
     Dict,
     List,
     Literal,
@@ -15,14 +17,15 @@ from typing import (
     cast,
 )
 
-from loguru import logger
+from src.loki_logger import LokiLogger
 
+from llm_orchestrator_config.feature_flags import FeatureFlags
 from models.request_models import (
     OrchestrationRequest,
     OrchestrationResponse,
     TestOrchestrationResponse,
 )
-from models.session_models import APIToolSession, EndpointSessionState
+from models.session_models import APIToolSession, EndpointSessionState, LastCallContext
 from tool_classifier.agentic_loop import AgenticLoop
 from tool_classifier.api_caller import APICaller
 from tool_classifier.api_response_formatter import APIResponseFormatterModule
@@ -30,9 +33,16 @@ from tool_classifier.base_workflow import BaseWorkflow
 from tool_classifier.enums import AgenticLoopStatus, ExecutionMode
 from tool_classifier.param_extractor import ParamExtractionModule
 from utils.api_tool_session_store import APIToolSessionStore
+from utils.conversation_history_helpers import get_conversation_history
+from utils.conversation_history_store import ConversationHistoryStore
+from utils.atc_cache_store import ATCCacheStore
+from tool_classifier.constants import ATC_CACHE_DEFAULT_TTL_SECONDS
+from tool_classifier.follow_up_detector import FollowUpDetectorModule
 from tool_classifier.multi_agentic_loop import MultiEndpointAgenticLoop
 from tool_classifier.multi_api_caller import MultiAPICaller
 from tool_classifier.multi_response_formatter import MultiResponseFormatterModule
+
+logger = LokiLogger(service_name="api-tool-calling")
 
 if TYPE_CHECKING:
     from guardrails.nemo_rails_adapter import NeMoRailsAdapter
@@ -60,6 +70,14 @@ class OrchestrationServiceProtocol(Protocol):
         """Check output guardrails and return (possibly replaced) response."""
         ...
 
+    async def store_streaming_inference(
+        self,
+        request: OrchestrationRequest,
+        final_answer: str,
+    ) -> None:
+        """Store streaming inference data for production/testing environments."""
+        ...
+
 
 @dataclass
 class _LoopStep:
@@ -76,9 +94,13 @@ class _LoopStep:
                             Populates: ``question``, ``question_tokens``.
     * ``"fallback"``       — nothing to do; caller should fall back to RAG.
                             No additional fields are populated.
+    * ``"cached_response"`` — cache hit (L1 or L2); skip APICaller; format ``cached_raw_response``.
+                             Populates: ``endpoint``, ``cached_raw_response``, ``collected_params``, ``user_query``, ``cache_source``.
     """
 
-    kind: Literal["api_call", "multi_api_call", "question", "fallback"]
+    kind: Literal[
+        "api_call", "multi_api_call", "question", "fallback", "cached_response"
+    ]
     chat_id: str = ""
     endpoint: Dict[str, Any] = field(default_factory=dict)
     parallel_endpoints: List[EndpointSessionState] = field(default_factory=list)
@@ -88,6 +110,8 @@ class _LoopStep:
     question: str = ""
     question_tokens: List[str] = field(default_factory=list)
     custom_instructions: str = ""
+    cached_raw_response: Any = None
+    cache_source: str = "L1"
 
 
 class APIToolWorkflowExecutor(BaseWorkflow):
@@ -121,17 +145,39 @@ class APIToolWorkflowExecutor(BaseWorkflow):
             if orchestration_service is not None
             else None
         )
+        self._background_tasks: set[asyncio.Task[None]] = set()
 
     # ------------------------------------------------------------------
     # Internal helpers
 
     # ------------------------------------------------------------------
 
+    def _create_background_task(self, coro: Coroutine[Any, Any, None]) -> None:
+        """Keep fire-and-forget tasks alive until they finish."""
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._discard_background_task)
+
+    def _discard_background_task(self, task: asyncio.Task[None]) -> None:
+        """Remove a completed background task and log any uncaught exception."""
+        self._background_tasks.discard(task)
+        if task.cancelled():
+            return
+        exception = task.exception()
+        if exception is not None:
+            logger.warning(f"APIToolWorkflow: background task failed: {exception}")
+
     def _get_session_store(self) -> Optional[APIToolSessionStore]:
         """Return the session store from the orchestration service, or None."""
         if self.orchestration_service is None:
             return None
         return getattr(self.orchestration_service, "session_store", None)
+
+    def _get_conversation_history_store(self) -> Optional[ConversationHistoryStore]:
+        """Return the conversation history store from the orchestration service, or None."""
+        if self.orchestration_service is None:
+            return None
+        return getattr(self.orchestration_service, "conversation_history_store", None)
 
     def _get_guardrails_adapter(
         self, environment: str, connection_id: Optional[str] = None
@@ -222,6 +268,22 @@ class APIToolWorkflowExecutor(BaseWorkflow):
     def _required_params(params: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return [p for p in params if isinstance(p, dict) and p.get("required", False)]
 
+    @staticmethod
+    def _missing_required_params(
+        schema: List[Dict[str, Any]], collected: Dict[str, Any]
+    ) -> List[str]:
+        """Return names of required params from *schema* not yet present in *collected*."""
+        missing: list[str] = []
+        for p in schema:
+            if not isinstance(p, dict) or not p.get("required", False):
+                continue
+            name = p.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            if name not in collected:
+                missing.append(name)
+        return missing
+
     async def _execute_api_and_format(
         self,
         chat_id: str,
@@ -241,11 +303,33 @@ class APIToolWorkflowExecutor(BaseWorkflow):
         method = endpoint.get("method", "GET")
         description = endpoint.get("description", "")
 
+        # L1 cache check — collected_params is complete here, so the hash matches
+        # what was stored on the previous successful call with the same params.
+        if FeatureFlags.ATC_RESPONSE_CACHE_ENABLED and endpoint.get("cacheable", True):
+            _cache_store = ATCCacheStore()
+            _cached = await _cache_store.get_l1(
+                chat_id, endpoint.get("name", ""), collected_params
+            )
+            if _cached is not None:
+                logger.info(
+                    f"[{chat_id}] ATC cache: L1 hit for {endpoint.get('name')!r} "
+                    f"— skipping API call"
+                )
+                return await self._format_cached_response(
+                    chat_id=chat_id,
+                    endpoint=endpoint,
+                    user_query=user_query,
+                    detected_language=detected_language,
+                    cached_raw_response=_cached,
+                    collected_params=collected_params,
+                    custom_instructions=custom_instructions,
+                    cache_source="L1",
+                )
+
         logger.info(
             f"[{chat_id}] APIToolWorkflow: calling API "
             f"{method} {url} with params={list(collected_params.keys())}"
         )
-
         api_result = await self._api_caller.call(
             url=url,
             method=method,
@@ -258,6 +342,43 @@ class APIToolWorkflowExecutor(BaseWorkflow):
                 f"[{chat_id}] APIToolWorkflow: API call succeeded "
                 f"(status={api_result.status_code})"
             )
+            if FeatureFlags.ATC_RESPONSE_CACHE_ENABLED and endpoint.get(
+                "cacheable", True
+            ):
+                _ep_name = endpoint.get("name", "")
+                _ttl_override = endpoint.get("cache_ttl_seconds")
+                _ttl = (
+                    _ttl_override
+                    if isinstance(_ttl_override, int) and _ttl_override > 0
+                    else ATC_CACHE_DEFAULT_TTL_SECONDS
+                )
+                _resp_data = api_result.response_data
+
+                async def _write_l1_l2() -> None:
+                    try:
+                        _cs = ATCCacheStore()
+                        await _cs.set_l1(
+                            chat_id, _ep_name, collected_params, _resp_data, _ttl
+                        )
+                        await _cs.set_l2(
+                            chat_id,
+                            [
+                                LastCallContext(
+                                    api_name=_ep_name,
+                                    endpoint=endpoint,
+                                    collected_params=collected_params,
+                                    raw_response=_resp_data,
+                                    original_query=user_query,
+                                    timestamp=time.time(),
+                                )
+                            ],
+                        )
+                    except Exception as _exc:
+                        logger.warning(
+                            f"[{chat_id}] ATC cache: background write failed: {_exc}"
+                        )
+
+                self._create_background_task(_write_l1_l2())
             formatter = APIResponseFormatterModule(
                 custom_instructions=custom_instructions
             )
@@ -330,6 +451,48 @@ class APIToolWorkflowExecutor(BaseWorkflow):
             f"{sum(r.success for r in multi_result.results)}/{len(multi_result.results)} succeeded"
         )
 
+        _pairs = list(zip(parallel_endpoints, multi_result.results, strict=True))
+
+        if FeatureFlags.ATC_RESPONSE_CACHE_ENABLED:
+
+            async def _write_multi_cache() -> None:
+                try:
+                    _cs = ATCCacheStore()
+                    _ctxs: list[LastCallContext] = []
+                    for _state, _result in _pairs:
+                        if _result.success and _state.endpoint.get("cacheable", True):
+                            _ttl_override = _state.endpoint.get("cache_ttl_seconds")
+                            _ttl = (
+                                _ttl_override
+                                if isinstance(_ttl_override, int) and _ttl_override > 0
+                                else ATC_CACHE_DEFAULT_TTL_SECONDS
+                            )
+                            await _cs.set_l1(
+                                chat_id,
+                                _state.endpoint.get("name", ""),
+                                _state.collected_params,
+                                _result.response_data,
+                                _ttl,
+                            )
+                            _ctxs.append(
+                                LastCallContext(
+                                    api_name=_state.endpoint.get("name", ""),
+                                    endpoint=_state.endpoint,
+                                    collected_params=_state.collected_params,
+                                    raw_response=_result.response_data,
+                                    original_query=user_query,
+                                    timestamp=time.time(),
+                                )
+                            )
+                    if _ctxs:
+                        await _cs.set_l2(chat_id, _ctxs)
+                except Exception as _exc:
+                    logger.warning(
+                        f"[{chat_id}] ATC cache: background multi-write failed: {_exc}"
+                    )
+
+            self._create_background_task(_write_multi_cache())
+
         api_results = [
             (
                 state.endpoint.get("name", ""),
@@ -400,6 +563,48 @@ class APIToolWorkflowExecutor(BaseWorkflow):
             f"{sum(r.success for r in multi_result.results)}/{len(multi_result.results)} succeeded"
         )
 
+        _pairs = list(zip(parallel_endpoints, multi_result.results, strict=True))
+
+        if FeatureFlags.ATC_RESPONSE_CACHE_ENABLED:
+
+            async def _write_multi_cache() -> None:
+                try:
+                    _cs = ATCCacheStore()
+                    _ctxs: list[LastCallContext] = []
+                    for _state, _result in _pairs:
+                        if _result.success and _state.endpoint.get("cacheable", True):
+                            _ttl_override = _state.endpoint.get("cache_ttl_seconds")
+                            _ttl = (
+                                _ttl_override
+                                if isinstance(_ttl_override, int) and _ttl_override > 0
+                                else ATC_CACHE_DEFAULT_TTL_SECONDS
+                            )
+                            await _cs.set_l1(
+                                chat_id,
+                                _state.endpoint.get("name", ""),
+                                _state.collected_params,
+                                _result.response_data,
+                                _ttl,
+                            )
+                            _ctxs.append(
+                                LastCallContext(
+                                    api_name=_state.endpoint.get("name", ""),
+                                    endpoint=_state.endpoint,
+                                    collected_params=_state.collected_params,
+                                    raw_response=_result.response_data,
+                                    original_query=user_query,
+                                    timestamp=time.time(),
+                                )
+                            )
+                    if _ctxs:
+                        await _cs.set_l2(chat_id, _ctxs)
+                except Exception as _exc:
+                    logger.warning(
+                        f"[{chat_id}] ATC cache: background multi-write failed: {_exc}"
+                    )
+
+            self._create_background_task(_write_multi_cache())
+
         api_results = [
             (
                 state.endpoint.get("name", ""),
@@ -425,6 +630,7 @@ class APIToolWorkflowExecutor(BaseWorkflow):
         ]
 
         full_response = "".join(buffered_tokens)
+        final_answer = full_response  # Track what gets sent to user
 
         guardrails_passed = True
         if orchestration_service is not None:
@@ -451,12 +657,14 @@ class APIToolWorkflowExecutor(BaseWorkflow):
                         f"parallel output blocked by guardrails"
                     )
                     yield orchestration_service.format_sse(chat_id, checked.content)
+                    final_answer = checked.content
                     guardrails_passed = False
 
         if guardrails_passed:
             for token in buffered_tokens:
                 yield orchestration_service.format_sse(chat_id, token)
 
+        await orchestration_service.store_streaming_inference(request, final_answer)
         yield orchestration_service.format_sse(chat_id, "END")
 
     # ------------------------------------------------------------------
@@ -537,6 +745,159 @@ class APIToolWorkflowExecutor(BaseWorkflow):
 
             params_schema: List[Dict[str, Any]] = endpoint.get("params", [])
 
+            # L1 + L2 cache checks — single-mode new queries only; both guarded by
+            # the ATC_RESPONSE_CACHE_ENABLED kill-switch.
+            if (
+                FeatureFlags.ATC_RESPONSE_CACHE_ENABLED
+                and not all_matched
+                and endpoint.get("cacheable", True)
+            ):
+                _cache_store = ATCCacheStore()
+
+                # ── L1: exact param-hash hit ─────────────────────────────────
+                _cached = await _cache_store.get_l1(
+                    chat_id,
+                    endpoint.get("name", ""),
+                    context.get("pre_extracted_params", {}),
+                )
+                if _cached is not None:
+                    logger.info(
+                        f"[{chat_id}] ATC cache: L1 hit for {endpoint.get('name')!r}"
+                    )
+                    return _LoopStep(
+                        kind="cached_response",
+                        chat_id=chat_id,
+                        endpoint=endpoint,
+                        cached_raw_response=_cached,
+                        detected_language=getattr(request, "_detected_language", "en"),
+                        user_query=request.message,
+                        custom_instructions=custom_instructions,
+                        collected_params=context.get("pre_extracted_params", {}),
+                    )
+
+                # ── L2: follow-up routing based on last call context ─────────
+                _last_calls = await _cache_store.get_l2(chat_id)
+                if _last_calls:
+                    _matching = next(
+                        (c for c in _last_calls if c.api_name == endpoint.get("name")),
+                        None,
+                    )
+                    if _matching is not None:
+                        try:
+                            _detector = FollowUpDetectorModule()
+                            _det_result = await asyncio.to_thread(
+                                _detector.forward,
+                                user_query=request.message,
+                                previous_query=_matching.original_query,
+                                previous_params=_matching.collected_params,
+                                params_schema=endpoint.get("params", []),
+                            )
+                            if _det_result["follow_up_type"] == "response_question":
+                                logger.info(
+                                    f"[{chat_id}] ATC cache: L2 follow-up — response_question"
+                                )
+                                return _LoopStep(
+                                    kind="cached_response",
+                                    chat_id=chat_id,
+                                    endpoint=endpoint,
+                                    cached_raw_response=_matching.raw_response,
+                                    detected_language=getattr(
+                                        request, "_detected_language", "en"
+                                    ),
+                                    user_query=request.message,
+                                    custom_instructions=custom_instructions,
+                                    cache_source="L2",
+                                    collected_params=_matching.collected_params,
+                                )
+                            elif _det_result["follow_up_type"] == "param_update":
+                                _updated = _det_result["updated_params"]
+                                _merged = {**_matching.collected_params, **_updated}
+                                _missing = self._missing_required_params(
+                                    endpoint.get("params", []), _merged
+                                )
+                                if not _missing:
+                                    # If the merged params are identical to the previous
+                                    # call's params (e.g. no genuine new params survived
+                                    # schema validation), the user is re-requesting the
+                                    # same data → serve from L2 directly without an API
+                                    # call or L1 lookup.
+                                    if ATCCacheStore._param_hash(
+                                        _merged
+                                    ) == ATCCacheStore._param_hash(
+                                        _matching.collected_params
+                                    ):
+                                        # Params unchanged — prefer L1 (exact hash hit
+                                        # with the actual previously-collected params).
+                                        # L1 uses a TTL so it may have expired; fall
+                                        # back to L2 raw_response in that case.
+                                        _l1_data = await _cache_store.get_l1(
+                                            chat_id,
+                                            endpoint.get("name", ""),
+                                            _matching.collected_params,
+                                        )
+                                        if _l1_data is not None:
+                                            logger.info(
+                                                f"[{chat_id}] ATC cache: L2 follow-up — param_update "
+                                                f"(params unchanged), L1 hit — serving from L1"
+                                            )
+                                            return _LoopStep(
+                                                kind="cached_response",
+                                                chat_id=chat_id,
+                                                endpoint=endpoint,
+                                                cached_raw_response=_l1_data,
+                                                detected_language=getattr(
+                                                    request, "_detected_language", "en"
+                                                ),
+                                                user_query=request.message,
+                                                custom_instructions=custom_instructions,
+                                                cache_source="L1",
+                                                collected_params=_matching.collected_params,
+                                            )
+                                        logger.info(
+                                            f"[{chat_id}] ATC cache: L2 follow-up — param_update "
+                                            f"(params unchanged), L1 miss — serving from L2"
+                                        )
+                                        return _LoopStep(
+                                            kind="cached_response",
+                                            chat_id=chat_id,
+                                            endpoint=endpoint,
+                                            cached_raw_response=_matching.raw_response,
+                                            detected_language=getattr(
+                                                request, "_detected_language", "en"
+                                            ),
+                                            user_query=request.message,
+                                            custom_instructions=custom_instructions,
+                                            cache_source="L2",
+                                            collected_params=_matching.collected_params,
+                                        )
+                                    logger.info(
+                                        f"[{chat_id}] ATC cache: L2 follow-up — param_update "
+                                        f"(all params present), calling API directly"
+                                    )
+                                    return _LoopStep(
+                                        kind="api_call",
+                                        chat_id=chat_id,
+                                        endpoint=endpoint,
+                                        collected_params=_merged,
+                                        detected_language=getattr(
+                                            request, "_detected_language", "en"
+                                        ),
+                                        user_query=request.message,
+                                        custom_instructions=custom_instructions,
+                                    )
+                                else:
+                                    logger.info(
+                                        f"[{chat_id}] ATC cache: L2 follow-up — param_update "
+                                        f"(missing: {_missing}), seeding agentic loop"
+                                    )
+                                    context["seeded_params"] = _merged
+                            # new_intent → fall through to normal agentic-loop path
+                        except Exception as _exc:
+                            logger.warning(
+                                f"[{chat_id}] ATC cache: L2 follow-up detection failed: "
+                                f"{_exc} — falling through to normal path"
+                            )
+
             # Fast path — skip the agentic loop when no required params need collecting.
             # user_query falls back to request.message on the fast path because no session
             # exists yet (original_query is only stored once a session is created).
@@ -578,12 +939,13 @@ class APIToolWorkflowExecutor(BaseWorkflow):
                 )
 
             # Create a new session before running the first loop turn
+            _seeded_params = context.get("seeded_params", {})
             if session_store is not None:
                 new_session = APIToolSession(
                     chat_id=chat_id,
                     state="collecting_params",
                     selected_endpoint=endpoint,
-                    collected_params={},
+                    collected_params=_seeded_params,
                     turn_count=0,
                     max_turns=5,
                     awaiting_continuation=False,
@@ -607,7 +969,7 @@ class APIToolWorkflowExecutor(BaseWorkflow):
                     chat_id=chat_id,
                     state="collecting_params",
                     selected_endpoint=endpoint,
-                    collected_params={},
+                    collected_params=_seeded_params,
                     turn_count=0,
                     max_turns=5,
                     awaiting_continuation=False,
@@ -637,14 +999,34 @@ class APIToolWorkflowExecutor(BaseWorkflow):
             or session.detected_language
         )
 
-        conversation_history_for_loop = (
-            []
-            if session.turn_count == 0
-            else [
+        _atc_conversation_summary: Optional[str] = None
+        conversation_history_for_loop: List[Dict[str, Any]]
+        if session.turn_count == 0:
+            # On the first ATC turn there is no prior ATC exchange to pass.
+            conversation_history_for_loop = []
+        else:
+            # On subsequent turns prefer Redis as the authoritative history source.
+            _redis_history, _atc_conversation_summary = await get_conversation_history(
+                chat_id=chat_id,
+                store=self._get_conversation_history_store(),
+                fallback=list(request.conversationHistory or []),
+            )
+            conversation_history_for_loop = [
                 {"authorRole": item.authorRole, "message": item.message}
-                for item in (request.conversationHistory or [])
+                for item in _redis_history
             ]
-        )
+
+        # Incorporate any Redis-supplied conversation summary into custom_instructions
+        # so the param extractor and response formatter have full conversational context.
+        if _atc_conversation_summary:
+            _summary_prefix = (
+                f"Summary of earlier conversation: {_atc_conversation_summary}"
+            )
+            custom_instructions = (
+                f"{_summary_prefix}\n\n{custom_instructions}".strip()
+                if custom_instructions
+                else _summary_prefix
+            )
 
         if session.execution_mode == ExecutionMode.PARALLEL.value:
             # Parallel path: MultiEndpointAgenticLoop operates on the full
@@ -717,6 +1099,7 @@ class APIToolWorkflowExecutor(BaseWorkflow):
             max_turns=session.max_turns,
             awaiting_continuation=session.awaiting_continuation,
             session_language=effective_session_language,
+            seeded_params=context.get("seeded_params"),
         )
 
         if result.status == AgenticLoopStatus.COMPLETED:
@@ -757,6 +1140,117 @@ class APIToolWorkflowExecutor(BaseWorkflow):
             custom_instructions=custom_instructions,
         )
 
+    async def _format_cached_response(
+        self,
+        chat_id: str,
+        endpoint: Dict[str, Any],
+        user_query: str,
+        detected_language: str,
+        cached_raw_response: Any,
+        collected_params: Dict[str, Any],
+        custom_instructions: str = "",
+        cache_source: str = "L1",
+    ) -> OrchestrationResponse:
+        """Format a cached API response without calling the external API.
+
+        Used when a cache hit (L1 or L2) is detected for a matched endpoint.
+        Runs the raw response through APIResponseFormatterModule, bypassing APICaller.
+        The collected_params are passed to the formatter to maintain query context consistency.
+        """
+        description = endpoint.get("description", "")
+        logger.info(
+            f"[{chat_id}] ATC cache: formatting {cache_source} hit for {endpoint.get('name')!r}"
+        )
+        formatter = APIResponseFormatterModule(custom_instructions=custom_instructions)
+        content = await asyncio.to_thread(
+            formatter.forward,
+            user_query=user_query,
+            api_response=cached_raw_response,
+            endpoint_description=description,
+            detected_language=detected_language,
+            collected_params=collected_params,
+        )
+        return OrchestrationResponse(
+            chatId=chat_id,
+            llmServiceActive=True,
+            questionOutOfLLMScope=False,
+            inputGuardFailed=False,
+            content=content,
+        )
+
+    async def _stream_cached_response(
+        self,
+        chat_id: str,
+        endpoint: Dict[str, Any],
+        user_query: str,
+        detected_language: str,
+        cached_raw_response: Any,
+        collected_params: Dict[str, Any],
+        orchestration_service: OrchestrationServiceProtocol,
+        request: OrchestrationRequest,
+        costs_metric: Optional[Dict[str, Any]] = None,
+        custom_instructions: str = "",
+        cache_source: str = "L1",
+    ) -> AsyncIterator[str]:
+        """Stream a cached API response without calling the external API.
+
+        Used when a cache hit (L1 or L2) is detected for a matched endpoint.
+        Runs the raw response through APIResponseFormatterModule streaming, bypassing APICaller.
+        The collected_params are passed to the formatter to maintain query context consistency.
+        """
+        description = endpoint.get("description", "")
+        logger.info(
+            f"[{chat_id}] ATC cache: streaming {cache_source} hit for {endpoint.get('name')!r}"
+        )
+        formatter = APIResponseFormatterModule(custom_instructions=custom_instructions)
+        buffered_tokens = [
+            token
+            async for token in formatter.stream_forward(
+                user_query=user_query,
+                api_response=cached_raw_response,
+                endpoint_description=description,
+                detected_language=detected_language,
+                collected_params=collected_params,
+            )
+        ]
+
+        full_response = "".join(buffered_tokens)
+        final_answer = full_response  # Track what gets sent to user
+
+        guardrails_passed = True
+        if orchestration_service is not None:
+            guardrails_adapter = self._get_guardrails_adapter(
+                request.environment, request.connection_id
+            )
+            if guardrails_adapter is not None:
+                dummy_response = OrchestrationResponse(
+                    chatId=chat_id,
+                    llmServiceActive=True,
+                    questionOutOfLLMScope=False,
+                    inputGuardFailed=False,
+                    content=full_response,
+                )
+                checked = await orchestration_service.handle_output_guardrails(
+                    guardrails_adapter,
+                    dummy_response,
+                    request,
+                    costs_metric if costs_metric is not None else {},
+                )
+                if checked.content != full_response:
+                    logger.warning(
+                        f"[{chat_id}] ATC cache: streaming {cache_source} hit blocked by guardrails"
+                    )
+                    yield orchestration_service.format_sse(chat_id, checked.content)
+                    final_answer = checked.content
+                    guardrails_passed = False
+
+        if guardrails_passed:
+            for token in buffered_tokens:
+                yield orchestration_service.format_sse(chat_id, token)
+
+        await orchestration_service.store_streaming_inference(request, final_answer)
+        yield orchestration_service.format_sse(chat_id, "END")
+
     async def _run(
         self,
         request: OrchestrationRequest,
@@ -779,6 +1273,34 @@ class APIToolWorkflowExecutor(BaseWorkflow):
                 user_query=step.user_query,
                 detected_language=step.detected_language,
                 custom_instructions=step.custom_instructions,
+            )
+            if response.llmServiceActive and self.orchestration_service is not None:
+                guardrails_adapter = self._get_guardrails_adapter(
+                    request.environment, request.connection_id
+                )
+                if guardrails_adapter is not None:
+                    response = cast(
+                        OrchestrationResponse,
+                        await self.orchestration_service.handle_output_guardrails(
+                            guardrails_adapter,
+                            response,
+                            request,
+                            {},
+                        ),
+                    )
+            return response
+
+        # cached_response — cache hit (L1 or L2): skip APICaller, format cached data
+        if step.kind == "cached_response":
+            response = await self._format_cached_response(
+                chat_id=step.chat_id,
+                endpoint=step.endpoint,
+                user_query=step.user_query,
+                detected_language=step.detected_language,
+                collected_params=step.collected_params,
+                custom_instructions=step.custom_instructions,
+                cached_raw_response=step.cached_raw_response,
+                cache_source=step.cache_source,
             )
             if response.llmServiceActive and self.orchestration_service is not None:
                 guardrails_adapter = self._get_guardrails_adapter(
@@ -857,11 +1379,38 @@ class APIToolWorkflowExecutor(BaseWorkflow):
         method = endpoint.get("method", "GET")
         description = endpoint.get("description", "")
 
+        # L1 cache check — collected_params is complete here, so the hash matches
+        # what was stored on the previous successful call with the same params.
+        if FeatureFlags.ATC_RESPONSE_CACHE_ENABLED and endpoint.get("cacheable", True):
+            _cache_store = ATCCacheStore()
+            _cached = await _cache_store.get_l1(
+                chat_id, endpoint.get("name", ""), collected_params
+            )
+            if _cached is not None:
+                logger.info(
+                    f"[{chat_id}] ATC cache: L1 hit for {endpoint.get('name')!r} "
+                    f"— skipping API call (streaming)"
+                )
+                async for token in self._stream_cached_response(
+                    chat_id=chat_id,
+                    endpoint=endpoint,
+                    user_query=user_query,
+                    detected_language=detected_language,
+                    cached_raw_response=_cached,
+                    collected_params=collected_params,
+                    orchestration_service=orchestration_service,
+                    request=request,
+                    costs_metric=costs_metric,
+                    custom_instructions=custom_instructions,
+                    cache_source="L1",
+                ):
+                    yield token
+                return
+
         logger.info(
             f"[{chat_id}] APIToolWorkflow (streaming): calling API "
             f"{method} {url} with params={list(collected_params.keys())}"
         )
-
         api_result = await self._api_caller.call(
             url=url,
             method=method,
@@ -874,6 +1423,43 @@ class APIToolWorkflowExecutor(BaseWorkflow):
                 f"[{chat_id}] APIToolWorkflow (streaming): API call succeeded "
                 f"(status={api_result.status_code}), streaming formatted response"
             )
+            if FeatureFlags.ATC_RESPONSE_CACHE_ENABLED and endpoint.get(
+                "cacheable", True
+            ):
+                _ep_name = endpoint.get("name", "")
+                _ttl_override = endpoint.get("cache_ttl_seconds")
+                _ttl = (
+                    _ttl_override
+                    if isinstance(_ttl_override, int) and _ttl_override > 0
+                    else ATC_CACHE_DEFAULT_TTL_SECONDS
+                )
+                _resp_data = api_result.response_data
+
+                async def _write_l1_l2() -> None:
+                    try:
+                        _cs = ATCCacheStore()
+                        await _cs.set_l1(
+                            chat_id, _ep_name, collected_params, _resp_data, _ttl
+                        )
+                        await _cs.set_l2(
+                            chat_id,
+                            [
+                                LastCallContext(
+                                    api_name=_ep_name,
+                                    endpoint=endpoint,
+                                    collected_params=collected_params,
+                                    raw_response=_resp_data,
+                                    original_query=user_query,
+                                    timestamp=time.time(),
+                                )
+                            ],
+                        )
+                    except Exception as _exc:
+                        logger.warning(
+                            f"[{chat_id}] ATC cache: background write failed: {_exc}"
+                        )
+
+                self._create_background_task(_write_l1_l2())
             # Buffer all tokens first, then validate with output guardrails before
             # streaming to the client (validate-first approach).
             formatter = APIResponseFormatterModule(
@@ -891,6 +1477,7 @@ class APIToolWorkflowExecutor(BaseWorkflow):
             ]
 
             full_response = "".join(buffered_tokens)
+            final_answer_to_store = full_response  # Track what gets sent to user
 
             # Run output guardrails on the complete response
             guardrails_passed = True
@@ -920,6 +1507,7 @@ class APIToolWorkflowExecutor(BaseWorkflow):
                             f"output blocked by guardrails"
                         )
                         yield orchestration_service.format_sse(chat_id, checked.content)
+                        final_answer_to_store = checked.content
                         guardrails_passed = False
 
             if guardrails_passed:
@@ -930,8 +1518,12 @@ class APIToolWorkflowExecutor(BaseWorkflow):
                 f"[{chat_id}] APIToolWorkflow (streaming): API call failed "
                 f"(status={api_result.status_code}, error={api_result.error!r})"
             )
+            final_answer_to_store = api_result.error or ""
             yield orchestration_service.format_sse(chat_id, api_result.error or "")
 
+        await orchestration_service.store_streaming_inference(
+            request, final_answer_to_store
+        )
         yield orchestration_service.format_sse(chat_id, "END")
 
     async def execute_streaming(
@@ -964,8 +1556,14 @@ class APIToolWorkflowExecutor(BaseWorkflow):
         if step.kind == "question":
 
             async def _stream_question() -> AsyncIterator[str]:
+                accumulated_question: list[str] = []
                 for token in step.question_tokens or [step.question]:
+                    accumulated_question.append(token)
                     yield orchestration_service.format_sse(step.chat_id, token)
+                full_question = "".join(accumulated_question)
+                await orchestration_service.store_streaming_inference(
+                    request, full_question
+                )
                 yield orchestration_service.format_sse(step.chat_id, "END")
 
             return _stream_question()
@@ -981,6 +1579,22 @@ class APIToolWorkflowExecutor(BaseWorkflow):
                 request=request,
                 costs_metric=context.get("costs_metric"),
                 custom_instructions=step.custom_instructions,
+            )
+
+        # cached_response — cache hit (L1 or L2): skip APICaller, stream formatted cached data
+        if step.kind == "cached_response":
+            return self._stream_cached_response(
+                chat_id=step.chat_id,
+                endpoint=step.endpoint,
+                user_query=step.user_query,
+                detected_language=step.detected_language,
+                collected_params=step.collected_params,
+                cached_raw_response=step.cached_raw_response,
+                orchestration_service=orchestration_service,
+                request=request,
+                costs_metric=context.get("costs_metric"),
+                custom_instructions=step.custom_instructions,
+                cache_source=step.cache_source,
             )
 
         # api_call — stream the LLM-formatted answer token by token

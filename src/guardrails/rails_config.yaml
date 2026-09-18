@@ -23,7 +23,11 @@ rails:
     streaming:
       enabled: True
       chunk_size: 200
-      context_size: 300
+      # context_size MUST be < chunk_size. NeMo's RollingBuffer drains with
+      # buffer[-context_size:]; if context_size >= chunk_size the buffer never
+      # shrinks below the flush threshold and every subsequent token triggers its
+      # own self_check_output LLM call. 50 is the NeMo default.
+      context_size: 50
       stream_first: False
 
 prompts:

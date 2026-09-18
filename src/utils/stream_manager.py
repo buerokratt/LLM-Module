@@ -4,12 +4,15 @@ from typing import Dict, Optional, Any, AsyncIterator
 from datetime import datetime
 from contextlib import asynccontextmanager
 import asyncio
-from loguru import logger
+from src.loki_logger import LokiLogger
 from pydantic import BaseModel, Field, ConfigDict
 
 from src.llm_orchestrator_config.stream_config import StreamConfig
 from src.llm_orchestrator_config.exceptions import StreamError
 from src.utils.error_utils import generate_error_id
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="stream-manager")
 
 
 class StreamContext(BaseModel):

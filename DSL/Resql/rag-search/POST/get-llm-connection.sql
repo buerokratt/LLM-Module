@@ -1,5 +1,6 @@
 SELECT 
     id,
+    vault_uuid,
     connection_name,
     llm_platform,
     llm_model,

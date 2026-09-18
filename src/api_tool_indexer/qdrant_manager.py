@@ -4,7 +4,8 @@ for the api_tool_collection used by the API Tool Calling workflow.
 
 import uuid
 from typing import Any, Dict, List, Optional
-from loguru import logger
+
+from src.loki_logger import LokiLogger
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -21,6 +22,8 @@ from qdrant_client.models import (
 
 from api_tool_indexer.constants import ApiToolIndexerConstants
 from api_tool_indexer.models import EnrichedEndpoint
+
+logger = LokiLogger(service_name="api-tool-calling")
 
 # Error messages
 _CLIENT_NOT_INITIALIZED = "Qdrant client not initialized"
@@ -218,7 +221,8 @@ class ApiToolQdrantManager:
 
         Payload fields stored on every point:
             endpoint_id, name, description, url, method, params,
-            enriched_context, service_id, point_type, example_text (example only)
+            enriched_context, service_id, point_type, cacheable,
+            cache_ttl_seconds, example_text (example only)
 
         Args:
             enriched_points: List of EnrichedEndpoint instances (examples + summary).
@@ -256,6 +260,8 @@ class ApiToolQdrantManager:
                     "enriched_context": enriched.enriched_context,
                     "service_id": enriched.service_id,
                     "point_type": enriched.point_type,
+                    "cacheable": enriched.cacheable,
+                    "cache_ttl_seconds": enriched.cache_ttl_seconds,
                 }
                 if enriched.example_text is not None:
                     payload["example_text"] = enriched.example_text

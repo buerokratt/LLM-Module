@@ -1,7 +1,7 @@
 {
   "id": null,
   "title": "RAG Module Orchestrator",
-  "tags": ["deployment", "models", "triton"],
+  "tags": ["rag-module", "loki-logs", "llm-orchestration", "vector-search"],
   "timezone": "browser",
   "refresh": "30s",
   "time": {
@@ -15,7 +15,7 @@
         "type": "query",
         "label": "Service Name",
         "refresh": 1,
-        "query": "label_values(service)",
+        "query": "label_values({}, service)",
         "datasource": {
           "type": "loki",
           "uid": "loki-datasource"

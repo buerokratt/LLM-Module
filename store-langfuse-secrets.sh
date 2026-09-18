@@ -92,13 +92,16 @@ echo "  Host: $LANGFUSE_HOST"
 
 # Update Vault policy to include Langfuse secrets access
 echo ""
-echo "Updating llm-orchestration policy to include Langfuse secrets..."
-POLICY='path "secret/metadata/llm/*" { capabilities = ["list", "delete"] }
-path "secret/data/llm/*" { capabilities = ["create", "read", "update", "delete"] }
-path "secret/metadata/embeddings/*" { capabilities = ["list", "delete"] }
-path "secret/data/embeddings/*" { capabilities = ["create", "read", "update", "delete"] }
-path "secret/metadata/langfuse/*" { capabilities = ["list", "delete"] }
-path "secret/data/langfuse/*" { capabilities = ["create", "read", "update", "delete"] }
+echo "Updating llm-orchestration-policy to include Langfuse secrets..."
+# Preserve the production policy paths (see vault-init.sh) and add Langfuse read.
+# This is a full overwrite of the policy, so the existing grants must be repeated.
+POLICY='path "secret/data/llm/connections/*" { capabilities = ["read", "list"] }
+path "secret/metadata/llm/connections/*" { capabilities = ["read", "list"] }
+path "secret/data/embeddings/connections/*" { capabilities = ["read", "list"] }
+path "secret/metadata/embeddings/connections/*" { capabilities = ["read", "list"] }
+path "secret/data/encryption/*" { capabilities = ["deny"] }
+path "secret/data/langfuse/*" { capabilities = ["read"] }
+path "secret/metadata/langfuse/*" { capabilities = ["read", "list"] }
 path "auth/token/lookup-self" { capabilities = ["read"] }'
 
 # Create JSON without jq (using printf for proper escaping)
@@ -108,10 +111,12 @@ POLICY_JSON='{"policy":"'"$POLICY_ESCAPED"'"}'
 if wget -q -O- --post-data="$POLICY_JSON" \
     --header="X-Vault-Token: $ROOT_TOKEN" \
     --header='Content-Type: application/json' \
-    "$VAULT_ADDR/v1/sys/policies/acl/llm-orchestration" >/dev/null 2>&1; then
+    "$VAULT_ADDR/v1/sys/policies/acl/llm-orchestration-policy" >/dev/null 2>&1; then
     echo "Policy updated successfully"
 else
-    echo "Warning: Policy update failed (may already be updated)"
+    echo "Error: Failed to update llm-orchestration-policy"
+    echo "  Langfuse secrets would be stored but the agent would be denied access."
+    exit 1
 fi
 
 # Store Langfuse secrets in Vault

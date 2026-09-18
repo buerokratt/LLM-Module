@@ -7,12 +7,13 @@ metadata:
 data:
   constants.ini: |
     [DSL]
-    RAG_SEARCH_RUUTER_PUBLIC=http://ruuter-public:8086/rag-search
-    RAG_SEARCH_RUUTER_PRIVATE=http://ruuter-private:8088/rag-search
-    RAG_SEARCH_DMAPPER=http://data-mapper:3000
+    RAG_SEARCH_RUUTER_PUBLIC=http://ruuter-public:8086
+    RAG_SEARCH_RUUTER_PRIVATE=http://ruuter-private:8088
+    RAG_SEARCH_DMAPPER=http://data-mapper:3001
     RAG_SEARCH_RESQL=http://resql:8082/rag-search
     RAG_SEARCH_PROJECT_LAYER=rag-search
     RAG_SEARCH_TIM=http://tim:8085
     RAG_SEARCH_CRON_MANAGER=http://cron-manager:9010
     RAG_SEARCH_LLM_ORCHESTRATOR=http://llm-orchestration-service:8100/orchestrate
     DOMAIN=localhost
+    DB_PASSWORD=dbadmin

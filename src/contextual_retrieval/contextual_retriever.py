@@ -11,10 +11,11 @@ Achieves 49% improvement in retrieval accuracy.
 """
 
 from typing import List, Dict, Any, Optional, Union, TYPE_CHECKING
-from loguru import logger
+from src.loki_logger import LokiLogger
 import asyncio
 import time
 from langfuse import observe
+
 from contextual_retrieval.config import ConfigLoader, ContextualRetrievalConfig
 
 # Type checking import to avoid circular dependency at runtime
@@ -25,6 +26,9 @@ from contextual_retrieval.qdrant_search import QdrantContextualSearch
 
 from contextual_retrieval.bm25_search import SmartBM25Search
 from contextual_retrieval.rank_fusion import DynamicRankFusion
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="contextual-retriever")
 
 
 class ContextualRetriever:

@@ -4,7 +4,7 @@ import os
 import threading
 from pathlib import Path
 from typing import Optional, Dict, Any, cast
-from loguru import logger
+from src.loki_logger import LokiLogger
 import hvac
 from hvac.exceptions import InvalidPath, Forbidden
 
@@ -13,6 +13,9 @@ from llm_orchestrator_config.vault.exceptions import (
     VaultSecretError,
     VaultTokenError,
 )
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="vault-client")
 
 # Global singleton instance
 _vault_client_instance: Optional["VaultAgentClient"] = None

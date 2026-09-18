@@ -39,6 +39,21 @@ class EndpointData(BaseModel):
     )
     visibility: str = Field(default="private", description="public or private")
     type: str = Field(default="custom_endpoint", description="Endpoint type")
+    cacheable: bool = Field(
+        default=True,
+        description=(
+            "Set False for endpoints returning sensitive/personal data "
+            "(e.g. document status). Disables all L1/L2 cache writes."
+        ),
+    )
+    cache_ttl_seconds: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Per-endpoint L1 TTL override in seconds. "
+            "None = use ATC_CACHE_DEFAULT_TTL_SECONDS."
+        ),
+    )
 
 
 class EnrichedEndpoint(BaseModel):
@@ -68,6 +83,22 @@ class EnrichedEndpoint(BaseModel):
         ..., description="LLM-generated rich context for better semantic matching"
     )
     service_id: Optional[str] = Field(default=None, description="Parent service UUID")
+
+    cacheable: bool = Field(
+        default=True,
+        description=(
+            "Propagated from EndpointData. False disables all L1/L2 cache writes "
+            "for this endpoint at query time."
+        ),
+    )
+    cache_ttl_seconds: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Per-endpoint L1 TTL override propagated from EndpointData. "
+            "None = use ATC_CACHE_DEFAULT_TTL_SECONDS."
+        ),
+    )
 
     # Point type — controls which text was embedded for this point
     point_type: str = Field(

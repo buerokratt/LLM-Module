@@ -18,6 +18,7 @@ import { llmConnectionsQueryKeys } from 'utils/queryKeys';
 import { useToast } from 'hooks/useToast';
 import { ToastTypes } from 'enums/commonEnums';
 import useStore from 'store';
+import { getAllLLMModels, getLLMPlatforms } from 'services/llmConfigs';
 
 const LLMConnections: FC = () => {
   const { t } = useTranslation();
@@ -49,6 +50,17 @@ const LLMConnections: FC = () => {
   });
 
 
+    // Fetch platform and model options from API
+  const { data: llmPlatformsData = [], isLoading: llmPlatformsLoading, error: llmPlatformsError } = useQuery({
+      queryKey: ['llm-platforms'],
+      queryFn: getLLMPlatforms
+    });
+
+  const { data: llmModels= [], isLoading: llmModelsLoading, error: llmModelsError } = useQuery({
+      queryKey: ['llm-models'],
+      queryFn: getAllLLMModels,
+    });
+  
   const llmConnections = connectionsResponse;
   const totalPages = connectionsResponse?.[0]?.totalPages || 1;
 
@@ -107,21 +119,21 @@ const LLMConnections: FC = () => {
       setPageIndex(1);
     }
   };
-
-  // Platform filter options
+  
   const platformOptions = [
     { label: t('dataModels.filters.allPlatforms'), value: 'all' },
-    { label: t('dataModels.platforms.azure'), value: 'azure' },
-    { label: t('dataModels.platforms.aws'), value: 'aws' },
+    ...llmPlatformsData.map((platform) => ({
+      label: platform.label,
+      value: platform.value,
+    })),
   ];
 
-  // LLM Model filter options - these would ideally come from an API
   const llmModelOptions = [
     { label: t('dataModels.filters.allModels'), value: 'all' },
-    { label: t('dataModels.models.gpt4Mini'), value: 'gpt-4o-mini' },
-    { label: t('dataModels.models.gpt4o'), value: 'gpt-4o' },
-    { label: t('dataModels.models.claude35Sonnet'), value: 'anthropic-claude-3.5-sonnet' },
-    { label: t('dataModels.models.claude37Sonnet'), value: 'anthropic-claude-3.7-sonnet' },
+    ...llmModels.map((model) => ({
+      label: model.label,
+      value: model.value,
+    })),
   ];
 
   // Environment filter options

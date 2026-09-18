@@ -5,7 +5,10 @@ Uses DSPy's native LLM judge for semantic evaluation of refinements.
 
 from typing import Any, Dict, List
 import dspy
-from loguru import logger
+from src.loki_logger import LokiLogger
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="refiner-metrics")
 
 
 class RefinementJudge(dspy.Signature):

@@ -6,9 +6,26 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 import dspy
-from loguru import logger
+from src.loki_logger import LokiLogger
 
+from src.utils.cost_utils import get_lm_usage_since
+from src.utils.observation_utils import safe_observation_context
 from tool_classifier.constants import MULTI_API_MAX_ENDPOINTS
+
+logger = LokiLogger(service_name="api-tool-calling")
+
+
+def _get_current_model_name() -> str:
+    """Best-effort model name lookup from current DSPy LM."""
+    try:
+        lm = dspy.settings.lm
+        if lm and hasattr(lm, "model"):
+            model_name = lm.model
+            if isinstance(model_name, str) and model_name:
+                return model_name
+    except Exception:
+        pass
+    return "unknown"
 
 
 @dataclass
@@ -26,6 +43,9 @@ class DecompositionResult:
 
     mode: str
     sub_queries: list[str] = field(default_factory=list)
+
+    def set_lm_usage(self, *args: object, **kwargs: object) -> None:
+        """No-op stub for DSPy's internal Langfuse callback compatibility."""
 
 
 class IntentDecompositionSignature(dspy.Signature):
@@ -154,7 +174,42 @@ class IntentDecomposerModule(dspy.Module):
         Returns:
             DecompositionResult with mode and sub_queries.
         """
-        result = cast(DecompositionResult, await asyncio.to_thread(self, user_query))
+        history_length_before = 0
+        try:
+            lm = dspy.settings.lm
+            if lm and hasattr(lm, "history"):
+                history_length_before = len(lm.history)
+        except Exception as e:
+            logger.warning(
+                f"Failed to get LM history length for intent decomposition: {e}"
+            )
+
+        with safe_observation_context(
+            name="intent_decomposition_llm",
+            as_type="generation",
+            input={"user_query": user_query},
+        ) as generation:
+            result = cast(
+                DecompositionResult, await asyncio.to_thread(self, user_query)
+            )
+
+            # Update Langfuse observation with output and usage
+            try:
+                if generation is not None:
+                    usage = get_lm_usage_since(history_length_before)
+                    generation.update(
+                        model=_get_current_model_name(),
+                        output={"mode": result.mode, "sub_queries": result.sub_queries},
+                        usage_details={
+                            "input": usage.get("total_prompt_tokens", 0),
+                            "output": usage.get("total_completion_tokens", 0),
+                            "total": usage.get("total_tokens", 0),
+                        },
+                        cost_details={"total": usage.get("total_cost", 0.0)},
+                    )
+            except Exception as e:
+                logger.debug(f"Langfuse generation update skipped: {e}")
+
         return result
 
 

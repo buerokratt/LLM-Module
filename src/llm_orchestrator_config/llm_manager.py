@@ -77,6 +77,11 @@ class LLMManager:
             self._initialize_providers()
             LLMManager._initialized = True
 
+    @property
+    def connection_id(self) -> Optional[str]:
+        """Return the connection ID (vault_uuid) used by this manager."""
+        return self._connection_id
+
     def _load_configuration(self) -> None:
         """Load configuration from file.
 
@@ -85,6 +90,10 @@ class LLMManager:
         """
         try:
             self._config = self._config_loader.load_config()
+        except ConfigurationError:
+            # The loader's message already identifies the environment and what
+            # the operator needs to do; re-wrapping only buries it.
+            raise
         except Exception as e:
             raise ConfigurationError(f"Failed to load LLM configuration: {e}") from e
 
@@ -171,7 +180,7 @@ class LLMManager:
             provider: Optional specific provider to configure DSPY with.
         """
         dspy_client = self.get_dspy_client(provider)
-        dspy.configure(lm=dspy_client)
+        dspy.configure(lm=dspy_client, track_usage=True)
 
     def ensure_global_config(self, provider: Optional[LLMProvider] = None) -> None:
         """Configure DSPy exactly once per process (thread-safe)."""
@@ -181,7 +190,7 @@ class LLMManager:
                 # Re-check inside the lock to prevent race condition
                 if not self._configured:
                     dspy_client = self.get_dspy_client(provider)
-                    dspy.configure(lm=dspy_client)
+                    dspy.configure(lm=dspy_client, track_usage=True)
                     self._configured = True
 
     @contextmanager

@@ -10,7 +10,8 @@ metadata:
 data:
   gui-agent.hcl: |
     # Vault Agent Configuration for GUI Service
-    
+    # This agent provides GUI with access to public encryption key only
+
     vault {
       address = "http://vault:8200"
       retry {
@@ -29,7 +30,7 @@ data:
         }
       }
 
-      # Write token to shared volume for agent to use
+      # Write token to file for GUI service to use
       sink "file" {
         config = {
           path = "{{ .Values.agent.tokenPath }}/token"
@@ -38,12 +39,12 @@ data:
       }
     }
 
-    # Caching configuration for GUI
+    # Caching configuration
     cache {
-      default_lease_duration = "{{ .Values.agent.tokenTTL }}"
+      default_lease_duration = "{{ .Values.agent.tokenTTL }}"  # Short-lived tokens for GUI
     }
 
-    # API proxy listener - GUI connects to localhost:{{ .Values.agent.port }}
+    # API proxy listener for GUI service
     listener "tcp" {
       address     = "0.0.0.0:{{ .Values.agent.port }}"
       tls_disable = true
@@ -52,7 +53,5 @@ data:
     # API proxy configuration
     api_proxy {
       use_auto_auth_token = true
-      enforce_consistency = "always"
-      when_inconsistent = "forward"
     }
 {{- end }}

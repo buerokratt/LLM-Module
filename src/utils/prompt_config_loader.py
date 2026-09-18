@@ -7,7 +7,10 @@ from typing import Optional, Dict, Any
 import time
 import threading
 from enum import Enum
-from loguru import logger
+from src.loki_logger import LokiLogger
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="prompt-config-loader")
 
 
 class PromptConfigLoadError(Exception):

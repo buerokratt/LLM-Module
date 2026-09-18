@@ -6,9 +6,18 @@
 set -e  # Exit on any error
 
 # Configuration
-# Use VAULT_AGENT_URL which points to vault-agent-cron proxy
-# The agent automatically injects the authentication token
-VAULT_ADDR="${VAULT_AGENT_URL:-http://vault-agent-cron:8203}"
+# Resolve Vault Agent URL:
+# 1. Use vaultAgentUrl env var if set (from container env or CronManager request)
+# 2. Auto-detect Kubernetes via KUBERNETES_SERVICE_HOST (injected by kubelet, cannot be disabled)
+# 3. Auto-detect Kubernetes via service account token (mounted by default in every pod)
+# 4. Fallback to Docker Compose hostname
+if [ -n "$vaultAgentUrl" ]; then
+    VAULT_ADDR="$vaultAgentUrl"
+elif [ -n "$KUBERNETES_SERVICE_HOST" ] || [ -f "/var/run/secrets/kubernetes.io/serviceaccount/token" ]; then
+    VAULT_ADDR="http://localhost:8203"
+else
+    VAULT_ADDR="http://vault-agent-cron:8203"
+fi
 
 # Logging function
 log() {
@@ -19,13 +28,18 @@ log "=== Starting Vault Secrets Deletion ==="
 
 # Debug: Print received parameters
 log "Received parameters:"
-log "  connectionId: $connectionId"
+log "  vaultUuid: $vaultUuid"
 log "  llmPlatform: $llmPlatform"
 log "  llmModel: $llmModel"
 log "  embeddingModel: $embeddingModel"
 log "  embeddingPlatform: $embeddingPlatform"
-log "  deploymentEnvironment: $deploymentEnvironment"
 log "  Vault Address: $VAULT_ADDR"
+
+# Validate required vaultUuid parameter
+if [ -z "$vaultUuid" ]; then
+    log "ERROR: vaultUuid is required but not provided"
+    exit 1
+fi
 
 # Note: No token required - vault agent proxy automatically injects authentication
 
@@ -49,17 +63,13 @@ get_model_name() {
     echo "$model_array" | sed 's/\[//g' | sed 's/\]//g' | sed 's/"//g' | cut -d',' -f1 | xargs
 }
 
-# Function to build vault path
+# Function to build vault path (uses vaultUuid as stable path terminal)
 build_vault_path() {
     local secret_type=$1  # "llm" or "embeddings"
     local platform_name=$2
-    local model_name=$3
     
-    if [ "$deploymentEnvironment" = "testing" ]; then
-        echo "secret/$secret_type/connections/$platform_name/$deploymentEnvironment/$connectionId"
-    else
-        echo "secret/$secret_type/connections/$platform_name/$deploymentEnvironment/$model_name"
-    fi
+    # UUID-based path: no environment in path, swap is DB-only
+    echo "secret/$secret_type/connections/$platform_name/$vaultUuid"
 }
 
 # Function to delete vault secret (both data and metadata)
@@ -125,27 +135,26 @@ delete_vault_secret() {
 
 # Function to delete LLM secrets
 delete_llm_secrets() {
-    if [ -z "$llmPlatform" ] || [ -z "$llmModel" ]; then
-        log "No LLM platform or model specified, skipping LLM secrets deletion"
+    if [ -z "$llmPlatform" ]; then
+        log "No LLM platform specified, skipping LLM secrets deletion"
         return 0
     fi
     
     local platform_name=$(get_platform_name "$llmPlatform")
-    local model_name=$(get_model_name "$llmModel")
-    local vault_path=$(build_vault_path "llm" "$platform_name" "$model_name")
+    local vault_path=$(build_vault_path "llm" "$platform_name")
     
     delete_vault_secret "$vault_path" "LLM secrets"
 }
 
 # Function to delete embedding secrets
 delete_embedding_secrets() {
-    if [ -z "$embeddingPlatform" ] || [ -z "$embeddingModel" ]; then
-        log "No embedding platform or model specified, skipping embedding secrets deletion"
+    if [ -z "$embeddingPlatform" ]; then
+        log "No embedding platform specified, skipping embedding secrets deletion"
         return 0
     fi
     
     local platform_name=$(get_platform_name "$embeddingPlatform")
-    local vault_path=$(build_vault_path "embeddings" "$platform_name" "$embeddingModel")
+    local vault_path=$(build_vault_path "embeddings" "$platform_name")
     
     delete_vault_secret "$vault_path" "Embedding secrets"
 }

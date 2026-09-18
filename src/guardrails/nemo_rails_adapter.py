@@ -1,8 +1,7 @@
 from typing import Any, Dict, Optional, AsyncIterator, cast, Type
 import asyncio
-from loguru import logger
+from src.loki_logger import LokiLogger
 from pydantic import BaseModel, Field
-
 from nemoguardrails import LLMRails, RailsConfig
 from nemoguardrails.llm.providers import register_llm_provider
 from langchain_core.language_models.llms import BaseLLM
@@ -12,6 +11,9 @@ from src.llm_orchestrator_config.llm_ochestrator_constants import (
 from src.utils.cost_utils import get_lm_usage_since
 import dspy
 import re
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="nemo-rails-adapter")
 
 
 class GuardrailCheckResult(BaseModel):
@@ -92,8 +94,24 @@ class NeMoRailsAdapter:
 
             from llm_orchestrator_config.llm_manager import LLMManager
 
+            # Resolve vault_uuid from DB if not provided
+            connection_id = self.connection_id
+            if not connection_id:
+                from src.utils.connection_id_fetcher import get_connection_id_fetcher
+
+                fetcher = get_connection_id_fetcher()
+                connection_id = fetcher.fetch_vault_uuid_sync(self.environment)
+                if not connection_id:
+                    raise ValueError(
+                        f"No {self.environment} connection found in database. "
+                        f"Cannot initialize guardrails without a configured LLM connection."
+                    )
+                logger.debug(
+                    f"Resolved {self.environment} vault_uuid for guardrails: {connection_id}"
+                )
+
             llm_manager = LLMManager(
-                environment=self.environment, connection_id=self.connection_id
+                environment=self.environment, connection_id=connection_id
             )
             llm_manager.ensure_global_config()
 
@@ -111,6 +129,8 @@ class NeMoRailsAdapter:
             rails_config = RailsConfig.from_path(str(config_path.parent))
 
             rails_config.streaming = True
+
+            self._validate_output_streaming_config(rails_config)
 
             if metadata.get("optimized", False):
                 version = metadata.get("version", "unknown")
@@ -150,6 +170,44 @@ class NeMoRailsAdapter:
             logger.error(f"Failed to initialize NeMo Guardrails: {str(e)}")
             logger.exception("Full traceback:")
             raise
+
+    @staticmethod
+    def _validate_output_streaming_config(rails_config: RailsConfig) -> None:
+        """
+        Guard against a buffer configuration that degenerates into one guardrail
+        LLM call per streamed token.
+
+        NeMo's RollingBuffer drains with ``buffer = buffer[-context_size:]`` after
+        each flush. If ``context_size >= chunk_size`` the buffer never shrinks below
+        the ``len(buffer) >= chunk_size`` flush threshold, so every subsequent token
+        flushes on its own and triggers a full, serial ``self_check_output`` LLM
+        round-trip. That makes streaming latency and cost scale linearly with answer
+        length and is invisible without this check.
+        """
+        streaming_config = getattr(
+            getattr(getattr(rails_config, "rails", None), "output", None),
+            "streaming",
+            None,
+        )
+        if streaming_config is None or not getattr(streaming_config, "enabled", False):
+            return
+
+        chunk_size = getattr(streaming_config, "chunk_size", 0)
+        context_size = getattr(streaming_config, "context_size", 0)
+
+        if chunk_size > 0 and context_size >= chunk_size:
+            clamped = max(1, chunk_size // 4)
+            logger.error(
+                f"Invalid output-rails streaming config: context_size={context_size} "
+                f">= chunk_size={chunk_size}. This degrades to one guardrail LLM call "
+                f"per streamed token. Clamping context_size to {clamped}."
+            )
+            streaming_config.context_size = clamped
+        else:
+            logger.debug(
+                f"Output-rails streaming buffer OK: chunk_size={chunk_size}, "
+                f"context_size={context_size}"
+            )
 
     async def check_input_async(self, user_message: str) -> GuardrailCheckResult:
         """
@@ -365,6 +423,9 @@ Is this user message safe according to the policy? Answer with 'safe' or 'unsafe
             logger.debug(f"Generator type: {type(bot_message_generator)}")
 
             chunk_count = 0
+            stream_started_at = asyncio.get_running_loop().time()
+            last_chunk_at = stream_started_at
+            max_gap_seconds = 0.0
 
             logger.info("Calling _rails.stream_async with generator parameter...")
 
@@ -374,16 +435,33 @@ Is this user message safe according to the policy? Answer with 'safe' or 'unsafe
             ):
                 chunk_count += 1
 
-                if chunk_count <= 10:
+                now = asyncio.get_running_loop().time()
+                gap = now - last_chunk_at
+                last_chunk_at = now
+                max_gap_seconds = max(max_gap_seconds, gap)
+
+                # Log the head of the stream, then periodically. Logging only the
+                # first N chunks hides per-token guardrail stalls, which look like
+                # a total outage in the log while tokens are actually trickling.
+                if chunk_count <= 10 or chunk_count % 50 == 0:
                     logger.debug(
-                        f"[Chunk {chunk_count}] Validated and yielded: {repr(chunk)}"
+                        f"[Chunk {chunk_count}] Validated and yielded: {repr(chunk)} "
+                        f"(gap={gap:.2f}s, elapsed={now - stream_started_at:.2f}s)"
                     )
 
                 yield chunk
 
+            total_elapsed = asyncio.get_running_loop().time() - stream_started_at
             logger.info(
-                f"NeMo streaming completed successfully - {chunk_count} chunks streamed"
+                f"NeMo streaming completed successfully - {chunk_count} chunks streamed "
+                f"in {total_elapsed:.2f}s (max inter-chunk gap {max_gap_seconds:.2f}s)"
             )
+            if max_gap_seconds > 10.0:
+                logger.warning(
+                    f"Output-rails streaming stalled for {max_gap_seconds:.2f}s between "
+                    f"chunks. Check rails.output.streaming (context_size must be < "
+                    f"chunk_size) — a per-token guardrail call causes this."
+                )
 
         except Exception as e:
             logger.error(f"Error in stream_with_guardrails: {str(e)}")

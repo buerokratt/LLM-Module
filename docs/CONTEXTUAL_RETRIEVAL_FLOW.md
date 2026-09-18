@@ -82,12 +82,12 @@ For each of the 6 refined queries, the system performs parallel semantic and BM2
 - **<0.3**: Likely irrelevant
 
 **0.4 is the optimal balance** because:
-- ✅ Captures semantically related content beyond exact matches
-- ✅ Includes contextual information (e.g., implementation details, legal context)
-- ✅ Maintains quality while maximizing diversity
-- ✅ Industry standard for production RAG systems
-- ❌ Lower values (0.3) introduce too much noise
-- ❌ Higher values (0.5+) miss valuable context
+-  Captures semantically related content beyond exact matches
+-  Includes contextual information (e.g., implementation details, legal context)
+-  Maintains quality while maximizing diversity
+-  Industry standard for production RAG systems
+-  Lower values (0.3) introduce too much noise
+-  Higher values (0.5+) miss valuable context
 
 **Performance Impact:**
 - Threshold 0.5: ~17 results, 4 unique chunks (too narrow)
@@ -172,10 +172,10 @@ The k-parameter determines how quickly scores decay with rank position:
 | k=90 | 0.0110 | 0.0100 | Very narrow | Too democratic |
 
 **k=35 Advantages:**
-- ✅ **65-70% higher top-rank scores** vs k=60 (0.0541 vs 0.0328)
-- ✅ **Clear score separation** between highly relevant and marginal chunks
-- ✅ **Balanced approach** - respects both top results and broader context
-- ✅ **Better signal for response generator** - easier to identify best chunks
+-  **65-70% higher top-rank scores** vs k=60 (0.0541 vs 0.0328)
+-  **Clear score separation** between highly relevant and marginal chunks
+-  **Balanced approach** - respects both top results and broader context
+-  **Better signal for response generator** - easier to identify best chunks
 
 **Score Differentiation Example:**
 ```
@@ -302,12 +302,12 @@ For each of the top 10 chunks:
 
 | Metric | Value | Target | Status |
 |--------|-------|--------|--------|
-| Semantic Results per Query | 27.3 | >5 | ✅ Excellent |
-| Unique Semantic Chunks | 42 | >10 | ✅ Excellent |
-| Fusion Coverage | 100% | >80% | ✅ Perfect |
-| Both-sources Validation | 12/12 | >50% | ✅ Perfect |
-| Score Differentiation | High | Clear gaps | ✅ Excellent |
-| Retrieval Speed | 1.6s | <3s | ✅ Excellent |
+| Semantic Results per Query | 27.3 | >5 |  Excellent |
+| Unique Semantic Chunks | 42 | >10 |  Excellent |
+| Fusion Coverage | 100% | >80% |  Perfect |
+| Both-sources Validation | 12/12 | >50% |  Perfect |
+| Score Differentiation | High | Clear gaps |  Excellent |
+| Retrieval Speed | 1.6s | <3s |  Excellent |
 
 ---
 
@@ -573,10 +573,10 @@ When evaluating the quality of the contextual retrieval system and response gene
 
 ### Alert Thresholds
 
-- ⚠️ Semantic yield drops below 5 results/query
-- ⚠️ Fusion coverage drops below 80%
-- ⚠️ Retrieval time exceeds 3 seconds
-- ⚠️ BM25 index build fails or incomplete
+-  Semantic yield drops below 5 results/query
+-  Fusion coverage drops below 80%
+-  Retrieval time exceeds 3 seconds
+-  BM25 index build fails or incomplete
 
 ---
 

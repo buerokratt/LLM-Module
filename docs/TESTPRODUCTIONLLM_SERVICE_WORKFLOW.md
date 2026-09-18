@@ -212,12 +212,14 @@ orchestration_service = self.orchestration_service
 service_content = service_result["content"]
 service_buttons = service_result["buttons"]
 
+
 async def service_stream() -> AsyncIterator[str]:
     yield orchestration_service.format_sse(
         chat_id, service_content, service_buttons or None
     )
     yield orchestration_service.format_sse(chat_id, "END")
     orchestration_service.log_costs(costs_metric)
+
 
 return service_stream()
 ```
@@ -229,12 +231,13 @@ return service_stream()
 **`llm_orchestration_service.py` → `format_sse()`** (line 1195):
 
 ```python
-def format_sse(self, chat_id: str, content: str,
-               buttons: Optional[List[Dict[str, Any]]] = None) -> str:
+def format_sse(
+    self, chat_id: str, content: str, buttons: Optional[List[Dict[str, Any]]] = None
+) -> str:
     inner_payload: Dict[str, Any] = {"content": content}
     if buttons:
         inner_payload["buttons"] = buttons
-    
+
     payload = {
         "chatId": chat_id,
         "payload": inner_payload,

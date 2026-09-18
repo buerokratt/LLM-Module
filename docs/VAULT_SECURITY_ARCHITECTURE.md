@@ -197,9 +197,12 @@ Day 0+: Automatic Token Renewal:
 Container Restart:
   vault-init: Check if Vault is sealed
              ↓
-  If unsealed: Regenerate secret_id only
+  If unsealed: Validate existing secret_ids
              ↓
-  vault-agent: Re-authenticate with new secret_id
+  If valid: Reuse existing secret_id (no churn)
+  If invalid: Mint new secret_id and write to disk
+             ↓
+  vault-agent: Re-authenticate with secret_id
              ↓
   New token issued and cached
 ```
@@ -413,8 +416,9 @@ Connected Services:
   - GUI (React Frontend)
 
 Token Lifecycle:
-  - Default Lease: 768h (32 days)
-  - Auto-renewal: Before expiration
+  - Token type: periodic (token_period 20m, no max-TTL)
+  - Auto-renewal: Every ~13 minutes (~2/3 of period)
+  - Re-auth: only on agent restart (never in steady state)
 ```
 
 #### Agent 2: vault-agent-cron
@@ -429,8 +433,9 @@ Connected Services:
   - CronManager (Python worker)
 
 Token Lifecycle:
-  - Default Lease: 768h (32 days)
-  - Auto-renewal: Before expiration
+  - Token type: periodic (token_period 30m, no max-TTL)
+  - Auto-renewal: Every ~20 minutes (~2/3 of period)
+  - Re-auth: only on agent restart (never in steady state)
 ```
 
 #### Agent 3: vault-agent-llm
@@ -445,8 +450,9 @@ Connected Services:
   - LLM Orchestration Service (FastAPI)
 
 Token Lifecycle:
-  - Default Lease: 1h (shorter for higher security)
-  - Auto-renewal: Every ~45 minutes
+  - Token type: periodic (token_period 1h, no max-TTL)
+  - Auto-renewal: Every ~40 minutes (~2/3 of period)
+  - Re-auth: only on agent restart (never in steady state)
 ```
 
 ### Token Caching and Auto-Renewal
@@ -464,29 +470,31 @@ T=0: Initial Authentication
         ├─► POST /v1/auth/approle/login
         │   Body: { role_id, secret_id }
         │
-        └─► Receives: { token, ttl: 3600s, renewable: true }
+        └─► Receives: { token, period: 3600s, renewable: true }   ← periodic token, no max-TTL
              │
              └─► Cache token in: /agent/llm-token/token
 
 
-T=45min: Proactive Renewal (75% of TTL)
+T≈40min: Proactive Renewal (~2/3 of period)
      vault-agent monitors expiration
         │
         ├─► POST /v1/auth/token/renew-self
         │   Header: X-Vault-Token: <current_token>
         │
-        └─► Receives: { token, ttl: 3600s } (same token, extended)
+        └─► Receives: { token, period: 3600s } (same token, period reset)
              │
              └─► Update cache: /agent/llm-token/token
+             │
+             └─► Repeats forever — a periodic token never hits a max-TTL,
+                 so steady-state operation never needs approle/login again.
 
 
-T=59min: Renewal Failed (fallback)
-     If renewal fails:
+On agent restart only:
+     vault-agent re-reads role_id + secret_id from disk
         │
-        ├─► Re-authenticate from scratch
-        │   POST /v1/auth/approle/login
+        ├─► POST /v1/auth/approle/login   (secret_id must still be valid)
         │
-        └─► New token issued and cached
+        └─► New periodic token issued and cached
 
 
 Application Request (anytime):
@@ -856,15 +864,16 @@ Step 12: Check Vault Seal Status
    └─► GET /v1/sys/seal-status
        └─► If unsealed: Skip unseal steps
 
-Step 13: Regenerate Secret IDs Only
-   └─► POST /v1/auth/approle/role/gui-service/secret-id
-   └─► POST /v1/auth/approle/role/cron-manager-service/secret-id
-   └─► POST /v1/auth/approle/role/llm-orchestration-service/secret-id
-   └─► Write new secret_ids to /agent/credentials/
+Step 13: Validate and Reconcile Secret IDs
+   └─► For each role (gui, cron-manager, llm-orchestration):
+       ├─► Test existing on-disk secret_id via AppRole login
+       ├─► If valid: Reuse (no change to credential file)
+       └─► If invalid/missing: Mint new secret_id and write to disk
 
 Note: role_ids remain unchanged (static identifiers)
 Note: Existing secrets and policies preserved
 Note: RSA keypair NOT regenerated (preserved)
+Note: Stable secret_ids across restarts reduce credential churn
 
 ═══════════════════════════════════════════════════════════════════
 COMPLETION
@@ -1128,13 +1137,14 @@ Startup Order:
 vault-init Behavior:
   - Detects Vault already initialized
   - Skips initialization steps
-  - Regenerates secret_ids only
-  - Updates credential files
+  - Validates existing secret_ids (reuses if still valid)
+  - Mints new secret_ids only if existing ones are invalid
 
 Result:
-   All services start with fresh credentials
+   All services start with validated credentials
    Existing secrets preserved
    No manual intervention needed
+   Stable secret_ids reduce unnecessary credential churn
 ```
 
 ### Token Regeneration Strategy
@@ -1143,22 +1153,23 @@ Result:
 Current Implementation:
 
 1. On Every Container Restart:
-   └─► vault-init regenerates secret_ids
-       └─► Vault agents get new tokens
-           └─► Old tokens remain valid until expiration
+   └─► vault-init validates existing secret_ids
+       ├─► If valid: Reuse (agents continue with same credentials)
+       └─► If invalid: Mint new secret_id, agents re-authenticate
 
 2. Token Lifecycle:
-   └─► Issue: vault-agent authenticates
+   └─► Issue: vault-agent authenticates (periodic token, token_period per role)
    └─► Use: Application makes requests
-   └─► Renew: vault-agent extends TTL
-   └─► Expire: Automatic renewal failed
-   └─► Re-issue: vault-agent re-authenticates
+   └─► Renew: vault-agent renews within the period (~2/3 of period)
+   └─► No max-TTL: renewal continues indefinitely
+   └─► Re-issue: only on agent restart, via secret_id login
 
 3. Security Benefits:
-    Short-lived tokens (1 hour for LLM, 32 days for others)
-    Automatic rotation on agent restart
-    No manual token management
-    Compromised tokens have limited lifetime
+    Periodic tokens (period 1h LLM, 30m Cron, 20m GUI), renewed continuously
+    Steady-state operation never re-runs approle/login (a stale secret_id
+      cannot strand a running agent)
+    Stable secret_ids (no unnecessary churn on restart)
+    Compromised tokens limited to one un-renewed period
 ```
 
 ### Audit Logging Capabilities

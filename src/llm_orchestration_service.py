@@ -4,12 +4,12 @@ from typing import Optional, List, Dict, Union, Any, AsyncIterator, TYPE_CHECKIN
 import os
 import time
 import asyncio
-from loguru import logger
+import threading
+from src.loki_logger import LokiLogger
 from langfuse import Langfuse, observe
 import dspy
 from datetime import datetime
 import json as json_module
-import threading
 
 from llm_orchestrator_config.llm_manager import LLMManager
 from models.request_models import (
@@ -46,7 +46,11 @@ from src.llm_orchestrator_config.stream_config import StreamConfig
 from src.vector_indexer.constants import ResponseGenerationConstants
 from src.utils.error_utils import generate_error_id, log_error_with_context
 from src.utils.stream_manager import stream_manager, StreamContext
-from src.utils.cost_utils import calculate_total_costs, get_lm_usage_since
+from src.utils.cost_utils import (
+    calculate_total_costs,
+    get_lm_usage_since,
+    get_lm_usage_since_split,
+)
 
 if TYPE_CHECKING:
     from src.llm_orchestrator_config.embedding_manager import EmbeddingManager
@@ -60,6 +64,9 @@ from src.utils.production_store import get_production_store
 from src.utils.language_detector import detect_language, get_language_name
 from src.utils.prompt_config_loader import PromptConfigurationLoader
 from src.utils.query_validator import validate_query_basic
+from src.utils.sse_utils import extract_content_from_sse
+from src.utils.conversation_history_store import should_save_history, save_history_round
+from src.utils.conversation_history_helpers import get_conversation_history
 from src.guardrails import NeMoRailsAdapter, GuardrailCheckResult
 from src.contextual_retrieval import ContextualRetriever
 from src.contextual_retrieval.bm25_search import SmartBM25Search
@@ -68,9 +75,28 @@ from src.llm_orchestrator_config.exceptions import (
     ContextualRetrievalFailureError,
 )
 from src.llm_orchestrator_config.feature_flags import FeatureFlags
-from src.tool_classifier import ToolClassifier
+from src.tool_classifier import ToolClassifier, WorkflowType
 from src.tool_classifier.constants import SERVICE_STEP_PREFIXES
 from src.tool_classifier.workflows.service_workflow import ServiceWorkflowExecutor
+
+# Initialize Loki logger for orchestration service
+logger = LokiLogger(service_name="llm-orchestration-service")
+
+REFERENCES_SECTION_HEADER = "\n\n**References:**\n"
+
+# Set of content strings that must NOT be persisted in conversation history.
+# Covers all multilingual error / OOS / guardrail-violation messages so that
+# failed or blocked exchanges are never written to Redis.
+_HISTORY_EXCLUDED_MESSAGES: frozenset[str] = frozenset(
+    {
+        *OUT_OF_SCOPE_MESSAGES.values(),
+        *TECHNICAL_ISSUE_MESSAGES.values(),
+        *INPUT_GUARDRAIL_VIOLATION_MESSAGES.values(),
+        *OUTPUT_GUARDRAIL_VIOLATION_MESSAGES.values(),
+        *QUERY_VALIDATION_FAILED_MESSAGES.values(),
+        STREAM_TOKEN_LIMIT_MESSAGE,
+    }
+)
 
 
 class LangfuseConfig:
@@ -149,12 +175,20 @@ class LLMOrchestrationService:
         # Workflow executors access it via self.orchestration_service.session_store.
         self.session_store: Any = None
 
+        # Redis-backed conversation history store.
+        # Set to None here; the FastAPI lifespan injects the live store after
+        # Redis initialises (app.state.orchestration_service.conversation_history_store = ...).
+        self.conversation_history_store: Any = None
+
         # Shared BM25 search index pre-warmed at startup.
         # Populated by _prewarm_shared_bm25() which is called from the FastAPI
         # lifespan so it runs inside the async event loop.  Until then it is None
         # and each ContextualRetriever will build the index on first query (graceful
         # degradation path).
         self.shared_bm25_search: Optional[SmartBM25Search] = None
+
+        self._retriever_cache: Dict[tuple, ContextualRetriever] = {}
+        self._component_cache_lock = threading.Lock()
 
         # Initialize shared guardrails adapters at startup (production and testing)
         self.shared_guardrails_adapters = (
@@ -391,7 +425,7 @@ class LLMOrchestrationService:
             if components["guardrails_adapter"]:
                 start_time = time.time()
                 input_blocked_response = await self.handle_input_guardrails(
-                    components["guardrails_adapter"], request, {}
+                    components["guardrails_adapter"], request, costs_metric
                 )
                 time_metric["input_guardrails_check"] = time.time() - start_time
 
@@ -428,7 +462,6 @@ class LLMOrchestrationService:
                     start_time = time.time()
                     classification = await self.tool_classifier.classify(
                         query=request.message,
-                        conversation_history=request.conversationHistory,
                         language=detected_language,
                         request=request,
                     )
@@ -487,25 +520,7 @@ class LLMOrchestrationService:
                 langfuse = self.langfuse_config.langfuse_client
                 total_costs = calculate_total_costs(costs_metric)
 
-                total_input_tokens = sum(
-                    c.get("total_prompt_tokens", 0) for c in costs_metric.values()
-                )
-                total_output_tokens = sum(
-                    c.get("total_completion_tokens", 0) for c in costs_metric.values()
-                )
-
                 langfuse.update_current_generation(
-                    model=components["llm_manager"]
-                    .get_provider_info()
-                    .get("model", "unknown"),
-                    usage_details={
-                        "input": total_input_tokens,
-                        "output": total_output_tokens,
-                        "total": total_costs.get("total_tokens", 0),
-                    },
-                    cost_details={
-                        "total": total_costs.get("total_cost", 0.0),
-                    },
                     metadata={
                         "total_calls": total_costs.get("total_calls", 0),
                         "cost_breakdown": costs_metric,
@@ -515,6 +530,18 @@ class LLMOrchestrationService:
                     },
                 )
                 langfuse.flush()
+
+            # Persist successful exchange to conversation history (non-streaming)
+            if should_save_history(
+                self.conversation_history_store, response, _HISTORY_EXCLUDED_MESSAGES
+            ):
+                await save_history_round(
+                    self.conversation_history_store,
+                    request.chatId,
+                    request.message,
+                    response.content,
+                )
+
             return response
 
         except Exception as e:
@@ -542,7 +569,6 @@ class LLMOrchestrationService:
 
             return self._create_error_response(request)
 
-    @observe(name="streaming_generation", as_type="generation", capture_output=False)
     async def stream_orchestration_response(
         self, request: OrchestrationRequest
     ) -> AsyncIterator[str]:
@@ -582,6 +608,13 @@ class LLMOrchestrationService:
         # Track costs after streaming completes
         costs_metric: Dict[str, Dict[str, Any]] = {}
         time_metric: Dict[str, float] = {}
+
+        # Capture DSPy history baseline before any LLM calls.
+        # Used at the end of the request to compute the total cost delta,
+        _lm = dspy.settings.lm
+        initial_history_length = (
+            len(_lm.history) if _lm and hasattr(_lm, "history") else 0
+        )
 
         # STEP 0: Detect language from user message (with timing)
         start_time = time.time()
@@ -710,7 +743,6 @@ class LLMOrchestrationService:
                         start_time = time.time()
                         classification = await self.tool_classifier.classify(
                             query=request.message,
-                            conversation_history=request.conversationHistory,
                             language=detected_language,
                             request=request,
                         )
@@ -723,9 +755,11 @@ class LLMOrchestrationService:
 
                         # Route to appropriate workflow (streaming)
                         # route_to_workflow returns AsyncIterator[str] when is_streaming=True
-                        # Inject costs_metric into the classification context so the
-                        # API Tool workflow can append its output guardrail costs.
+                        # Inject costs_metric and pre-initialized components into the
+                        # classification context so downstream workflows can reuse them
+                        # without re-initializing (saves ~1.5s on fallback paths).
                         classification.metadata["costs_metric"] = costs_metric
+                        classification.metadata["components"] = components
                         start_time = time.time()
                         stream_result = await self.tool_classifier.route_to_workflow(
                             classification=classification,
@@ -735,17 +769,62 @@ class LLMOrchestrationService:
                         )
                         time_metric["classifier.route"] = time.time() - start_time
 
+                        # Accumulate content for history only on non-RAG workflows;
+                        # RAG routes through _stream_rag_pipeline which has its own hook.
+                        _save_classifier_history = (
+                            self.conversation_history_store is not None
+                            and classification.workflow != WorkflowType.RAG
+                        )
+                        _classifier_accumulated: list[str] = []
+                        # Tracks whether an excluded marker (OOS / guardrail violation /
+                        # error) was observed at any point during the stream.  When True
+                        # the entire accumulated buffer is discarded so no partial content
+                        # from before the blocked marker is ever written to Redis.
+                        _history_blocked = False
+
                         async for sse_chunk in stream_result:
                             yield sse_chunk
+                            if _save_classifier_history and not _history_blocked:
+                                extracted = extract_content_from_sse(sse_chunk)
+                                if extracted is not None and extracted != "END":
+                                    if extracted in _HISTORY_EXCLUDED_MESSAGES:
+                                        # Excluded marker observed — discard any partial
+                                        # content accumulated before this point and stop
+                                        # accumulating for the rest of the stream.
+                                        _classifier_accumulated.clear()
+                                        _history_blocked = True
+                                    else:
+                                        _classifier_accumulated.append(extracted)
 
                         # Successfully completed streaming through classifier
                         logger.info(
                             f"[{request.chatId}] [{stream_ctx.stream_id}] Tool classifier streaming completed"
                         )
 
+                        # Persist conversation history (classifier streaming, non-RAG workflows)
+                        if (
+                            _save_classifier_history
+                            and not _history_blocked
+                            and _classifier_accumulated
+                        ):
+                            await save_history_round(
+                                self.conversation_history_store,
+                                request.chatId,
+                                request.message,
+                                "".join(_classifier_accumulated),
+                            )
+
                         # Log costs and timings
                         self.log_costs(costs_metric)
                         log_step_timings(time_metric, request.chatId)
+
+                        # Budget update: use full DSPy history delta
+                        _total_usage = get_lm_usage_since(initial_history_length)
+                        self._update_connection_budget(
+                            request.connection_id,
+                            {"streaming_total": _total_usage},
+                            request.environment,
+                        )
                         stream_ctx.mark_completed()
                         return  # Exit after successful classifier routing
 
@@ -780,7 +859,15 @@ class LLMOrchestrationService:
                 ):
                     yield sse_chunk
 
-                # Pipeline completed successfully
+                # Pipeline completed successfully.
+                # Budget update: use full DSPy history delta (covers guardrails,
+                # refiner, and streaming generation across this request).
+                _total_usage = get_lm_usage_since(initial_history_length)
+                self._update_connection_budget(
+                    request.connection_id,
+                    {"streaming_total": _total_usage},
+                    request.environment,
+                )
                 return
 
             except Exception as e:
@@ -796,9 +883,12 @@ class LLMOrchestrationService:
                 self.log_costs(costs_metric)
                 log_step_timings(time_metric, request.chatId)
 
-                # Update budget even on outer exception
+                # Budget update on outer exception using full DSPy history delta.
+                _total_usage = get_lm_usage_since(initial_history_length)
                 self._update_connection_budget(
-                    request.connection_id, costs_metric, request.environment
+                    request.connection_id,
+                    {"streaming_total": _total_usage},
+                    request.environment,
                 )
 
                 if self.langfuse_config.langfuse_client:
@@ -853,10 +943,16 @@ class LLMOrchestrationService:
         )
 
         start_time = time.time()
+        conversation_history, conversation_summary = await get_conversation_history(
+            chat_id=request.chatId,
+            store=self.conversation_history_store,
+            fallback=request.conversationHistory,
+        )
         refined_output, refiner_usage = self._refine_user_prompt(
             llm_manager=components["llm_manager"],
             original_message=request.message,
-            conversation_history=request.conversationHistory,
+            conversation_history=conversation_history,
+            conversation_summary=conversation_summary,
         )
         time_metric["prompt_refiner"] = time.time() - start_time
         costs_metric["prompt_refiner"] = refiner_usage
@@ -1056,7 +1152,7 @@ class LLMOrchestrationService:
                 # Send document references before END token
                 doc_references = self._extract_document_references(relevant_chunks)
                 if doc_references:
-                    refs_text = "\n\n**References:**\n" + "\n".join(
+                    refs_text = REFERENCES_SECTION_HEADER + "\n".join(
                         f"{i + 1}. [{ref.document_url}]({ref.document_url})"
                         for i, ref in enumerate(doc_references)
                     )
@@ -1093,7 +1189,7 @@ class LLMOrchestrationService:
                 # Send document references before END token
                 doc_references = self._extract_document_references(relevant_chunks)
                 if doc_references:
-                    refs_text = "\n\n**References:**\n" + "\n".join(
+                    refs_text = REFERENCES_SECTION_HEADER + "\n".join(
                         f"{i + 1}. [{ref.document_url}]({ref.document_url})"
                         for i, ref in enumerate(doc_references)
                     )
@@ -1101,9 +1197,15 @@ class LLMOrchestrationService:
 
                 yield self.format_sse(request.chatId, "END")
 
-            # Extract usage information after streaming completes
-            usage_info = get_lm_usage_since(history_length_before)
+            # Extract usage after streaming completes. Output-rail validation runs
+            # interleaved with generation in the same history window, so split the
+            # two - folding them together hid a 100x guardrail cost regression.
+            usage_info, guardrails_usage = get_lm_usage_since_split(
+                history_length_before
+            )
             costs_metric["streaming_generation"] = usage_info
+            if guardrails_usage.get("num_calls", 0) > 0:
+                costs_metric["output_guardrails"] = guardrails_usage
 
             # Record timings
             time_metric["streaming_generation"] = time.time() - streaming_step_start
@@ -1119,53 +1221,54 @@ class LLMOrchestrationService:
             self.log_costs(costs_metric)
             log_step_timings(time_metric, request.chatId)
 
-            # Update budget
-            self._update_connection_budget(
-                request.connection_id, costs_metric, request.environment
-            )
-
             # Langfuse tracking
             if self.langfuse_config.langfuse_client:
                 langfuse = self.langfuse_config.langfuse_client
-                total_costs = calculate_total_costs(costs_metric)
 
-                langfuse.update_current_generation(
-                    model=components["llm_manager"]
-                    .get_provider_info()
-                    .get("model", "unknown"),
-                    usage_details={
-                        "input": usage_info.get("total_prompt_tokens", 0),
-                        "output": usage_info.get("total_completion_tokens", 0),
-                        "total": usage_info.get("total_tokens", 0),
-                    },
-                    cost_details={"total": total_costs.get("total_cost", 0.0)},
-                    metadata={
-                        "streaming": True,
-                        "streaming_duration_seconds": streaming_duration,
-                        "chunks_streamed": chunk_count,
-                        "cost_breakdown": costs_metric,
-                        "chat_id": request.chatId,
-                        "environment": request.environment,
-                        "stream_id": stream_ctx.stream_id,
-                    },
-                )
-                langfuse.flush()
+                metadata_payload = {
+                    "streaming": True,
+                    "streaming_duration_seconds": streaming_duration,
+                    "chunks_streamed": chunk_count,
+                    "cost_breakdown": costs_metric,
+                    "chat_id": request.chatId,
+                    "environment": request.environment,
+                    "stream_id": stream_ctx.stream_id,
+                }
+
+                try:
+                    langfuse.update_current_generation(
+                        metadata=metadata_payload,
+                    )
+                    langfuse.flush()
+                except Exception as langfuse_error:
+                    logger.error(
+                        f"Langfuse streaming metadata update failed: {langfuse_error}",
+                        exc_info=True,
+                    )
 
             # Store inference data (for production and testing environments)
-            if request.environment in [
-                PRODUCTION_DEPLOYMENT_ENVIRONMENT,
-                TEST_DEPLOYMENT_ENVIRONMENT,
-            ]:
-                try:
-                    await self._store_production_inference_data_async(
-                        request=request,
-                        refined_output=refined_output,
-                        relevant_chunks=relevant_chunks,
-                        accumulated_response="".join(accumulated_response),
-                    )
-                except Exception as storage_error:
-                    logger.error(
-                        f"Storage failed for chat_id: {request.chatId}, environment: {request.environment} - {str(storage_error)}"
+            # Set RAG data on request for unified storage method
+            setattr(request, "_rag_refined_questions", refined_output.refined_questions)  # noqa: B010
+            setattr(request, "_rag_ranked_chunks", relevant_chunks)  # noqa: B010
+            try:
+                await self.store_streaming_inference(
+                    request=request,
+                    final_answer="".join(accumulated_response),
+                )
+            except Exception as storage_error:
+                logger.error(
+                    f"Storage failed for chat_id: {request.chatId}, environment: {request.environment} - {str(storage_error)}"
+                )
+
+            # Persist conversation history (RAG streaming)
+            if self.conversation_history_store is not None:
+                _rag_bot_message = "".join(accumulated_response)
+                if _rag_bot_message not in _HISTORY_EXCLUDED_MESSAGES:
+                    await save_history_round(
+                        self.conversation_history_store,
+                        request.chatId,
+                        request.message,
+                        _rag_bot_message,
                     )
 
             # Mark stream as completed successfully
@@ -1205,11 +1308,6 @@ class LLMOrchestrationService:
             self.log_costs(costs_metric)
             log_step_timings(time_metric, request.chatId)
 
-            # Update budget even on streaming error
-            self._update_connection_budget(
-                request.connection_id, costs_metric, request.environment
-            )
-
     def format_sse(
         self,
         chat_id: str,
@@ -1248,9 +1346,17 @@ class LLMOrchestrationService:
         components: Dict[str, Any] = {}
 
         # Initialize LLM Manager
-        components["llm_manager"] = self._initialize_llm_manager(
+        llm_manager = self._initialize_llm_manager(
             environment=request.environment, connection_id=request.connection_id
         )
+        components["llm_manager"] = llm_manager
+
+        # Store resolved connection_id on request for downstream use (budget, inference storage)
+        if llm_manager.connection_id and not request.connection_id:
+            request.connection_id = llm_manager.connection_id
+            logger.debug(
+                f"Stored resolved vault_uuid on request: {llm_manager.connection_id}"
+            )
 
         if request.environment in self.shared_guardrails_adapters:
             logger.info(
@@ -1269,12 +1375,29 @@ class LLMOrchestrationService:
                 request.environment, request.connection_id
             )
 
-        # Initialize Contextual Retriever (replaces hybrid retriever)
-        components["contextual_retriever"] = self._safe_initialize_contextual_retriever(
-            request.environment, request.connection_id
-        )
+        # Initialize Contextual Retriever (cached by environment + connection_id)
+        retriever_key = (request.environment, request.connection_id)
+        if retriever_key in self._retriever_cache:
+            components["contextual_retriever"] = self._retriever_cache[retriever_key]
+            logger.info(f"Using cached ContextualRetriever for key={retriever_key}")
+        else:
+            with self._component_cache_lock:
+                if retriever_key in self._retriever_cache:
+                    components["contextual_retriever"] = self._retriever_cache[
+                        retriever_key
+                    ]
+                else:
+                    retriever = self._safe_initialize_contextual_retriever(
+                        request.environment, request.connection_id
+                    )
+                    if retriever is not None:
+                        self._retriever_cache[retriever_key] = retriever
+                    components["contextual_retriever"] = retriever
 
-        # Initialize Response Generator
+        # Initialize Response Generator (fresh per request - NOT cached)
+        # ResponseGeneratorAgent uses dspy.streamify() which has internal state
+        # that doesn't reset between calls, causing 0-token streaming on reuse.
+        # Only costs ~0.02s to create, so caching is not worth the risk.
         components["response_generator"] = self._safe_initialize_response_generator(
             components["llm_manager"]
         )
@@ -1397,10 +1520,16 @@ class LLMOrchestrationService:
 
         # Step 1: Refine user prompt
         start_time = time.time()
+        conversation_history, conversation_summary = await get_conversation_history(
+            chat_id=request.chatId,
+            store=self.conversation_history_store,
+            fallback=request.conversationHistory,
+        )
         refined_output, refiner_usage = self._refine_user_prompt(
             llm_manager=components["llm_manager"],
             original_message=request.message,
-            conversation_history=request.conversationHistory,
+            conversation_history=conversation_history,
+            conversation_summary=conversation_summary,
         )
         timing_key = f"{prefix}.prompt_refiner" if prefix else "prompt_refiner"
         time_metric[timing_key] = time.time() - start_time
@@ -1489,12 +1618,29 @@ class LLMOrchestrationService:
             TEST_DEPLOYMENT_ENVIRONMENT,
         ] and isinstance(output_guardrails_response, OrchestrationResponse):
             try:
-                self._store_production_inference_data(
-                    request=request,
-                    refined_output=refined_output,
-                    relevant_chunks=relevant_chunks,
-                    final_response=output_guardrails_response,
-                )
+                # Set RAG data on request for unified storage method
+                request._rag_refined_questions = refined_output.refined_questions  # type: ignore[attr-defined]
+                request._rag_ranked_chunks = relevant_chunks  # type: ignore[attr-defined]
+
+                # Run async storage in a new event loop (sync context)
+                import threading
+
+                def _store_async() -> None:
+                    try:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(
+                            self.store_streaming_inference(
+                                request=request,
+                                final_answer=output_guardrails_response.content,
+                            )
+                        )
+                        loop.close()
+                    except Exception as e:
+                        logger.error(f"Error in async storage thread: {str(e)}")
+
+                storage_thread = threading.Thread(target=_store_async, daemon=True)
+                storage_thread.start()
             except Exception as storage_error:
                 # Log storage error but don't fail the request
                 logger.error(
@@ -1767,129 +1913,63 @@ class LLMOrchestrationService:
             content=localized_message,
         )
 
-    def _store_production_inference_data(
-        self,
-        request: OrchestrationRequest,
-        refined_output: PromptRefinerOutput,
-        relevant_chunks: List[Dict[str, Union[str, float, Dict[str, Any]]]],
-        final_response: OrchestrationResponse,
-    ) -> None:
+    def _extract_content_from_sse(self, sse_chunk: str) -> Optional[str]:
         """
-        Store production inference data to Resql endpoint for analytics.
-
-        This method stores comprehensive inference data including:
-        - User question and refined questions
-        - Conversation history
-        - Retrieved chunks with rankings
-        - Embedding scores
-        - Final generated answer
+        Extract content from an SSE-formatted chunk.
 
         Args:
-            request: Original orchestration request
-            refined_output: Prompt refiner output with original and refined questions
-            relevant_chunks: Retrieved and ranked chunks
-            final_response: Final orchestration response with generated answer
+            sse_chunk: SSE-formatted string like 'data: {"chatId": ..., "payload": {"content": "..."}}\n\n'
+
+        Returns:
+            The content string, or None if parsing fails
         """
         try:
-            # Only store if the service was active and response was generated successfully
-            if not final_response.llmServiceActive:
-                logger.debug(
-                    f"Skipping production data storage for chat_id: {request.chatId} "
-                    f"- LLM service was not active"
-                )
-                return
+            # SSE format: 'data: {...}\n\n'
+            if not sse_chunk.startswith("data: "):
+                return None
+            json_str = sse_chunk[6:].strip()  # Remove 'data: ' prefix
+            if not json_str:
+                return None
+            parsed = json_module.loads(json_str)
+            return parsed.get("payload", {}).get("content")
+        except (json_module.JSONDecodeError, AttributeError, TypeError):
+            return None
 
-            # Extract embedding scores from chunks
-            embedding_scores = []
-            for chunk in relevant_chunks:
-                score_value = chunk.get("fused_score", chunk.get("score", 0.0))
-                try:
-                    if isinstance(score_value, (int, float)):
-                        embedding_scores.append(float(score_value))
-                    else:
-                        embedding_scores.append(0.0)
-                except (ValueError, TypeError):
-                    embedding_scores.append(0.0)
+    async def store_streaming_inference(
+        self,
+        request: OrchestrationRequest,
+        final_answer: str,
+    ) -> None:
+        """
+        Store streaming inference data.
 
-            # Convert conversation history to list of dicts
-            conversation_history_list = [
-                {"role": item.authorRole, "content": item.message}
-                for item in (request.conversationHistory or [])
-            ]
+        Checks for RAG data on request attributes (_rag_refined_questions, _rag_chunks).
+        If not present, uses empty arrays. This enables unified storage for all
+        streaming workflows (RAG, Service, Context, API Tool, etc.).
 
-            # Get the production store instance
-            production_store = get_production_store()
+        Args:
+            request: Orchestration request (may have RAG data as attributes)
+            final_answer: Complete streamed response
+        """
+        # Only store for production and testing environments
+        if request.environment not in [
+            PRODUCTION_DEPLOYMENT_ENVIRONMENT,
+            TEST_DEPLOYMENT_ENVIRONMENT,
+        ]:
+            return
 
-            # Store the inference result asynchronously without blocking
-
-            def store_async() -> None:
-                """Run async storage in a new event loop in a separate thread."""
-                try:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    result = loop.run_until_complete(
-                        production_store.store_inference_result_async(
-                            chat_id=request.chatId,
-                            user_question=request.message,
-                            refined_questions=refined_output.refined_questions,
-                            conversation_history=conversation_history_list,
-                            ranked_chunks=relevant_chunks,
-                            embedding_scores=embedding_scores,
-                            final_answer=final_response.content,
-                            environment=request.environment,
-                        )
-                    )
-                    loop.close()
-
-                    if result["success"]:
-                        logger.info(
-                            f"Successfully stored inference data for chat_id: {request.chatId}, environment: {request.environment}"
-                        )
-                    else:
-                        logger.warning(
-                            f"Failed to store inference data for chat_id: {request.chatId}, environment: {request.environment} - "
-                            f"Error: {result['error']}"
-                        )
-                except Exception as e:
-                    logger.error(f"Error in async storage thread: {str(e)}")
-
-            # Start storage in background thread (non-blocking)
-            storage_thread = threading.Thread(target=store_async, daemon=True)
-            storage_thread.start()
-
-        except Exception as e:
-            # Log the error but don't fail the request
-            logger.error(
-                f"Error storing inference data for chat_id: {request.chatId}, environment: {request.environment} - {str(e)}"
+        try:
+            # Get RAG data from request attributes if available (set by _stream_rag_pipeline)
+            refined_questions: List[str] = getattr(
+                request, "_rag_refined_questions", []
+            )
+            ranked_chunks: List[Dict[str, Any]] = getattr(
+                request, "_rag_ranked_chunks", []
             )
 
-    async def _store_production_inference_data_async(
-        self,
-        request: OrchestrationRequest,
-        refined_output: PromptRefinerOutput,
-        relevant_chunks: List[Dict[str, Union[str, float, Dict[str, Any]]]],
-        accumulated_response: str,
-    ) -> None:
-        """
-        Async version: Store production inference data to Resql endpoint for analytics.
-
-        This method stores comprehensive inference data including:
-        - User question and refined questions
-        - Conversation history
-        - Retrieved chunks with rankings
-        - Embedding scores
-        - Final generated answer (from streaming)
-
-        Args:
-            request: Original orchestration request
-            refined_output: Prompt refiner output with original and refined questions
-            relevant_chunks: Retrieved and ranked chunks
-            accumulated_response: Complete streamed response
-        """
-        try:
             # Extract embedding scores from chunks
-            embedding_scores = []
-            for chunk in relevant_chunks:
+            embedding_scores: List[float] = []
+            for chunk in ranked_chunks:
                 score_value = chunk.get("fused_score", chunk.get("score", 0.0))
                 try:
                     if isinstance(score_value, (int, float)):
@@ -1912,31 +1992,33 @@ class LLMOrchestrationService:
             result = await production_store.store_inference_result_async(
                 chat_id=request.chatId,
                 user_question=request.message,
-                refined_questions=refined_output.refined_questions,
+                refined_questions=refined_questions,
                 conversation_history=conversation_history_list,
-                ranked_chunks=relevant_chunks,
+                ranked_chunks=ranked_chunks,
                 embedding_scores=embedding_scores,
-                final_answer=accumulated_response,
+                final_answer=final_answer,
                 environment=request.environment,
+                vault_uuid=request.connection_id,
             )
 
             if result["success"]:
                 logger.info(
-                    f"Successfully stored inference data (async) for chat_id: {request.chatId}, environment: {request.environment}"
+                    f"Successfully stored streaming inference for chat_id: {request.chatId}, "
+                    f"environment: {request.environment}, "
+                    f"has_rag_data: {bool(refined_questions)}"
                 )
             else:
                 logger.warning(
-                    f"Failed to store inference data (async) for chat_id: {request.chatId}, environment: {request.environment} - "
+                    f"Failed to store streaming inference for chat_id: {request.chatId} - "
                     f"Error: {result['error']}"
                 )
 
         except Exception as e:
             # Log the error but don't fail the request
             logger.error(
-                f"Error storing inference data (async) for chat_id: {request.chatId}, environment: {request.environment} - {str(e)}"
+                f"Error storing streaming inference for chat_id: {request.chatId} - {str(e)}"
             )
 
-    @observe(name="initialize_guardrails", as_type="span")
     def _initialize_guardrails(
         self, environment: str, connection_id: Optional[str]
     ) -> NeMoRailsAdapter:
@@ -1994,7 +2076,7 @@ class LLMOrchestrationService:
             costs_metric["input_guardrails"] = result.usage
             if self.langfuse_config.langfuse_client:
                 langfuse = self.langfuse_config.langfuse_client
-                langfuse.update_current_generation(
+                langfuse.update_current_span(
                     input=user_message,
                     metadata={
                         "guardrail_type": "input",
@@ -2002,14 +2084,6 @@ class LLMOrchestrationService:
                         "verdict": result.verdict,
                         "blocked_reason": result.reason if not result.allowed else None,
                         "error": result.error if result.error else None,
-                    },
-                    usage_details={
-                        "input": result.usage.get("total_prompt_tokens", 0),
-                        "output": result.usage.get("total_completion_tokens", 0),
-                        "total": result.usage.get("total_tokens", 0),
-                    },  # type: ignore
-                    cost_details={
-                        "total": result.usage.get("total_cost", 0.0),
                     },
                 )
             logger.info(
@@ -2023,7 +2097,7 @@ class LLMOrchestrationService:
             logger.error(f"Input guardrails check failed: {str(e)}")
             if self.langfuse_config.langfuse_client:
                 langfuse = self.langfuse_config.langfuse_client
-                langfuse.update_current_generation(
+                langfuse.update_current_span(
                     metadata={
                         "error": str(e),
                         "error_type": type(e).__name__,
@@ -2066,7 +2140,7 @@ class LLMOrchestrationService:
             costs_metric["input_guardrails"] = result.usage
             if self.langfuse_config.langfuse_client:
                 langfuse = self.langfuse_config.langfuse_client
-                langfuse.update_current_generation(
+                langfuse.update_current_span(
                     input=user_message,
                     metadata={
                         "guardrail_type": "input",
@@ -2074,14 +2148,6 @@ class LLMOrchestrationService:
                         "verdict": result.verdict,
                         "blocked_reason": result.reason if not result.allowed else None,
                         "error": result.error if result.error else None,
-                    },
-                    usage_details={
-                        "input": result.usage.get("total_prompt_tokens", 0),
-                        "output": result.usage.get("total_completion_tokens", 0),
-                        "total": result.usage.get("total_tokens", 0),
-                    },  # type: ignore
-                    cost_details={
-                        "total": result.usage.get("total_cost", 0.0),
                     },
                 )
             logger.info(
@@ -2095,7 +2161,7 @@ class LLMOrchestrationService:
             logger.error(f"Input guardrails check failed: {str(e)}")
             if self.langfuse_config.langfuse_client:
                 langfuse = self.langfuse_config.langfuse_client
-                langfuse.update_current_generation(
+                langfuse.update_current_span(
                     metadata={
                         "error": str(e),
                         "error_type": type(e).__name__,
@@ -2138,7 +2204,7 @@ class LLMOrchestrationService:
             costs_metric["output_guardrails"] = result.usage
             if self.langfuse_config.langfuse_client:
                 langfuse = self.langfuse_config.langfuse_client
-                langfuse.update_current_generation(
+                langfuse.update_current_span(
                     input=assistant_message[:500],  # Truncate for readability
                     output=result.verdict,
                     metadata={
@@ -2148,14 +2214,6 @@ class LLMOrchestrationService:
                         "reason": result.reason if not result.allowed else None,
                         "error": result.error if result.error else None,
                         "response_length": len(assistant_message),
-                    },
-                    usage_details={
-                        "input": result.usage.get("total_prompt_tokens", 0),
-                        "output": result.usage.get("total_completion_tokens", 0),
-                        "total": result.usage.get("total_tokens", 0),
-                    },  # type: ignore
-                    cost_details={
-                        "total": result.usage.get("total_cost", 0.0),
                     },
                 )
             logger.info(
@@ -2169,7 +2227,7 @@ class LLMOrchestrationService:
             logger.error(f"Output guardrails check failed: {str(e)}")
             if self.langfuse_config.langfuse_client:
                 langfuse = self.langfuse_config.langfuse_client
-                langfuse.update_current_generation(
+                langfuse.update_current_span(
                     metadata={
                         "error": str(e),
                         "error_type": type(e).__name__,
@@ -2259,37 +2317,14 @@ class LLMOrchestrationService:
     ) -> None:
         """
         Update the budget for an LLM connection based on usage costs.
-        For production environment, fetches the connection ID asynchronously if not provided.
 
         Args:
-            connection_id: The LLM connection ID (optional)
+            connection_id: The vault_uuid identifying the LLM connection
             costs_metric: Dictionary of costs per component
             environment: The deployment environment (production/testing/development)
         """
         try:
             budget_tracker = get_budget_tracker()
-
-            # For production environment, fetch connection ID if not provided
-            if environment == "production" and not connection_id:
-                logger.debug(
-                    "Production environment detected, fetching connection ID..."
-                )
-                try:
-                    # Use synchronous fetch to avoid event loop issues
-                    production_id = (
-                        budget_tracker.connection_fetcher.fetch_connection_id_sync(
-                            "production"
-                        )
-                    )
-                    if production_id:
-                        connection_id = str(production_id)
-                        logger.info(f"Using production connection_id: {connection_id}")
-                    else:
-                        logger.warning("Could not fetch production connection ID")
-                except Exception as fetch_error:
-                    logger.error(
-                        f"Error fetching production connection ID: {str(fetch_error)}"
-                    )
 
             result = budget_tracker.update_budget_from_costs(
                 connection_id, costs_metric
@@ -2303,7 +2338,7 @@ class LLMOrchestrationService:
                     )
                 else:
                     logger.debug(
-                        f"Budget updated successfully for connection_id={connection_id}"
+                        f"Budget updated successfully for uuid={connection_id}"
                     )
             else:
                 reason = result.get("reason", "unknown")
@@ -2324,18 +2359,38 @@ class LLMOrchestrationService:
         """
         Initialize LLM Manager with proper configuration.
 
+        For production environment, resolves vault_uuid from DB if not provided.
+        For testing environment, connection_id (vault_uuid) must be provided.
+
         Args:
-            environment: Environment context (production/testing/development)
-            connection_id: Optional connection identifier
+            environment: Environment context (production/testing)
+            connection_id: Vault UUID for the connection (required for testing, auto-resolved for production)
 
         Returns:
-            LLMManager: Initialized LLM manager instance
+            LLMManager: Initialized LLM manager instance (with connection_id property)
         """
         try:
             logger.info(f"Initializing LLM Manager for environment: {environment}")
 
+            resolved_connection_id = connection_id
+
+            # Resolve vault_uuid for production if not provided
+            if environment == "production" and not connection_id:
+                from src.utils.connection_id_fetcher import get_connection_id_fetcher
+
+                fetcher = get_connection_id_fetcher()
+                resolved_connection_id = fetcher.fetch_vault_uuid_sync("production")
+                if not resolved_connection_id:
+                    raise ValueError(
+                        "No production connection found in database. "
+                        "Please create a production LLM connection first."
+                    )
+                logger.info(
+                    f"Resolved production vault_uuid from DB: {resolved_connection_id}"
+                )
+
             llm_manager = LLMManager(
-                environment=environment, connection_id=connection_id
+                environment=environment, connection_id=resolved_connection_id
             )
 
             llm_manager.ensure_global_config()
@@ -2347,12 +2402,13 @@ class LLMOrchestrationService:
             logger.error(f"Failed to initialize LLM Manager: {str(e)}")
             raise
 
-    @observe(name="refine_user_prompt", as_type="chain")
+    @observe(name="refine_user_prompt", as_type="generation")
     def _refine_user_prompt(
         self,
         llm_manager: LLMManager,
         original_message: str,
         conversation_history: List[ConversationItem],
+        conversation_summary: Optional[str] = None,
     ) -> tuple[PromptRefinerOutput, Dict[str, Any]]:
         """
         Refine user prompt using loaded LLM configuration and return usage info.
@@ -2361,6 +2417,10 @@ class LLMOrchestrationService:
             llm_manager: The LLM manager instance to use
             original_message: The original user message to refine
             conversation_history: Previous conversation context
+            conversation_summary: Optional summary of earlier conversation rounds
+                that were evicted from Redis.  When provided it is prepended to the
+                DSPy history as a ``system`` turn so the refiner can use it for
+                context without re-summarising via an LLM call.
 
         Returns:
             Tuple of (PromptRefinerOutput, usage_dict): The refined prompt output and usage info
@@ -2373,8 +2433,16 @@ class LLMOrchestrationService:
         logger.info("Starting prompt refinement process")
 
         try:
-            # Convert conversation history to DSPy format
+            # Convert conversation history to DSPy format, optionally prepending
+            # a pre-computed summary of earlier (evicted) conversation rounds.
             history: List[Dict[str, str]] = []
+            if conversation_summary:
+                history.append(
+                    {
+                        "role": "system",
+                        "content": f"Summary of earlier conversation: {conversation_summary}",
+                    }
+                )
             for item in conversation_history:
                 role = "assistant" if item.authorRole == "bot" else item.authorRole
                 history.append({"role": role, "content": item.message})
@@ -2641,7 +2709,7 @@ class LLMOrchestrationService:
 
         return references if references else None
 
-    @observe(name="generate_rag_response", as_type="generation")
+    @observe(name="generate_rag_response", as_type="span")
     def _generate_rag_response(
         self,
         llm_manager: LLMManager,
@@ -2719,17 +2787,11 @@ class LLMOrchestrationService:
             costs_metric["response_generator"] = generator_usage
             if self.langfuse_config.langfuse_client:
                 langfuse = self.langfuse_config.langfuse_client
-                langfuse.update_current_generation(
-                    model=llm_manager.get_provider_info().get("model", "unknown"),
-                    usage_details={
-                        "input": generator_usage.get("total_prompt_tokens", 0),
-                        "output": generator_usage.get("total_completion_tokens", 0),
-                        "total": generator_usage.get("total_tokens", 0),
-                    },
-                    cost_details={
-                        "total": generator_usage.get("total_cost", 0.0),
-                    },
+                langfuse.update_current_span(
                     metadata={
+                        "model": llm_manager.get_provider_info().get(
+                            "model", "unknown"
+                        ),
                         "num_calls": generator_usage.get("num_calls", 0),
                         "question_out_of_scope": question_out_of_scope,
                         "num_chunks_used": len(relevant_chunks)
@@ -2778,7 +2840,7 @@ class LLMOrchestrationService:
             doc_references = self._extract_document_references(relevant_chunks)
             content_with_refs = answer
             if doc_references:
-                refs_text = "\n\n**References:**\n" + "\n".join(
+                refs_text = REFERENCES_SECTION_HEADER + "\n".join(
                     f"{i + 1}. {ref.document_url}"
                     for i, ref in enumerate(doc_references)
                 )
@@ -2814,7 +2876,7 @@ class LLMOrchestrationService:
             )
             if self.langfuse_config.langfuse_client:
                 langfuse = self.langfuse_config.langfuse_client
-                langfuse.update_current_generation(
+                langfuse.update_current_span(
                     metadata={
                         "error_id": error_id,
                         "error_type": type(e).__name__,
@@ -2980,9 +3042,15 @@ class LLMOrchestrationService:
             from src.llm_orchestrator_config.context_manager import (
                 ContextGenerationManager,
             )
+            from src.utils.connection_id_fetcher import get_connection_id_fetcher
 
-            # Use existing LLM manager or create new one for context generation
-            llm_manager = LLMManager()
+            # Resolve production vault_uuid from DB before creating LLM manager
+            fetcher = get_connection_id_fetcher()
+            connection_id = fetcher.fetch_vault_uuid_sync("production")
+
+            llm_manager = LLMManager(
+                environment="production", connection_id=connection_id
+            )
             self._context_manager = ContextGenerationManager(llm_manager)
             logger.debug("Lazy initialized ContextGenerationManager for vector indexer")
 

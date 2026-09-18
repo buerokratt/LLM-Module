@@ -1,7 +1,10 @@
 """Simple time tracking for orchestration service steps."""
 
 from typing import Dict, Optional
-from loguru import logger
+from src.loki_logger import LokiLogger
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="time-tracker")
 
 
 def log_step_timings(

@@ -50,6 +50,7 @@ initContainer:
   image: 
     repository: "ghcr.io/buerokratt/llm-orchestration-service"  # Update with actual llm-orchestration image repository
     tag: "latest"
+    pullPolicy: "IfNotPresent"
   # InitContainer will prepare the runtime volumes
   prepareVolumes: true
 
@@ -73,9 +74,22 @@ healthcheck:
   # Additional readiness checks
   readinessPath: "/ready"
 
+# Environment variables injected into the LLM container
+# Redis defaults match the in-cluster Redis service (see Redis chart)
+env:
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  REDIS_AUTH: "myredissecret"
+  REDIS_SESSION_DB: "0"
+  VAULT_AGENT_PROXY: "true"
+  TOOL_CLASSIFIER_ENABLED: "true"
+  SERVICE_WORKFLOW_ENABLED: "true"
+  API_TOOL_CALLING_WORKFLOW_ENABLED: "true"
+  CONTEXT_WORKFLOW_ENABLED: "true"
+  MULTI_INTENT_ENABLED: "true"
+
 # Vault Agent sidecar configuration
 # WHY: LLM Orchestration needs read access to encrypted LLM API keys
 # Security: Agent enforces policy - read-only access to LLM secrets
 vaultAgent:
   enabled: true
-

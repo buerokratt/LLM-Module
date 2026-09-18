@@ -5,7 +5,10 @@ Detects Estonian, Russian, and English based on character patterns and common wo
 
 import re
 from typing import Literal
-from loguru import logger
+from src.loki_logger import LokiLogger
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="language-detector")
 
 LanguageCode = Literal["et", "ru", "en"]
 

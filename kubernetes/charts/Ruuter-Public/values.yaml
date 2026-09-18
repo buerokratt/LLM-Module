@@ -6,7 +6,7 @@ images:
   scope:
     registry: "ghcr.io"
     repository: "buerokratt/ruuter"
-    tag: v2.2.1
+    tag: "v2.2.8"
 
 service:
   type: ClusterIP
@@ -14,7 +14,7 @@ service:
   targetPort: 8086
 
 env: 
-  APPLICATION_CORS_ALLOWEDORIGINS: "http://localhost:8086,http://localhost:3001,http://localhost:3003,http://localhost:3004,http://localhost:8080,http://localhost:8000,http://localhost:8090"
+  APPLICATION_CORS_ALLOWEDORIGINS: "https://ec2-34-253-140-113.eu-west-1.compute.amazonaws.com:32017,http://localhost:8086,http://localhost:3001,http://localhost:3003,http://localhost:3004,http://localhost:8080,http://localhost:8000,http://localhost:8090"
   APPLICATION_HTTPCODESALLOWLIST: "200,201,202,204,400,401,403,500"
   APPLICATION_INTERNALREQUESTS_ALLOWEDIPS: "127.0.0.1"
   APPLICATION_LOGGING_DISPLAYREQUESTCONTENT: "true"
@@ -40,8 +40,8 @@ resources:
 
 ingress:
   enabled: true
-  host: "rag.local"  # Change this to  domain
-  corsAllowOrigin: "http://localhost:8086,http://localhost:3001,http://localhost:3003,http://localhost:3004,http://localhost:8080,http://localhost:8000,http://localhost:8090"
+  host: "ec2-34-253-140-113.eu-west-1.compute.amazonaws.com"  # EC2 domain
+  corsAllowOrigin: "https://ec2-34-253-140-113.eu-west-1.compute.amazonaws.com:32017,http://localhost:8086,http://localhost:3001,http://localhost:3003,http://localhost:3004,http://localhost:8080,http://localhost:8000,http://localhost:8090"
   ssl:
     enabled: false  # Set to true for production with proper certificates
     certIssuerName: "letsencrypt-prod"  
@@ -51,4 +51,4 @@ ingress:
 pullPolicy: IfNotPresent
 
 podAnnotations:
-  dsl-checksum: "94b84bb5ff4d"
+  dsl-checksum: "ac610bf9ecc0"

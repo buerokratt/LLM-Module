@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.tool_classifier.agentic_loop import AgenticLoop
-from src.tool_classifier.enums import AgenticLoopStatus
-from src.tool_classifier.param_extractor import ParamExtractionResult
+from tool_classifier.agentic_loop import AgenticLoop
+from tool_classifier.enums import AgenticLoopStatus
+from tool_classifier.param_extractor import ParamExtractionResult
 
 
 # ---------------------------------------------------------------------------
@@ -540,6 +540,7 @@ class TestErrorHandling:
             _HISTORY,
             {"validFrom": "2026-01-01"},
             "en",
+            1,
         )
 
 
@@ -963,3 +964,134 @@ class TestStreamRunTurn:
         assert tokens == []
         # Collected params returned unchanged on exit
         assert result.collected_params == {"validFrom": "2026-01-01"}
+
+
+# ---------------------------------------------------------------------------
+# seeded_params — L2 param_update pre-population at turn 0
+# ---------------------------------------------------------------------------
+
+
+class TestSeededParamsTurn0:
+    """Verify that seeded_params from L2 follow-up routing are merged into
+    collected_params at turn 0 only, with collected_params taking priority."""
+
+    @pytest.mark.asyncio
+    async def test_seeded_params_merged_at_turn_0(self) -> None:
+        """seeded_params are prepended to collected_params when turn_count=0."""
+        # Extractor returns only validFrom as newly extracted; countryIsoCode comes
+        # from seeded_params.
+        extractor_mock = _make_extractor_mock(
+            _extraction(
+                {"validFrom": "2026-01-01"},
+                [],  # nothing missing — both params will be present after seed merge
+                "none",
+            )
+        )
+        loop = _make_loop(extractor_mock)
+
+        result = await loop.run_turn(
+            chat_id=_CHAT_ID,
+            user_message="January 2026",
+            conversation_history=[],
+            params_schema=_SCHEMA_TWO_REQUIRED,
+            collected_params={},
+            turn_count=0,
+            seeded_params={"countryIsoCode": "EE"},
+        )
+
+        # Both params present → COMPLETED
+        assert result.status == AgenticLoopStatus.COMPLETED
+        assert result.collected_params.get("countryIsoCode") == "EE"
+        assert result.collected_params.get("validFrom") == "2026-01-01"
+
+    @pytest.mark.asyncio
+    async def test_collected_params_override_seeded_params(self) -> None:
+        """collected_params values beat seeded_params when the key overlaps."""
+        extractor_mock = _make_extractor_mock(
+            _extraction(
+                {"validFrom": "2026-06-01"},
+                [],
+                "none",
+            )
+        )
+        loop = _make_loop(extractor_mock)
+
+        result = await loop.run_turn(
+            chat_id=_CHAT_ID,
+            user_message="June 2026",
+            conversation_history=[],
+            params_schema=_SCHEMA_TWO_REQUIRED,
+            collected_params={"countryIsoCode": "LV"},  # explicit value takes priority
+            turn_count=0,
+            seeded_params={"countryIsoCode": "EE"},  # seeded value must be overridden
+        )
+
+        assert result.collected_params.get("countryIsoCode") == "LV"
+
+    @pytest.mark.asyncio
+    async def test_seeded_params_not_applied_on_subsequent_turns(self) -> None:
+        """seeded_params are ignored when turn_count > 0."""
+        extractor_mock = _make_extractor_mock(
+            _extraction({}, ["countryIsoCode", "validFrom"], "Which country and date?")
+        )
+        loop = _make_loop(extractor_mock)
+
+        result = await loop.run_turn(
+            chat_id=_CHAT_ID,
+            user_message="hello",
+            conversation_history=[],
+            params_schema=_SCHEMA_TWO_REQUIRED,
+            collected_params={},
+            turn_count=1,  # NOT turn 0 → seeded_params must be ignored
+            seeded_params={"countryIsoCode": "EE", "validFrom": "2026-01-01"},
+        )
+
+        # Even though seeded_params would satisfy all required params, they should
+        # not be applied after turn 0 → still NEEDS_INPUT
+        assert result.status == AgenticLoopStatus.NEEDS_INPUT
+        # seeded values not present in collected_params
+        assert "countryIsoCode" not in result.collected_params
+        assert "validFrom" not in result.collected_params
+
+    @pytest.mark.asyncio
+    async def test_seeded_params_none_does_not_raise(self) -> None:
+        """Passing seeded_params=None (default) at turn 0 behaves normally."""
+        extractor_mock = _make_extractor_mock(
+            _extraction({}, ["countryIsoCode", "validFrom"], "Which country?")
+        )
+        loop = _make_loop(extractor_mock)
+
+        result = await loop.run_turn(
+            chat_id=_CHAT_ID,
+            user_message="hello",
+            conversation_history=[],
+            params_schema=_SCHEMA_TWO_REQUIRED,
+            collected_params={},
+            turn_count=0,
+            seeded_params=None,
+        )
+
+        assert result.status == AgenticLoopStatus.NEEDS_INPUT
+
+    @pytest.mark.asyncio
+    async def test_seeded_params_partial_fill_still_asks_for_missing(self) -> None:
+        """seeded_params satisfy only one of two required params → still NEEDS_INPUT."""
+        extractor_mock = _make_extractor_mock(
+            _extraction({}, ["validFrom"], "From which date?")
+        )
+        loop = _make_loop(extractor_mock)
+
+        result = await loop.run_turn(
+            chat_id=_CHAT_ID,
+            user_message="Estonia",
+            conversation_history=[],
+            params_schema=_SCHEMA_TWO_REQUIRED,
+            collected_params={},
+            turn_count=0,
+            seeded_params={"countryIsoCode": "EE"},  # only one param seeded
+        )
+
+        # validFrom still missing → NEEDS_INPUT
+        assert result.status == AgenticLoopStatus.NEEDS_INPUT
+        # But seeded countryIsoCode should be present
+        assert result.collected_params.get("countryIsoCode") == "EE"

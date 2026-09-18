@@ -14,6 +14,9 @@ spec:
         component: vault-init
     spec:
       restartPolicy: {{ .Values.job.restartPolicy }}
+      # Run as root to allow chown of PVC directories (mirrors docker-compose user: "0")
+      securityContext:
+        runAsUser: 0
       {{- if .Values.affinity.enabled }}
       affinity:
         podAffinity:

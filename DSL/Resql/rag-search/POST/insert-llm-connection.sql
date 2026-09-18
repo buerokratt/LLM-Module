@@ -46,6 +46,7 @@ INSERT INTO rag_search.llm_connections (
     :embedding_azure_api_key
 ) RETURNING 
     id, 
+    vault_uuid,
     connection_name,
     llm_platform, 
     llm_model, 

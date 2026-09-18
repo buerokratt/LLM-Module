@@ -18,3 +18,10 @@ spec:
             name: gui
             port:
               number: 3001
+      - path: /vault-agent-gui
+        pathType: Prefix
+        backend:
+          service:
+            name: gui
+            port:
+              number: 3001

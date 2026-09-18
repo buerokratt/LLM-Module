@@ -7,7 +7,9 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Union, cast, Iterator, AsyncIterator
 import asyncio
 import dspy
-from loguru import logger
+from src.loki_logger import LokiLogger
+from langfuse import observe
+from src.utils.observation_utils import update_observation_safe
 
 from langchain_core.callbacks.manager import (
     CallbackManagerForLLMRun,
@@ -16,6 +18,10 @@ from langchain_core.callbacks.manager import (
 from langchain_core.language_models.llms import LLM
 from langchain_core.outputs import GenerationChunk
 from src.guardrails.guardrails_llm_configs import TEMPERATURE, MAX_TOKENS, MODEL_NAME
+from src.utils.cost_utils import get_lm_usage_since
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="dspy-nemo-adapter")
 
 
 class DSPyNeMoLLM(LLM):
@@ -122,6 +128,7 @@ class DSPyNeMoLLM(LLM):
 
         return ""
 
+    @observe(name="nemo_guardrail_llm_call", as_type="generation")
     def _call(
         self,
         prompt: str,
@@ -135,6 +142,11 @@ class DSPyNeMoLLM(LLM):
         This is the standard path for NeMo Guardrails when streaming is disabled.
         Call DSPy's LM directly with the prompt.
         """
+        history_length_before = 0
+        lm_for_usage = dspy.settings.lm
+        if lm_for_usage and hasattr(lm_for_usage, "history"):
+            history_length_before = len(lm_for_usage.history)
+
         try:
             lm = self._get_dspy_lm()
 
@@ -148,12 +160,32 @@ class DSPyNeMoLLM(LLM):
 
             # DSPy LM call - returns text directly
             response = lm(prompt, **call_kwargs)
-            return self._extract_text_from_response(response)
+            response_text = self._extract_text_from_response(response)
+
+            usage_info = get_lm_usage_since(history_length_before)
+            update_observation_safe(
+                input_data={
+                    "prompt_preview": prompt[:500],
+                    "max_tokens": call_kwargs["max_tokens"],
+                    "temperature": call_kwargs["temperature"],
+                },
+                output_data={"response_preview": response_text[:500]},
+                metadata={
+                    "model": self.model_name,
+                    "usage": usage_info,
+                    "num_calls": usage_info.get("num_calls", 0),
+                    "streaming": False,
+                    "guardrail_provider": "nemo",
+                },
+            )
+
+            return response_text
 
         except Exception as e:
             logger.error(f"Error in DSPyNeMoLLM._call: {str(e)}")
             raise RuntimeError(f"LLM generation failed: {str(e)}") from e
 
+    @observe(name="nemo_guardrail_llm_call", as_type="generation")
     async def _acall(
         self,
         prompt: str,
@@ -167,6 +199,11 @@ class DSPyNeMoLLM(LLM):
         Uses asyncio.to_thread to prevent blocking the event loop.
         This is critical because DSPy's LM is synchronous and makes network calls.
         """
+        history_length_before = 0
+        lm_for_usage = dspy.settings.lm
+        if lm_for_usage and hasattr(lm_for_usage, "history"):
+            history_length_before = len(lm_for_usage.history)
+
         try:
             lm = self._get_dspy_lm()
 
@@ -180,7 +217,26 @@ class DSPyNeMoLLM(LLM):
 
             # Run in thread to avoid blocking
             response = await asyncio.to_thread(lm, prompt, **call_kwargs)
-            return self._extract_text_from_response(response)
+            response_text = self._extract_text_from_response(response)
+
+            usage_info = get_lm_usage_since(history_length_before)
+            update_observation_safe(
+                input_data={
+                    "prompt_preview": prompt[:500],
+                    "max_tokens": call_kwargs["max_tokens"],
+                    "temperature": call_kwargs["temperature"],
+                },
+                output_data={"response_preview": response_text[:500]},
+                metadata={
+                    "model": self.model_name,
+                    "usage": usage_info,
+                    "num_calls": usage_info.get("num_calls", 0),
+                    "streaming": False,
+                    "guardrail_provider": "nemo",
+                },
+            )
+
+            return response_text
 
         except Exception as e:
             logger.error(f"Error in DSPyNeMoLLM._acall: {str(e)}")

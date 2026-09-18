@@ -134,7 +134,8 @@ async def retrieve_contextual_chunks(
 ```python
 class HTTPClientManager:
     """Centralized HTTP client with connection pooling and resource management"""
-    
+
+
 class ServiceResilienceManager:
     """Circuit breaker implementation for fault tolerance"""
 ```
@@ -155,12 +156,14 @@ When the LLM Orchestration Service receives multiple simultaneous requests, the 
 class QdrantContextualSearch:
     def __init__(self):
         self.client = httpx.AsyncClient()  # New client per instance
-        
+
+
 class SmartBM25Search:
     def __init__(self):
         self.client = httpx.AsyncClient()  # Another new client
 
-# Result: 
+
+# Result:
 # - 100+ HTTP connections for 10 concurrent requests
 # - Connection exhaustion
 # - Resource leaks
@@ -171,18 +174,19 @@ class SmartBM25Search:
 ```python
 # GOOD: Shared HTTP client with connection pooling
 class HTTPClientManager:
-    _instance: Optional['HTTPClientManager'] = None  # Singleton
-    
+    _instance: Optional["HTTPClientManager"] = None  # Singleton
+
     async def get_client(self) -> httpx.AsyncClient:
         if self._client is None:
             self._client = httpx.AsyncClient(
                 limits=httpx.Limits(
-                    max_connections=100,        # Total pool size
-                    max_keepalive_connections=20  # Reuse connections
+                    max_connections=100,  # Total pool size
+                    max_keepalive_connections=20,  # Reuse connections
                 ),
-                timeout=httpx.Timeout(30.0)
+                timeout=httpx.Timeout(30.0),
             )
         return self._client
+
 
 # Result:
 # - Single connection pool (100 connections max)
@@ -195,10 +199,10 @@ class HTTPClientManager:
 ```python
 class ServiceResilienceManager:
     def __init__(self, config):
-        self.failure_threshold = 3      # Open circuit after 3 failures
-        self.recovery_timeout = 60.0    # Try recovery after 60 seconds
-        self.state = "CLOSED"           # CLOSED → OPEN → HALF_OPEN
-    
+        self.failure_threshold = 3  # Open circuit after 3 failures
+        self.recovery_timeout = 60.0  # Try recovery after 60 seconds
+        self.state = "CLOSED"  # CLOSED → OPEN → HALF_OPEN
+
     def can_execute(self) -> bool:
         """Prevents cascading failures during high load"""
         if self.state == "OPEN":
@@ -217,16 +221,16 @@ class QdrantContextualSearch:
     def __init__(self, qdrant_url: str, config: ContextualRetrievalConfig):
         # Uses shared HTTP client manager
         self.http_manager = HTTPClientManager()
-        
+
     async def search_contextual_embeddings(self, embedding, collections, limit):
         # All Qdrant API calls use managed HTTP client
         client = await self.http_manager.get_client()
-        
+
         # Circuit breaker protects against Qdrant downtime
         response = await self.http_manager.execute_with_circuit_breaker(
             method="POST",
             url=f"{self.qdrant_url}/collections/{collection}/points/search",
-            json=search_payload
+            json=search_payload,
         )
 ```
 
@@ -236,12 +240,10 @@ class QdrantContextualSearch:
     async def get_embedding_for_query(self, query: str):
         # Uses shared HTTP client for LLM Orchestration API calls
         client = await self.http_manager.get_client()
-        
+
         # Resilient embedding generation
         response = await self.http_manager.execute_with_circuit_breaker(
-            method="POST", 
-            url="/embeddings",
-            json={"inputs": [query]}
+            method="POST", url="/embeddings", json={"inputs": [query]}
         )
 ```
 
@@ -275,28 +277,28 @@ async def retry_http_request(
     url: str,
     max_retries: int = 3,
     retry_delay: float = 1.0,
-    backoff_factor: float = 2.0
+    backoff_factor: float = 2.0,
 ) -> Optional[httpx.Response]:
     """
     Handles transient failures gracefully:
     - Network hiccups during high load
-    - Temporary service unavailability  
+    - Temporary service unavailability
     - Rate limiting responses
     """
     for attempt in range(max_retries + 1):
         try:
             response = await client.request(method, url, **kwargs)
-            
+
             # Success - return immediately
             if response.status_code < 400:
                 return response
-                
+
             # 4xx errors (client errors) - don't retry
             if 400 <= response.status_code < 500:
                 return response
-                
+
             # 5xx errors (server errors) - retry with backoff
-            
+
         except (httpx.ConnectError, httpx.TimeoutException) as e:
             if attempt < max_retries:
                 await asyncio.sleep(retry_delay)
@@ -312,11 +314,11 @@ def client_stats(self) -> Dict[str, Any]:
     """Monitor connection pool health during high load"""
     return {
         "status": "active",
-        "pool_connections": 45,      # Currently active connections
-        "keepalive_connections": 15, # Reusable connections
+        "pool_connections": 45,  # Currently active connections
+        "keepalive_connections": 15,  # Reusable connections
         "circuit_breaker_state": "CLOSED",
         "total_requests": 1247,
-        "failed_requests": 3
+        "failed_requests": 3,
     }
 ```
 
@@ -356,19 +358,19 @@ class ContextualRetriever:
 ```python
 def detect_optimal_collections(query: str) -> List[str]:
     collections = []
-    
+
     # Check Azure keywords
     if any(keyword in query.lower() for keyword in AZURE_KEYWORDS):
         collections.append("azure_contextual_collection")
-    
-    # Check AWS keywords  
+
+    # Check AWS keywords
     if any(keyword in query.lower() for keyword in AWS_KEYWORDS):
         collections.append("aws_contextual_collection")
-    
+
     # Default fallback
     if not collections:
         collections = ["azure_contextual_collection", "aws_contextual_collection"]
-    
+
     return collections
 ```
 
@@ -451,9 +453,7 @@ Where:
 ```python
 # 1. Initialize ContextualRetriever
 retriever = ContextualRetriever(
-    qdrant_url="http://qdrant:6333",
-    environment="production",
-    connection_id="user123"
+    qdrant_url="http://qdrant:6333", environment="production", connection_id="user123"
 )
 
 # 2. Initialize components
@@ -467,7 +467,7 @@ original_question = "How do I set up Azure authentication?"
 refined_questions = [
     "What are the steps to configure Azure Active Directory authentication?",
     "How to implement OAuth2 with Azure AD?",
-    "Azure authentication setup guide"
+    "Azure authentication setup guide",
 ]
 ```
 
@@ -475,8 +475,7 @@ refined_questions = [
 ```python
 # Dynamic provider detection
 collections = await provider_detection.detect_optimal_collections(
-    environment="production",
-    connection_id="user123"
+    environment="production", connection_id="user123"
 )
 # Result: ["azure_contextual_collection"] (Azure keywords detected)
 ```
@@ -488,10 +487,8 @@ if config.enable_parallel_search:
     semantic_task = _semantic_search(
         original_question, refined_questions, collections, 40, env, conn_id
     )
-    bm25_task = _bm25_search(
-        original_question, refined_questions, 40
-    )
-    
+    bm25_task = _bm25_search(original_question, refined_questions, 40)
+
     semantic_results, bm25_results = await asyncio.gather(
         semantic_task, bm25_task, return_exceptions=True
     )
@@ -507,7 +504,7 @@ batch_embeddings = qdrant_search.get_embeddings_for_queries_batch(
     queries=all_queries,
     llm_service=cached_llm_service,
     environment="production",
-    connection_id="user123"
+    connection_id="user123",
 )
 
 # Parallel search execution
@@ -542,19 +539,21 @@ deduplicated_bm25 = deduplicate_bm25_results(bm25_results)
 # Dynamic Rank Fusion
 fused_results = rank_fusion.fuse_results(
     semantic_results=semantic_results,  # 40 results
-    bm25_results=bm25_results,         # 40 results  
-    final_top_n=12                     # Return top 12
+    bm25_results=bm25_results,  # 40 results
+    final_top_n=12,  # Return top 12
 )
 
 # RRF calculation for each document
 for doc_id in all_document_ids:
     semantic_rank = get_rank_in_results(doc_id, semantic_results)
     bm25_rank = get_rank_in_results(doc_id, bm25_results)
-    
+
     rrf_score = 0
-    if semantic_rank: rrf_score += 1 / (60 + semantic_rank)
-    if bm25_rank: rrf_score += 1 / (60 + bm25_rank)
-    
+    if semantic_rank:
+        rrf_score += 1 / (60 + semantic_rank)
+    if bm25_rank:
+        rrf_score += 1 / (60 + bm25_rank)
+
     doc_scores[doc_id] = rrf_score
 
 # Sort by RRF score and return top N
@@ -574,10 +573,10 @@ for result in fused_results:
             "retrieval_type": "contextual",
             "semantic_score": result.get("normalized_score"),
             "bm25_score": result.get("normalized_bm25_score"),
-            "fused_score": result.get("fused_score")
+            "fused_score": result.get("fused_score"),
         },
         "score": result.get("fused_score"),
-        "id": result.get("chunk_id")
+        "id": result.get("chunk_id"),
     }
     formatted_results.append(formatted_chunk)
 
@@ -613,16 +612,14 @@ selected_collections = ["azure_contextual_collection"]
 # Batch embedding generation
 queries = [
     "How do I set up Azure authentication?",
-    "What are the steps to configure Azure Active Directory authentication?", 
+    "What are the steps to configure Azure Active Directory authentication?",
     "How to implement OAuth2 with Azure AD?",
-    "Azure authentication setup guide"
+    "Azure authentication setup guide",
 ]
 
 # LLM API call for batch embeddings
 embeddings = llm_service.create_embeddings_for_indexer(
-    texts=queries,
-    model="text-embedding-3-large",
-    environment="production"
+    texts=queries, model="text-embedding-3-large", environment="production"
 )
 
 # Parallel search across queries
@@ -632,7 +629,7 @@ semantic_results = [
         "contextual_content": "This section covers Azure Active Directory authentication setup. To configure Azure AD authentication, you need to...",
         "score": 0.89,
         "document_url": "azure-auth-guide.pdf",
-        "source_query": "How do I set up Azure authentication?"
+        "source_query": "How do I set up Azure authentication?",
     },
     # ... more results
 ]
@@ -643,10 +640,10 @@ semantic_results = [
 # BM25 lexical search
 bm25_results = [
     {
-        "chunk_id": "azure_auth_002", 
+        "chunk_id": "azure_auth_002",
         "contextual_content": "This guide explains Azure authentication implementation. Follow these steps to set up Azure AD...",
         "bm25_score": 8.42,
-        "document_url": "azure-implementation.md"
+        "document_url": "azure-implementation.md",
     },
     # ... more results
 ]
@@ -675,14 +672,14 @@ final_results = [
         "text": "This section covers Azure Active Directory authentication setup. To configure Azure AD authentication, you need to register your application in the Azure portal, configure redirect URIs, and implement the OAuth2 flow...",
         "meta": {
             "source_file": "azure-auth-guide.pdf",
-            "chunk_id": "azure_auth_001", 
+            "chunk_id": "azure_auth_001",
             "retrieval_type": "contextual",
             "semantic_score": 0.89,
             "bm25_score": 0.72,
-            "fused_score": 0.0323
+            "fused_score": 0.0323,
         },
         "score": 0.0323,
-        "id": "azure_auth_001"
+        "id": "azure_auth_001",
     }
     # ... 11 more chunks (final_top_n = 12)
 ]
@@ -774,14 +771,12 @@ rank_fusion:
 def _initialize_contextual_retriever(
     self, environment: str, connection_id: Optional[str]
 ) -> ContextualRetriever:
-    qdrant_url = os.getenv('QDRANT_URL', 'http://qdrant:6333')
-    
+    qdrant_url = os.getenv("QDRANT_URL", "http://qdrant:6333")
+
     contextual_retriever = ContextualRetriever(
-        qdrant_url=qdrant_url,
-        environment=environment,
-        connection_id=connection_id
+        qdrant_url=qdrant_url, environment=environment, connection_id=connection_id
     )
-    
+
     return contextual_retriever
 ```
 
@@ -791,14 +786,12 @@ def _initialize_contextual_retriever(
 def _execute_orchestration_pipeline(self, request, components, costs_metric):
     # Step 1: Refine user prompt
     refined_output = self._refine_user_prompt(...)
-    
-    # Step 2: Retrieve contextual chunks  
+
+    # Step 2: Retrieve contextual chunks
     relevant_chunks = self._safe_retrieve_contextual_chunks(
-        components["contextual_retriever"], 
-        refined_output, 
-        request
+        components["contextual_retriever"], refined_output, request
     )
-    
+
     # Step 3: Generate response with chunks
     response = self._generate_response_with_chunks(
         relevant_chunks, refined_output, request
@@ -810,26 +803,26 @@ def _execute_orchestration_pipeline(self, request, components, costs_metric):
 def _safe_retrieve_contextual_chunks(
     self,
     contextual_retriever: Optional[ContextualRetriever],
-    refined_output: PromptRefinerOutput, 
+    refined_output: PromptRefinerOutput,
     request: OrchestrationRequest,
 ) -> Optional[List[Dict]]:
-    
+
     async def async_retrieve():
         # Initialize if needed
         if not contextual_retriever.initialized:
             success = await contextual_retriever.initialize()
             if not success:
                 return None
-                
+
         # Retrieve chunks
         chunks = await contextual_retriever.retrieve_contextual_chunks(
             original_question=refined_output.original_question,
             refined_questions=refined_output.refined_questions,
             environment=request.environment,
-            connection_id=request.connection_id
+            connection_id=request.connection_id,
         )
         return chunks
-    
+
     # Run async in sync context
     return asyncio.run(async_retrieve())
 ```
@@ -905,18 +898,18 @@ Circuit Breaker: CLOSED (no failures)
 {
     "total_pool_size": 100,
     "active_connections": {
-        "qdrant_searches": 35,      # Vector searches
-        "llm_embeddings": 25,       # Embedding generation  
-        "bm25_operations": 10,      # Lexical searches
-        "keepalive_reserved": 20,   # Ready for reuse
-        "available": 10             # Unused capacity
+        "qdrant_searches": 35,  # Vector searches
+        "llm_embeddings": 25,  # Embedding generation
+        "bm25_operations": 10,  # Lexical searches
+        "keepalive_reserved": 20,  # Ready for reuse
+        "available": 10,  # Unused capacity
     },
     "efficiency_metrics": {
         "connection_reuse_rate": "85%",
-        "average_connection_lifetime": "45s", 
+        "average_connection_lifetime": "45s",
         "failed_connections": 0,
-        "circuit_breaker_activations": 0
-    }
+        "circuit_breaker_activations": 0,
+    },
 }
 ```
 
@@ -945,24 +938,24 @@ Total System Downtime: 90 seconds
 ```python
 def handle_qdrant_failure_scenario():
     """Real-world circuit breaker behavior"""
-    
+
     # CLOSED → OPEN (after 3 failures)
     failures = [
         "Request 1: Qdrant timeout (30s)",
-        "Request 2: Qdrant timeout (30s)", 
-        "Request 3: Qdrant timeout (30s)"  # Circuit opens here
+        "Request 2: Qdrant timeout (30s)",
+        "Request 3: Qdrant timeout (30s)",  # Circuit opens here
     ]
-    
+
     # OPEN state (60 seconds)
     blocked_requests = [
         "Request 4-47: Immediate failure (0.1s each)",
-        "Total blocked: 44 requests in 4.4 seconds"
+        "Total blocked: 44 requests in 4.4 seconds",
     ]
-    
+
     # HALF_OPEN → CLOSED (service recovery)
     recovery = [
         "Request 48: Success (200ms) → Circuit CLOSED",
-        "Request 49-100: Normal operation resumed"
+        "Request 49-100: Normal operation resumed",
     ]
 ```
 
@@ -1004,14 +997,14 @@ def handle_qdrant_failure_scenario():
     "original_question": "How do I set up Azure authentication?",
     "refined_questions": [
         "What are the steps to configure Azure Active Directory authentication?",
-        "How to implement OAuth2 with Azure AD?", 
-        "Azure authentication setup guide"
+        "How to implement OAuth2 with Azure AD?",
+        "Azure authentication setup guide",
     ],
     "environment": "production",
     "connection_id": "user123",
-    "topk_semantic": 40,      # Optional - uses config default
-    "topk_bm25": 40,         # Optional - uses config default  
-    "final_top_n": 12        # Optional - uses config default
+    "topk_semantic": 40,  # Optional - uses config default
+    "topk_bm25": 40,  # Optional - uses config default
+    "final_top_n": 12,  # Optional - uses config default
 }
 ```
 
@@ -1028,16 +1021,15 @@ def handle_qdrant_failure_scenario():
             "retrieval_type": "contextual",
             "primary_source": "azure",
             "semantic_score": 0.89,
-            "bm25_score": 0.72, 
-            "fused_score": 0.0323
+            "bm25_score": 0.72,
+            "fused_score": 0.0323,
         },
-        
         # Legacy compatibility fields
         "id": "azure_auth_001",
         "score": 0.0323,
         "content": "This section covers Azure Active Directory authentication setup...",
         "document_url": "azure-auth-guide.pdf",
-        "retrieval_type": "contextual"
+        "retrieval_type": "contextual",
     }
     # ... 11 more chunks
 ]
@@ -1052,15 +1044,15 @@ refined_output = PromptRefinerOutput(
     original_question="How do I set up Azure authentication?",
     refined_questions=[...],
     is_off_topic=False,
-    reasoning="User asking about Azure authentication setup"
+    reasoning="User asking about Azure authentication setup",
 )
 
 # OrchestrationRequest
 request = OrchestrationRequest(
-    message="How do I set up Azure authentication?", 
+    message="How do I set up Azure authentication?",
     environment="production",
     connection_id="user123",
-    chatId="chat456"
+    chatId="chat456",
 )
 ```
 
@@ -1070,8 +1062,8 @@ request = OrchestrationRequest(
 contextual_chunks = [
     {
         "text": "contextual content...",  # This is what ResponseGenerator uses
-        "meta": {...},                   # Source information and scores
-        "score": 0.0323                  # Final fused score
+        "meta": {...},  # Source information and scores
+        "score": 0.0323,  # Final fused score
     }
 ]
 ```
@@ -1092,8 +1084,8 @@ class RateLimiter:
 #### 2. Enhanced Caching
 ```python
 class EmbeddingCache:
-    max_size: int = 1000      # LRU cache for embeddings
-    ttl_seconds: int = 3600   # 1 hour TTL
+    max_size: int = 1000  # LRU cache for embeddings
+    ttl_seconds: int = 3600  # 1 hour TTL
 ```
 
 #### 3. Connection Pool Optimization

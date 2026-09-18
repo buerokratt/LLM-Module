@@ -1,22 +1,27 @@
 # HashiCorp Vault Server Configuration
-# Production-ready configuration for LLM Orchestration Service
+# Single-node Raft for the RAG-Module services
 
-# Storage backend - Raft for high availability
+# Storage backend - Raft
 storage "raft" {
   path    = "/vault/file"
   node_id = "vault-node-1"
-  
-  # Retry join configuration for clustering (single node for now)
-  retry_join {
-    leader_api_addr = "http://vault:8200"
-  }
+
+  # NOTE: No retry_join for a single node. A lone node self-bootstraps.
+  # A retry_join pointing at itself causes repeated
+  # "failed to get raft challenge ... Vault is sealed" errors and a
+  # messy double Raft init on every boot. Add retry_join back only when
+  # you actually have peer nodes to join.
 }
 
-# HTTP listener configuration
+# HTTP API listener.
+# Vault automatically uses the next port up (8201) as its internal
+# cluster port, so do NOT define a separate listener on 8201 — that
+# collides with the cluster listener ("bind: address already in use")
+# and degrades the login/request-forwarding path the agents rely on.
 listener "tcp" {
-  address       = "0.0.0.0:8200"
-  tls_disable   = true
-  
+  address     = "0.0.0.0:8200"
+  tls_disable = true
+
   # Enable CORS for web UI access
   cors_enabled = true
   cors_allowed_origins = [
@@ -25,14 +30,9 @@ listener "tcp" {
   ]
 }
 
-# Cluster listener for HA (required even for single node)
-listener "tcp" {
-  address       = "0.0.0.0:8201"
-  cluster_addr  = "http://0.0.0.0:8201"
-  tls_disable   = true
-}
-
-# API and cluster addresses
+# API and cluster addresses.
+# cluster_addr tells Vault where its internal cluster port (8201) is
+# reachable; Vault binds that port itself — no listener block needed.
 api_addr     = "http://vault:8200"
 cluster_addr = "http://vault:8201"
 
@@ -46,9 +46,5 @@ default_lease_ttl = "168h"  # 7 days
 max_lease_ttl     = "720h"  # 30 days
 
 # Logging configuration
-log_level = "INFO"
+log_level  = "INFO"
 log_format = "json"
-
-# Development settings (remove in production)
-# Note: In production, you should not use dev mode
-# and should properly initialize and unseal the vault

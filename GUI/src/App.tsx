@@ -64,8 +64,7 @@ const App: FC = () => {
             <Route path="/create-llm-connection" element={<CreateLLMConnection />} />
             <Route path="/view-llm-connection" element={<ViewLLMConnection />} />
             <Route path="/prompt-configurations" element={<PromptConfigurations />} />
-            <Route path="/test-llm" element={<TestLLM />} />
-            <Route path="/test-production-llm" element={<TestProductionLLM />} /> 
+            <Route path="/test-llm" element={<TestProductionLLM />} /> 
 
 
             </Route>

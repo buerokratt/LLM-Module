@@ -135,6 +135,10 @@ def _make_orchestration_service(session_store: Optional[AsyncMock] = None) -> Ma
         return f'data: {{"chatId":"{chat_id}","payload":{{"content":"{content}"}}}}\n\n'
 
     svc.format_sse = _format_sse
+    svc.store_streaming_inference = AsyncMock()
+    svc.handle_output_guardrails = AsyncMock(
+        side_effect=lambda _adapter, response, _req, _costs: response
+    )
     return svc
 
 
@@ -494,19 +498,25 @@ class TestStreamApiAndFormat:
             for token in ["Holiday", " info", " here."]:
                 yield token
 
-        executor._formatter.stream_forward = _fake_stream
+        mock_formatter = MagicMock()
+        mock_formatter.stream_forward = _fake_stream
 
-        frames = [
-            frame
-            async for frame in executor._stream_api_and_format(
-                chat_id=_CHAT_ID,
-                endpoint=_ENDPOINT_HOLIDAYS,
-                collected_params={"countryIsoCode": "EE"},
-                user_query="holidays",
-                detected_language="en",
-                orchestration_service=svc,
-            )
-        ]
+        with patch(
+            "tool_classifier.workflows.api_tool_workflow.APIResponseFormatterModule",
+            return_value=mock_formatter,
+        ):
+            frames = [
+                frame
+                async for frame in executor._stream_api_and_format(
+                    chat_id=_CHAT_ID,
+                    endpoint=_ENDPOINT_HOLIDAYS,
+                    collected_params={"countryIsoCode": "EE"},
+                    user_query="holidays",
+                    detected_language="en",
+                    orchestration_service=svc,
+                    request=_make_request(),
+                )
+            ]
 
         # 3 token frames + 1 END frame
         assert len(frames) == 4
@@ -536,6 +546,7 @@ class TestStreamApiAndFormat:
                 user_query="holidays",
                 detected_language="et",
                 orchestration_service=svc,
+                request=_make_request(),
             )
         ]
 

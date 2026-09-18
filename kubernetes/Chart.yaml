@@ -113,4 +113,7 @@ dependencies:
     version: 0.1.0
     repository: "file://./charts/Notifications-Node"
     condition: Notifications-Node.enabled
-
+  - name: OpenSearch
+    version: 0.1.0
+    repository: "file://./charts/OpenSearch"
+    condition: OpenSearch.enabled

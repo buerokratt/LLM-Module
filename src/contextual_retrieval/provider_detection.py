@@ -8,7 +8,8 @@ Intelligently selects optimal Qdrant collections based on:
 """
 
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
-from loguru import logger
+from src.loki_logger import LokiLogger
+
 from contextual_retrieval.contextual_retrieval_api_client import get_http_client_manager
 from contextual_retrieval.error_handler import SecureErrorHandler
 from contextual_retrieval.constants import (
@@ -17,6 +18,9 @@ from contextual_retrieval.constants import (
     LoggingConstants,
 )
 from contextual_retrieval.config import ConfigLoader, ContextualRetrievalConfig
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="provider-detection")
 
 if TYPE_CHECKING:
     from contextual_retrieval.contextual_retrieval_api_client import HTTPClientManager

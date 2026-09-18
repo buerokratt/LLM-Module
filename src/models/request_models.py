@@ -6,7 +6,10 @@ import json
 
 from src.utils.input_sanitizer import InputSanitizer
 from src.llm_orchestrator_config.stream_config import StreamConfig
-from loguru import logger
+from src.loki_logger import LokiLogger
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="request-models")
 
 
 class ConversationItem(BaseModel):
@@ -54,12 +57,19 @@ class OrchestrationRequest(BaseModel):
         ..., description="Previous conversation history"
     )
     url: str = Field(..., description="Source URL context")
-    environment: Literal["production", "testing", "development"] = Field(
-        ..., description="Environment context"
+    environment: Literal["production", "testing"] = Field(
+        "production", description="Environment context (defaults to production)"
     )
     connection_id: Optional[str] = Field(
-        None, description="Optional connection identifier"
+        None, description="Vault UUID for the connection (required for testing)"
     )
+
+    @model_validator(mode="after")
+    def validate_connection_id_for_testing(self) -> "OrchestrationRequest":
+        """Ensure connection_id is provided when environment is testing."""
+        if self.environment == "testing" and not self.connection_id:
+            raise ValueError("connection_id is required when environment is 'testing'")
+        return self
 
     @field_validator("message")
     @classmethod
@@ -93,7 +103,6 @@ class OrchestrationRequest(BaseModel):
         cls, v: List[ConversationItem]
     ) -> List[ConversationItem]:
         """Validate conversation history limits."""
-        from loguru import logger
 
         # Limit number of conversation history items
         max_history_items = 100
@@ -259,7 +268,7 @@ class TestOrchestrationRequest(BaseModel):
     """Model for simplified test orchestration request."""
 
     message: str = Field(..., description="User's message/query")
-    environment: Literal["production", "testing", "development"] = Field(
+    environment: Literal["production", "testing"] = Field(
         ..., description="Environment context"
     )
     connectionId: Optional[int] = Field(

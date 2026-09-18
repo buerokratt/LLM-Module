@@ -7,8 +7,11 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
-from loguru import logger
+from src.loki_logger import LokiLogger
 from src.guardrails.optimized_guardrails_loader import OptimizedGuardrailsLoader
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="diagnose-guardrails-loader")
 
 
 def main() -> None:

@@ -133,8 +133,9 @@ services:
       - DEBUG_ENABLED=true
       - CHOKIDAR_USEPOLLING=true
       - PORT=3001
-      - REACT_APP_SERVICE_ID=conversations,settings,monitoring
+      - REACT_APP_SERVICE_ID=settings,services,training,rag-search,knowledge-center
       - REACT_APP_ENABLE_HIDDEN_FEATURES=TRUE
+      - REACT_APP_MENU_JSON= [{"id":"conversations","label":{"et":"Vestlused","en":"Conversations"},"path":"/chat","children":[{"label":{"et":"Vastamata","en":"Unanswered"},"path":"/unanswered"},{"label":{"et":"Aktiivsed","en":"Active"},"path":"/active"},{"label":{"et":"Ootel","en":"Pending"},"path":"/pending"},{"label":{"et":"Ajalugu","en":"History"},"path":"/history"},{"label":{"et":"Valideerimised","en":"Validations"},"path":"/validations"}]},{"id":"training","label":{"et":"Treening","en":"Training"},"path":"/training","children":[{"label":{"et":"Treening","en":"Training"},"path":"/training","children":[{"label":{"et":"Teemad","en":"Themes"},"path":"/training/intents"},{"hidden":true,"label":{"et":"Avalikud teemad","en":"Public themes"},"path":"/training/common-intents"},{"label":{"et":"Teemade järeltreenimine","en":"Post training themes"},"path":"/training/intents-followup-training"},{"label":{"et":"Vastused","en":"Answers"},"path":"/training/responses"},{"label":{"et":"Reeglid","en":"Rules"},"path":"/training/rules"},{"hidden":true,"label":{"et":"Konfiguratsioon","en":"Configuration"},"path":"/training/configuration"},{"label":{"et":"Vormid","en":"Forms"},"path":"/training/forms"},{"label":{"et":"Mälukohad","en":"Slots"},"path":"/training/slots"}]},{"label":{"et":"Ajaloolised vestlused","en":"Historical conversations"},"path":"/history","children":[{"label":{"et":"Ajalugu","en":"History"},"path":"/history/history"},{"hidden":true,"label":{"et":"Pöördumised","en":"Appeals"},"path":"/history/appeal"}]},{"label":{"et":"Mudelipank ja analüütika","en":"Modelbank and analytics"},"path":"/analytics","children":[{"label":{"et":"Teemade ülevaade","en":"Overview of topics"},"path":"/analytics/overview"},{"label":{"et":"Mudelite võrdlus","en":"Comparison of models"},"path":"/analytics/models"},{"hidden":true,"label":{"et":"Testlood","en":"testTracks"},"path":"/analytics/testcases"}]},{"label":{"et":"Treeni uus mudel","en":"Train new model"},"path":"/train-new-model"}]},{"id":"analytics","label":{"et":"Analüütika","en":"Analytics"},"path":"/analytics","children":[{"label":{"et":"Ülevaade","en":"Overview"},"path":"/overview"},{"label":{"et":"Vestlused","en":"Chats"},"path":"/chats"},{"label":{"et":"Tagasiside","en":"Feedback"},"path":"/feedback"},{"label":{"et":"Avaandmed","en":"Reports"},"path":"/reports"}]},{"id":"services","hidden":true,"label":{"et":"Teenused","en":"Services"},"path":"/services","children":[{"label":{"et":"Ülevaade","en":"Overview"},"path":"/overview"},{"label":{"et":"Uus teenus","en":"New Service"},"path":"/newService"},{"label":{"et":"Probleemsed teenused","en":"Faulty Services"},"path":"/faultyServices"}]},{"id":"knowledge-center","label":{"et":"Teadmuskeskus","en":"Knowledge Center"},"path":"/knowledge-center","children":[{"id":"rag-search","label":{"et":"Mudelid ja seadistused","en":"Models management"},"path":"/rag-search","children":[{"label":{"et":"Mudelite ühendused","en":"LLM connections"},"path":"/llm-connections"},{"label":{"et":"Viiba Seaded","en":"Prompt Configurations"},"path":"/prompt-configurations"},{"label":{"et":"Testi mudelit","en":"Test LLM"},"path":"/test-llm"}]},{"id":"ckb","label":{"et":"Teadmusbaas","en":"Knowledge Base"},"path":"/ckb","children":[{"label":{"et":"Agentuur","en":"Agency"},"path":"/agency"},{"label":{"et":"Aruanded","en":"Reports"},"path":"/reports"},{"label":{"et":"API Integratsioonid","en":"API Integrations"},"path":"/api"}]}]},{"id":"settings","label":{"et":"Haldus","en":"Administration"},"path":"/settings","children":[{"label":{"et":"Kasutajad","en":"Users"},"path":"/users"},{"label":{"et":"Vestlusbot","en":"Chatbot"},"path":"/chatbot","children":[{"label":{"et":"Seaded","en":"Settings"},"path":"/chatbot/settings"},{"label":{"et":"Tervitussõnum","en":"Welcome message"},"path":"/chatbot/welcome-message"},{"label":{"et":"Välimus ja käitumine","en":"Appearance and behavior"},"path":"/chatbot/appearance"},{"label":{"et":"Erakorralised teated","en":"Emergency notices"},"path":"/chatbot/emergency-notices"},{"label":{"et":"Tagasiside","en":"Feedback"},"path":"/chatbot/feedback"}]},{"label":{"et":"Vestluste analüüs","en":"Chat analysis"},"path":"/chat-analysis"},{"label":{"et":"Asutuse tööaeg","en":"Office opening hours"},"path":"/working-time"},{"label":{"et":"Vestluse Kustutamine","en":"Delete Conversations"},"path":"/delete-conversations"},{"label":{"et":"Sessiooni pikkus","en":"Session length"},"path":"/session-length"},{"label":{"et":"SKMi konfiguratsioon","en":"SKM Configuration"},"path":"/skm-configuration"},{"label":{"et":"Anonümiseerija","en":"Anonymizer"},"path":"/anonymizer"}]},{"id":"monitoring","hidden":true,"label":{"et":"Seire","en":"Monitoring"},"path":"/monitoring","children":[{"label":{"et":"Aktiivaeg","en":"Working hours"},"path":"/uptime"}]}]
       - VITE_HOST=0.0.0.0
       - VITE_PORT=3001
       - HOST=0.0.0.0
@@ -183,6 +184,8 @@ services:
       - ./src/tool_classifier:/app/src/tool_classifier
       - ./src/intent_data_enrichment:/app/src/intent_data_enrichment
       - ./src/api_tool_indexer:/app/src/api_tool_indexer
+      - ./src/__init__.py:/app/src/__init__.py:ro
+      - ./src/loki_logger.py:/app/src/loki_logger.py:ro
       - ./src/utils/decrypt_vault_secrets.py:/app/src/utils/decrypt_vault_secrets.py:ro  # Decryption utility (read-only)
       - cron_data:/app/data
       - shared-volume:/app/shared  # Access to shared resources for cross-container coordination
@@ -191,7 +194,7 @@ services:
       - ./.env:/app/.env:ro
     environment:
       - server.port=9010
-      - PYTHONPATH=/app:/app/src/vector_indexer:/app/src/intent_data_enrichment:/app/src/api_tool_indexer
+      - PYTHONPATH=/app:/app/src:/app/src/vector_indexer:/app/src/intent_data_enrichment:/app/src/api_tool_indexer
       - VAULT_AGENT_URL=http://vault-agent-cron:8203
     ports:
       - 9010:8080
@@ -502,7 +505,11 @@ services:
       - ./vault/config:/vault/config:ro
       - ./vault/logs:/vault/logs
     networks:
-      - vault-network  # Only on vault-network for security
+      vault-network:  # Only on vault-network for security
+        # Local testing: bare "vault" collides with the ckb stack on the shared
+        # bykstack network, so expose this Vault under a unique alias instead.
+        aliases:
+          - rag-vault
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "sh", "-c", "wget -q -O- http://127.0.0.1:8200/v1/sys/health || exit 0"]
@@ -512,14 +519,17 @@ services:
       start_period: 10s
 
   vault-init:
-    image: hashicorp/vault:1.20.3
+    build:
+      context: .
+      dockerfile: Dockerfile.vault-init
+    image: rag-vault-init:1.20.3
     container_name: vault-init
     user: "0"
     depends_on:
       vault:
         condition: service_healthy
     environment:
-      VAULT_ADDR: http://vault:8200
+      VAULT_ADDR: http://rag-vault:8200
     volumes:
       - vault-data:/vault/data
       - vault-agent-creds:/agent/credentials
@@ -528,13 +538,12 @@ services:
       - vault-agent-llm-token:/agent/llm-token
       - ./vault-init.sh:/vault-init.sh:ro
     networks:
-      - vault-network  # Access vault
-      - bykstack       # Access to write agent tokens
+      # vault-network only: tokens/creds go via shared volumes, not the network.
+      - vault-network
     entrypoint: ["/bin/sh"]
     command:
       - -c
       - |
-        apk add --no-cache curl jq uuidgen openssl
         # Create and set permissions for all agent directories
         mkdir -p /agent/credentials /agent/gui-token /agent/cron-token /agent/llm-token /agent/out
         chown -R vault:vault /agent/credentials /agent/gui-token /agent/cron-token /agent/llm-token /agent/out
@@ -638,6 +647,7 @@ services:
       - ./src/llm_config_module/config:/app/src/llm_config_module/config:ro
       - ./src/optimization/optimized_modules:/app/src/optimization/optimized_modules
       - llm_orchestration_logs:/app/logs
+      - ./grafana-configs/loki_logger.py:/app/src/loki_logger.py:ro
     networks:
       - bykstack
     depends_on:

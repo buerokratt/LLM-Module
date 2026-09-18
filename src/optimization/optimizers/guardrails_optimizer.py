@@ -13,12 +13,15 @@ from datetime import datetime
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 import dspy
-from loguru import logger
+from src.loki_logger import LokiLogger
 
 from optimization.metrics.guardrails_metrics import (
     safety_weighted_accuracy,
     calculate_guardrails_stats,
 )
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="guardrails-optimizer")
 
 
 class GuardrailsChecker(dspy.Signature):

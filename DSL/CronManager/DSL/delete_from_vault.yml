@@ -2,4 +2,4 @@ delete_secrets:
   trigger: off
   type: exec
   command: "/app/scripts/delete_secrets_from_vault.sh"
-  allowedEnvs: ['cookie', 'connectionId','llmPlatform', 'llmModel','embeddingModel','embeddingPlatform','deploymentEnvironment']
+  allowedEnvs: ['cookie','vaultUuid','llmPlatform', 'llmModel','embeddingModel','embeddingPlatform', 'vaultAgentUrl']

@@ -4,6 +4,7 @@ SET
 WHERE id = :connection_id
 RETURNING 
     id, 
+    vault_uuid,
     connection_name,
     llm_platform, 
     llm_model, 

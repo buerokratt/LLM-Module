@@ -1,7 +1,10 @@
 """Feature flags for tool classifier system."""
 
 import os
-from loguru import logger
+from src.loki_logger import LokiLogger
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="feature-flags")
 
 
 class FeatureFlags:
@@ -50,6 +53,14 @@ class FeatureFlags:
     #            are attempted when the query is detected as multi-intent
     MULTI_INTENT_ENABLED = os.getenv("MULTI_INTENT_ENABLED", "true").lower() == "true"
 
+    # ATC Response Cache — two-tier Redis cache for API Tool Calling responses
+    # When True: successful ATC API responses are cached and follow-up queries are
+    #            served from cache where possible (L1 exact hit, L2 follow-up routing)
+    # When False: all cache reads and writes are skipped; normal ATC flow unchanged
+    ATC_RESPONSE_CACHE_ENABLED: bool = (
+        os.getenv("ATC_RESPONSE_CACHE_ENABLED", "true").lower() == "true"
+    )
+
     # RAG and OOD workflows are always enabled (no flags)
     # RAG is the core fallback, OOD is the final safety net
 
@@ -69,6 +80,9 @@ class FeatureFlags:
             )
             logger.info(f"  CONTEXT_WORKFLOW_ENABLED: {cls.CONTEXT_WORKFLOW_ENABLED}")
             logger.info(f"  MULTI_INTENT_ENABLED: {cls.MULTI_INTENT_ENABLED}")
+            logger.info(
+                f"  ATC_RESPONSE_CACHE_ENABLED: {cls.ATC_RESPONSE_CACHE_ENABLED}"
+            )
             logger.info(f"  FALLBACK_TO_RAG_ON_ERROR: {cls.FALLBACK_TO_RAG_ON_ERROR}")
         else:
             logger.info("  (Classifier disabled - using RAG-only pipeline)")

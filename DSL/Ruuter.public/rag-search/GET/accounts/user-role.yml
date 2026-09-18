@@ -1,0 +1,38 @@
+declaration:
+  call: declare
+  version: 0.1
+  description: "Get user roles dynamically from TIM"
+  method: get
+  accepts: json
+  returns: json
+  namespace: backoffice
+  allowlist:
+    headers:
+      - field: cookie
+        type: string
+        description: "Cookie field"
+
+get_user_info:
+  call: http.post
+  args:
+    url: "[#CKB_TIM]/jwt/custom-jwt-userinfo"
+    contentType: plaintext
+    headers:
+      cookie: ${incoming.headers.cookie}
+    plaintext: "customJwtCookie"
+  result: res
+  next: check_user_info_response
+
+check_user_info_response:
+  switch:
+    - condition: ${200 <= res.response.statusCodeValue && res.response.statusCodeValue < 300}
+      next: return_result
+  next: return_empty_array
+
+return_result:
+  return: ${res.response.body.authorities}
+  next: end
+
+return_empty_array:
+  return: success
+  next: end

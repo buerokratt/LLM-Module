@@ -1,11 +1,16 @@
 import { FC, useState, useRef, useEffect, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Button, FormTextarea } from 'components';
+import { Button, FormTextarea, FormSelect } from 'components';
 import { useToast } from 'hooks/useToast';
 import { useStreamingResponse } from 'hooks/useStreamingResponse';
 import { ChoiceButton } from 'services/inference';
 import './TestProductionLLM.scss';
 import MessageContent from 'components/MessageContent';
+import { llmConnectionsQueryKeys } from 'utils/queryKeys';
+import { fetchAllLLMConnectionsPaginated } from 'services/llmConnections';
+
+
 interface Message {
   id: string;
   content: string;
@@ -23,11 +28,49 @@ const TestProductionLLM: FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [testLLM, setTestLLM] = useState({
+    connectionId: null,
+    text: '',
+  });
 
   // Generate a unique channel ID for this session
   const channelId = useMemo(() => `channel-${Math.random().toString(36).substring(2, 15)}`, []);
   const { startStreaming, stopStreaming, isStreaming } = useStreamingResponse(channelId);
+  const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
 
+   // Fetch LLM connections for dropdown - using the working legacy endpoint for now
+    const { data: connections, isLoading: isLoadingConnections } = useQuery({
+      queryKey: llmConnectionsQueryKeys.list({
+        page: 1,
+        pageSize: 100, // Get all connections for dropdown
+        sorting: 'created_at desc',
+      }),
+      queryFn: () => fetchAllLLMConnectionsPaginated({
+        pageNumber: 1,
+        pageSize: 100,
+        sortBy: 'created_at desc',
+      }),
+    });
+    // Transform connections data for dropdown
+  const connectionOptions = useMemo(
+    () =>
+      connections?.map((connection: any) => ({
+        label: `${connection.llmPlatform} - ${connection.llmModel} (${connection.environment})`,
+        value: String(connection.id),
+      })) || [],
+    [connections]
+  );
+
+    const selectedConnection = useMemo(() => {
+    return connections?.find((conn: any) => String(conn.id) === selectedConnectionId) || null;
+  }, [connections, selectedConnectionId]);
+
+  const handleConnectionChange = (value: string | number) => {
+    console.log('Selected connection ID:', value);
+    if (isLoading || isStreaming) return;
+    setSelectedConnectionId(value ? String(value) : null);
+  };
+  
   // Auto-scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -82,6 +125,8 @@ const TestProductionLLM: FC = () => {
       authorId: 'test-user-456',
       conversationHistory,
       url: 'opensearch-dashboard-test',
+      environment: selectedConnection?.environment || 'production',
+      connection_id: selectedConnection?.vaultUuid || undefined,
     };
 
     // Callbacks for streaming
@@ -257,11 +302,27 @@ const TestProductionLLM: FC = () => {
     <div>
       <div className="test-production-llm">
         <div className="test-production-llm__header">
-          <h1>{t('testProductionLLM.title')}</h1>
+          <h1>{t('testModels.title')}</h1>
           <Button onClick={clearChat} appearance="secondary">
             {t('testProductionLLM.clearChat')}
           </Button>
         </div>
+           <div className="llm-connection-section">
+            <p>{t('testModels.llmConnectionLabel') || 'LLM Connection'}</p>
+            <div className="llm-connection-controls">
+              <FormSelect
+                label=""
+                name="connectionId"
+                options={connectionOptions}
+                placeholder={t('testModels.selectConnectionPlaceholder') || 'Select LLM Connection'}
+                onSelectionChange={(selection) => {
+                  handleConnectionChange(selection?.value as string);
+                }}
+                defaultValue={selectedConnectionId ?? undefined}
+                disabled={isLoading || isStreaming}
+              />
+            </div>
+          </div>
 
         <div className="test-production-llm__chat-container">
           <div className="test-production-llm__messages">
@@ -313,7 +374,7 @@ const TestProductionLLM: FC = () => {
               </div>
             ))}
             
-            {isLoading && (
+            {isLoading && (messages.length === 0 || messages[messages.length - 1].isUser) && (
               <div className="test-production-llm__message test-production-llm__message--bot">
                 <div className="test-production-llm__message-content">
                   <div className="test-production-llm__typing">

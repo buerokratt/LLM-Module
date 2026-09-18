@@ -4,7 +4,10 @@ Inspect what was extracted from the optimized guardrails module.
 
 import json
 from pathlib import Path
-from loguru import logger
+from src.loki_logger import LokiLogger
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="inspect-guardrails-optimization")
 
 
 def main() -> None:

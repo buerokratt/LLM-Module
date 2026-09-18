@@ -133,6 +133,13 @@ update_production_connection:
       connection_id: ${existing_production_result.response.body[0].id}
       environment: "testing"
   result: update_result
+  next: clear_llm_cache
+
+clear_llm_cache:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_LLM_CACHE_CLEAR]"
+  result: cache_clear_result
   next: add_llm_connection
 
 add_llm_connection:
@@ -170,6 +177,7 @@ assign_connection_response:
   assign:
     response: {
       id: "${connection_result.response.body[0].id}",
+      vaultUuid: "${connection_result.response.body[0].vaultUuid}",
       status: 201,
       operationSuccess: true
     }

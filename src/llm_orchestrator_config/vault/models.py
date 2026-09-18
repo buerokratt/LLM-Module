@@ -12,8 +12,9 @@ class BaseConnectionSecret(BaseModel):
 
     connection_id: str = Field(..., description="Unique connection identifier")
     model: str = Field(..., description="Model name (must match llm_config.yaml)")
-    environment: str = Field(
-        ..., description="Environment: production/development/test"
+    environment: Optional[str] = Field(
+        None,
+        description="Environment: production/development/test (legacy, not stored in new secrets)",
     )
     tags: List[str] = Field(default_factory=list, description="Connection tags")
 

@@ -12,16 +12,17 @@ loop collects all required parameters from the user before the API call is made.
 
 | Component | What it does | Status |
 |---|---|---|
-| **Indexing pipeline** | Takes an endpoint definition → enriches it with LLM context → stores hybrid vectors in Qdrant | ✅ Complete |
-| **Tool classifier** | At query time, routes to the best matching endpoint via hybrid search + LLM disambiguation | ✅ Complete |
-| **Multi-intent detection** | Score-band gate triggers `IntentDecomposer` (DSPy) to decompose a multi-intent query into focused sub-queries; each sub-query is matched in parallel via `asyncio.gather` | ✅ Phase 1 & 2 Complete |
-| **Agentic loop** | Multi-turn parameter collection with session persistence, language-aware clarifying questions, param correction, continuation prompt, and intent-switch detection | ✅ Complete |
-| **API caller** | Execute collected params against the real API endpoint, with circuit-breaker protection and localized error handling | ✅ Complete |
-| **Response formatter** | Convert raw API JSON into a natural-language answer via DSPy, streamed token-by-token to the GUI | ✅ Complete |
-| **Multi-endpoint loop** | Merges param schemas for all parallel endpoints; collects params across turns with a single deduplicated clarifying question per turn; distributes values back per endpoint | ✅ Phase 3 Complete |
-| **Parallel API caller** | Fires all completed endpoint calls concurrently via `asyncio.gather` with batch timeout and partial-failure handling | ✅ Phase 4 Complete |
-| **Multi-response formatter** | DSPy module that synthesises N API results into a single coherent natural-language answer; supports streaming and blocking execution | ✅ Phase 5 Complete |
-| **Full wiring** | `APIToolWorkflowExecutor` routes parallel sessions through `MultiEndpointAgenticLoop` → `MultiAPICaller` → `MultiResponseFormatterModule` with output guardrails | ✅ Phase 6 Complete |
+| **Indexing pipeline** | Takes an endpoint definition → enriches it with LLM context → stores hybrid vectors in Qdrant |  Complete |
+| **Tool classifier** | At query time, routes to the best matching endpoint via hybrid search + LLM disambiguation |  Complete |
+| **Multi-intent detection** | Score-band gate triggers `IntentDecomposer` (DSPy) to decompose a multi-intent query into focused sub-queries; each sub-query is matched in parallel via `asyncio.gather` |  Phase 1 & 2 Complete |
+| **Agentic loop** | Multi-turn parameter collection with session persistence, language-aware clarifying questions, param correction, continuation prompt, and intent-switch detection |  Complete |
+| **API caller** | Execute collected params against the real API endpoint, with circuit-breaker protection and localized error handling |  Complete |
+| **Response formatter** | Convert raw API JSON into a natural-language answer via DSPy, streamed token-by-token to the GUI |  Complete |
+| **Multi-endpoint loop** | Merges param schemas for all parallel endpoints; collects params across turns with a single deduplicated clarifying question per turn; distributes values back per endpoint |  Phase 3 Complete |
+| **Parallel API caller** | Fires all completed endpoint calls concurrently via `asyncio.gather` with batch timeout and partial-failure handling |  Phase 4 Complete |
+| **Multi-response formatter** | DSPy module that synthesises N API results into a single coherent natural-language answer; supports streaming and blocking execution |  Phase 5 Complete |
+| **Full wiring** | `APIToolWorkflowExecutor` routes parallel sessions through `MultiEndpointAgenticLoop` → `MultiAPICaller` → `MultiResponseFormatterModule` with output guardrails |  Phase 6 Complete |
+| **ATC Response Cache** | Two-tier Redis cache (L1 exact-match + L2 follow-up context) that eliminates redundant API calls and enables intelligent follow-up handling without re-running the agentic loop |  Complete |
 
 ---
 
@@ -208,21 +209,21 @@ A `PointStruct` is built:
 
 ```python
 PointStruct(
-    id      = endpoint_id,            # UUID used directly as Qdrant point ID
-    vector  = {
-        "dense":  [v1, v2, ..., v3072],
+    id=endpoint_id,  # UUID used directly as Qdrant point ID
+    vector={
+        "dense": [v1, v2, ..., v3072],
         "sparse": {"indices": [...], "values": [...]},
     },
-    payload = {                        # Stored metadata — no extra DB lookup needed
-        "endpoint_id":      "...",
-        "name":             "get_national_holidays",
-        "description":      "...",
-        "url":              "https://openholidaysapi.org/PublicHolidays",
-        "method":           "GET",
-        "params":           [...],
+    payload={  # Stored metadata — no extra DB lookup needed
+        "endpoint_id": "...",
+        "name": "get_national_holidays",
+        "description": "...",
+        "url": "https://openholidaysapi.org/PublicHolidays",
+        "method": "GET",
+        "params": [...],
         "enriched_context": "...",
-        "service_id":       "...",
-    }
+        "service_id": "...",
+    },
 )
 ```
 
@@ -305,9 +306,9 @@ Instantiated once in `ToolClassifier.__init__()` and reuses the shared Qdrant `h
 
 ```python
 APISemanticSearcher(
-    embedding_service=orchestration_service,   # generates dense embeddings
-    qdrant_client=self._qdrant_client,         # shared connection pool
-    disambiguator=None,                        # optional: inject for testing
+    embedding_service=orchestration_service,  # generates dense embeddings
+    qdrant_client=self._qdrant_client,  # shared connection pool
+    disambiguator=None,  # optional: inject for testing
 )
 ```
 
@@ -860,7 +861,7 @@ Results are **deduplicated by endpoint name** (a single endpoint matched by two 
 
 ```python
 class ExecutionMode(str, Enum):
-    SINGLE   = "single"
+    SINGLE = "single"
     PARALLEL = "parallel"
 ```
 
@@ -946,7 +947,7 @@ await multi_loop.stream_run_turn(
     chat_id=chat_id,
     user_message=request.message,
     conversation_history=conversation_history,
-    endpoint_states=session.parallel_endpoints,   # list[EndpointSessionState]
+    endpoint_states=session.parallel_endpoints,  # list[EndpointSessionState]
     turn_count=session.turn_count,
     awaiting_continuation=session.awaiting_continuation,
     session_language=effective_session_language,
@@ -978,7 +979,9 @@ call_payloads = [
     {**state.endpoint, "call_params": state.collected_params}
     for state in parallel_endpoints
 ]
-multi_result = await MultiAPICaller(api_caller).call_all(call_payloads, language=detected_language)
+multi_result = await MultiAPICaller(api_caller).call_all(
+    call_payloads, language=detected_language
+)
 ```
 
 ---
@@ -1041,7 +1044,6 @@ Defined in [src/tool_classifier/workflows/api_tool_workflow.py](../src/tool_clas
 Same API call steps, then `asyncio.to_thread(formatter.forward, ...)` for the synthesis step.
 
 ---
-
 
 ### Constants and Feature Flags
 
@@ -1182,6 +1184,293 @@ APIToolWorkflowExecutor._stream_multi_api_and_format()
 Bot: "Here's what I found: The address Viru tn 4 is located in Tallinn city centre
       (full address: Viru tn 4, 10111 Tallinn). For vehicle 123ABC, the estimated
       vehicle tax for 2026 is €127.40."  ← streamed token-by-token
+```
+
+---
+
+
+
+
+## Part 8 — ATC Response Cache
+
+### Overview
+
+The ATC Response Cache is a two-tier Redis cache that sits inside `_compute_loop_step()` in
+[src/tool_classifier/workflows/api_tool_workflow.py](../src/tool_classifier/workflows/api_tool_workflow.py).
+It is checked on every **new request** (no active session) before the agentic loop is created.
+
+Goal: avoid redundant API calls and agentic loop turns when the user is repeating or
+following up on a query that was already answered in the same conversation.
+
+Gated by `FeatureFlags.ATC_RESPONSE_CACHE_ENABLED` (`ATC_RESPONSE_CACHE_ENABLED` env var, default `true`).
+Setting it to `false` disables all cache reads and writes without touching any other ATC logic.
+
+---
+
+### Cache Architecture — Two Tiers
+
+#### Tier 1 — L1 Exact Response Cache
+
+```
+Key:   atc:cache:{chat_id}:{api_name}:{param_hash}
+Value: raw API response JSON (dict or list)
+TTL:   per-endpoint cache_ttl_seconds  OR  ATC_CACHE_DEFAULT_TTL_SECONDS (30 min)
+```
+
+Answers the question: *Has this exact conversation called this exact endpoint with these exact params before?*
+
+`param_hash` is a 16-character hex digest of the **normalised, sorted** param dict:
+- String values are stripped of whitespace
+- Purely numeric strings (`"2026"`) are cast to `int` before hashing
+- All-alpha strings (enum-like, e.g. `"GET"`, `"EE"`) are lowercased
+- Keys are sorted so order does not matter
+
+This means `{year: "2026", country: "EE"}` and `{country: "ee", year: 2026}` produce
+the **same hash** and hit the same cache entry.
+
+#### Tier 2 — L2 Last Call Context
+
+```
+Key:   atc:last:{chat_id}
+Value: JSON list[LastCallContext]
+TTL:   ATC_LAST_CALL_TTL_SECONDS (30 min, sliding — reset on every write)
+```
+
+Answers the question: *What was the last API call made in this conversation?*
+
+Stores a full `LastCallContext` per succeeded endpoint. Single-intent calls write a
+one-element list; multi-intent parallel calls write one entry per succeeded endpoint.
+The follow-up detector searches this list by `api_name` to find the relevant prior call.
+
+---
+
+### Data Model: `LastCallContext`
+
+Defined in [src/models/session_models.py](../src/models/session_models.py).
+
+| Field | Type | Description |
+|---|---|---|
+| `api_name` | str | Endpoint name (snake_case) that was called |
+| `endpoint` | dict | Full endpoint payload from Qdrant (params schema, URL, method, etc.) |
+| `collected_params` | dict | Parameter values that were passed to the API call |
+| `raw_response` | Any | Parsed API JSON (dict or list) as returned by `APICaller` |
+| `original_query` | str | User's first-turn query that triggered this API call |
+| `timestamp` | float | Unix timestamp of the call (for staleness reference) |
+
+---
+
+
+### Cache Write Points
+
+L1 and L2 are written **after** every successful API call, as a background
+`asyncio.create_task` so they never delay the user-facing response:
+
+**Single-intent (`_execute_api_and_format`)**
+After `api_result.success == True` and before the formatter:
+```
+set_l1(chat_id, endpoint["name"], collected_params, response_data, ttl)
+set_l2(chat_id, [LastCallContext(...)])
+```
+
+**Multi-intent (`_execute_multi_api_and_format` / `_stream_multi_api_and_format`)**
+After `multi_result` is received, one write per succeeded endpoint:
+```
+for each (endpoint_state, result) where result.success and endpoint.cacheable:
+    set_l1(chat_id, endpoint["name"], endpoint_state.collected_params, result.response_data, ttl)
+    append LastCallContext to contexts_list
+set_l2(chat_id, contexts_list)   ← one write for all endpoints
+```
+
+---
+
+### Cache Read Logic in `_compute_loop_step`
+
+The cache block runs only when:
+- No active Redis session exists (fresh request, not mid-loop)
+- Not a parallel multi-intent query (`not all_matched`)
+- `endpoint.cacheable == True`
+- `ATC_RESPONSE_CACHE_ENABLED == True`
+
+```
+New request → no session → endpoint resolved
+       │
+       ▼
+  ── L1 check ──────────────────────────────────────────────────────────
+  get_l1(chat_id, endpoint["name"], pre_extracted_params)
+       │
+       ├─ HIT  → _LoopStep(kind="cached_response", cache_source="L1")
+       │          formatter receives cached raw response — no API call, no loop
+       │
+       └─ MISS → continue to L2
+       │
+  ── L2 check ──────────────────────────────────────────────────────────
+  get_l2(chat_id) → find entry where api_name == endpoint["name"]
+       │
+       ├─ No match → fall through to normal agentic loop
+       │
+       └─ Match found → FollowUpDetectorModule (DSPy via asyncio.to_thread)
+              │
+              │  Inputs: user_query, previous_query, previous_params, params_schema
+              │
+              ├─ "response_question"
+              │     → _LoopStep(kind="cached_response", cache_source="L2",
+              │                  cached_raw_response=matching.raw_response)
+              │       no API call; formatter answers from the previous response
+              │
+              ├─ "param_update"
+              │     merged = {**matching.collected_params, **updated_params}
+              │     missing = _missing_required_params(schema, merged)
+              │
+              │     missing == []
+              │       ├─ hashes equal (params unchanged)
+              │       │     → try L1 with matching.collected_params
+              │       │       hit  → cached_response (L1)
+              │       │       miss → cached_response (L2 raw_response)
+              │       └─ hashes differ (genuinely new params)
+              │             → _LoopStep(kind="api_call", collected_params=merged)
+              │               API called directly — entire agentic loop skipped
+              │
+              │     missing != []
+              │       → context["seeded_params"] = merged
+              │         fall through to agentic loop — only asks for gaps
+              │
+              └─ "new_intent"
+                    → ignore L2; fall through to normal agentic loop
+
+  On any FollowUpDetectorModule exception → fall through to normal loop (fail-open)
+```
+
+---
+
+### Component: `FollowUpDetectorModule`
+
+Defined in [src/tool_classifier/follow_up_detector.py](../src/tool_classifier/follow_up_detector.py).
+
+DSPy `Predict` module that classifies the relationship between the new user query
+and the previous API call. Run via `asyncio.to_thread` to avoid blocking the event loop.
+
+**Inputs:**
+
+| Input | Description |
+|---|---|
+| `user_query` | The new user message |
+| `previous_query` | The user's original question that triggered the last API call |
+| `previous_params` | JSON of param values from the last call |
+| `params_schema` | JSON of the endpoint's param schema |
+
+**Output — three possible values for `follow_up_type`:**
+
+| Value | Meaning | Action |
+|---|---|---|
+| `response_question` | User is asking about the data already returned | Pass L2 `raw_response` to formatter; no API call |
+| `param_update` | User wants the same endpoint with different/additional params | Merge new params into previous; go to API directly if complete, else seed the loop |
+| `new_intent` | Completely unrelated query | Ignore L2; run normal agentic loop from scratch |
+
+**Security:** `updated_params` from the LLM is validated against the endpoint's param
+schema — keys not in the schema are silently dropped to prevent injection.
+
+**Fail-open:** any exception returns `{follow_up_type: "new_intent", updated_params: {}}`
+so the user is never blocked.
+
+---
+
+### Param Seeding
+
+When the L2 `param_update` path finds that merged params are still incomplete,
+it sets `context["seeded_params"] = merged` before falling through to the agentic loop.
+
+`AgenticLoop.run_turn()` and `stream_run_turn()` accept an optional `seeded_params` argument.
+On turn 0, the seeds are merged into `collected_params` **before** any extraction runs:
+
+```python
+if turn_count == 0 and seeded_params:
+    collected_params = {**seeded_params, **collected_params}
+```
+
+The merge order means existing `collected_params` win — seeds cannot overwrite values
+that were already explicitly provided. The seeds are also stored directly in the new
+Redis session (`APIToolSession.collected_params = seeded_params`) so they survive
+across HTTP requests.
+
+**Effect:** the agentic loop starts with inherited values already populated and only
+generates a question for the genuinely missing params.
+
+---
+
+### L2 Invalidation on Intent Switch
+
+When an intent switch is detected in `ToolClassifier.classify()` (user mid-session for
+endpoint A sends a message that strongly matches endpoint B), both the session and the
+L2 key are cleaned up:
+
+```python
+await session_store.delete(request.chatId)  # existing behaviour
+if FeatureFlags.ATC_RESPONSE_CACHE_ENABLED:
+    await ATCCacheStore().invalidate_l2(request.chatId)
+```
+
+`invalidate_l2` deletes only the `atc:last:{chat_id}` key. L1 keys are **not** deleted —
+they are param-hash-scoped and expire on their own TTL. Deleting L1 would provide no
+safety benefit and would waste valid cached data.
+
+---
+
+### Cache Constants and Feature Flag
+
+Defined in [src/tool_classifier/constants.py](../src/tool_classifier/constants.py) and
+[src/llm_orchestrator_config/feature_flags.py](../src/llm_orchestrator_config/feature_flags.py):
+
+| Name | Value | Description |
+|---|---|---|
+| `ATC_CACHE_KEY_PREFIX` | `atc:cache` | Redis key prefix for L1 entries |
+| `ATC_LAST_CALL_KEY_PREFIX` | `atc:last` | Redis key prefix for L2 entries |
+| `ATC_CACHE_DEFAULT_TTL_SECONDS` | `1800` | Default L1 TTL (30 min); overridable per endpoint via `cache_ttl_seconds` |
+| `ATC_LAST_CALL_TTL_SECONDS` | `1800` | L2 TTL (30 min, sliding) |
+| `ATC_RESPONSE_CACHE_ENABLED` | `true` (env) | Master kill-switch — disables all reads and writes when `false` |
+
+---
+
+### Cache Component Reference
+
+| Class / File | Responsibility |
+|---|---|
+| `ATCCacheStore` ([src/utils/atc_cache_store.py](../src/utils/atc_cache_store.py)) | All Redis operations for L1 and L2; param normalisation and hashing |
+| `FollowUpDetectorModule` ([src/tool_classifier/follow_up_detector.py](../src/tool_classifier/follow_up_detector.py)) | DSPy classifier for follow-up type detection |
+| `LastCallContext` ([src/models/session_models.py](../src/models/session_models.py)) | Pydantic model stored in L2 |
+| `_compute_loop_step` ([src/tool_classifier/workflows/api_tool_workflow.py](../src/tool_classifier/workflows/api_tool_workflow.py)) | Where L1 + L2 are read and routing decisions are made |
+| `_execute_api_and_format` / `_stream_api_and_format` | Where L1 + L2 are written after single-intent calls |
+| `_execute_multi_api_and_format` / `_stream_multi_api_and_format` | Where L1 + L2 are written after parallel calls |
+| `ToolClassifier.classify` ([src/tool_classifier/classifier.py](../src/tool_classifier/classifier.py)) | L2 invalidation on intent switch |
+
+---
+
+### End-to-End Cache Example
+
+```
+Turn 1 — "What are public holidays in Estonia in 2026?"
+    Agentic loop collects {countryIsoCode:"EE", validFrom:"2026-01-01", validTo:"2026-12-31"}
+    API called → 12 holidays returned
+    L1 written: atc:cache:{id}:get_national_holidays:{hash({EE,2026-01-01,2026-12-31})}
+    L2 written: atc:last:{id} = [LastCallContext{api_name="get_national_holidays", ...}]
+
+Turn 2 — "Same for Latvia?"
+    No session → L1 miss (country changed) → L2 hit
+    FollowUpDetectorModule → param_update, updated_params={countryIsoCode:"LV"}
+    merged = {countryIsoCode:"LV", validFrom:"2026-01-01", validTo:"2026-12-31"}
+    no missing params + hashes differ → api_call step
+    API called directly — zero agentic loop turns
+    L1 + L2 updated with new result
+
+Turn 3 — "Which of those is a bank holiday?"
+    No session → L1 miss → L2 hit
+    FollowUpDetectorModule → response_question
+    Formatter receives Latvia raw_response from L2 → answers from cached data
+    No API call, no loop
+
+Turn 4 — "What is the weather in Tallinn?"
+    Classifier: get_weather matched (different endpoint)
+    Intent switch → session_store.delete + invalidate_l2
+    Fresh session for get_weather starts with empty L1 and L2
 ```
 
 ---

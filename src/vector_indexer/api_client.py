@@ -3,10 +3,13 @@
 import asyncio
 from typing import List, Dict, Any, Optional, Union
 import httpx
-from loguru import logger
 from typing_extensions import Self
+from loki_logger import LokiLogger
 
 from vector_indexer.config.config_loader import VectorIndexerConfig
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="api-client")
 
 
 class LLMOrchestrationAPIClient:

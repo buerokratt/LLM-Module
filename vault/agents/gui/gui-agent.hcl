@@ -2,7 +2,9 @@
 # This agent provides GUI with access to public encryption key only
 
 vault {
-  address = "http://vault:8200"
+  # Local testing: use rag-vault, not bare "vault" — that name collides with the
+  # ckb stack on the shared bykstack network and authenticates the wrong Vault.
+  address = "http://rag-vault:8200"
   retry {
     num_retries = 5
   }
@@ -42,6 +44,4 @@ listener "tcp" {
 # API proxy configuration
 api_proxy {
   use_auto_auth_token = true
-  enforce_consistency = "always"
-  when_inconsistent = "forward"
 }

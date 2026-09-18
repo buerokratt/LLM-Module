@@ -2,6 +2,39 @@
 
 from typing import Any, Literal
 from pydantic import BaseModel, Field
+import time
+
+
+class LastCallContext(BaseModel):
+    """Stores the result of the most recent successful ATC API call for a chat session.
+
+    Used by the L2 cache tier to enable follow-up query handling:
+    param inheritance, response questions, and partial param updates.
+
+    For multi-intent sessions, ``ATCCacheStore.set_l2()`` stores a
+    ``list[LastCallContext]`` keyed by ``atc:last:{chat_id}``. Single-intent
+    calls store a single-element list for consistency. The follow-up detector
+    always searches this list by ``api_name``.
+    """
+
+    api_name: str = Field(..., description="Endpoint name that was called")
+    endpoint: dict[str, Any] = Field(
+        ..., description="Full endpoint definition as stored in Qdrant payload"
+    )
+    collected_params: dict[str, Any] = Field(
+        ..., description="Parameter values that were passed to the API call"
+    )
+    raw_response: Any = Field(
+        ...,
+        description="Parsed API JSON response; Any to accept either list or dict",
+    )
+    original_query: str = Field(
+        ..., description="User's first-turn query that triggered this API call"
+    )
+    timestamp: float = Field(
+        default_factory=time.time,
+        description="Unix timestamp of when the call was made (for TTL/staleness checks)",
+    )
 
 
 class EndpointSessionState(BaseModel):

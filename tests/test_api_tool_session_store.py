@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
-from src.models.session_models import APIToolSession, EndpointSessionState
-from src.utils.api_tool_session_store import (
+from models.session_models import APIToolSession, EndpointSessionState
+from utils.api_tool_session_store import (
     APIToolSessionStore,
     _key,
     require_session_store,
@@ -185,7 +185,7 @@ class TestSessionStoreGet:
         redis_mock.get = AsyncMock(return_value=None)
 
         with patch(
-            "src.utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
         ):
             result = await store.get("missing-chat")
 
@@ -199,7 +199,7 @@ class TestSessionStoreGet:
         redis_mock.get = AsyncMock(return_value=session.model_dump_json())
 
         with patch(
-            "src.utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
         ):
             result = await store.get(session.chat_id)
 
@@ -210,9 +210,7 @@ class TestSessionStoreGet:
     @pytest.mark.asyncio
     async def test_get_returns_none_when_redis_unavailable(self):
         store = APIToolSessionStore()
-        with patch(
-            "src.utils.api_tool_session_store.get_redis_client", return_value=None
-        ):
+        with patch("utils.api_tool_session_store.get_redis_client", return_value=None):
             result = await store.get("any-chat")
 
         assert result is None
@@ -231,7 +229,7 @@ class TestSessionStoreSave:
         redis_mock = _make_redis_mock()
 
         with patch(
-            "src.utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
         ):
             await store.save(session)
 
@@ -245,9 +243,7 @@ class TestSessionStoreSave:
         store = APIToolSessionStore()
         session = _make_session()
 
-        with patch(
-            "src.utils.api_tool_session_store.get_redis_client", return_value=None
-        ):
+        with patch("utils.api_tool_session_store.get_redis_client", return_value=None):
             # Should not raise
             await store.save(session)
 
@@ -284,7 +280,7 @@ class TestSessionStoreUpdate:
         redis_mock.pipeline = MagicMock(return_value=pipe_mock)
 
         with patch(
-            "src.utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
         ):
             result = await store.update(
                 original.chat_id,
@@ -313,7 +309,7 @@ class TestSessionStoreUpdate:
         redis_mock.pipeline = MagicMock(return_value=pipe_mock)
 
         with patch(
-            "src.utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
         ):
             result = await store.update("ghost-chat", turn_count=3)
 
@@ -338,7 +334,7 @@ class TestSessionStoreUpdate:
         redis_mock.pipeline = MagicMock(return_value=pipe_mock)
 
         with patch(
-            "src.utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
         ):
             await store.update(session.chat_id, state="ready")
 
@@ -360,7 +356,7 @@ class TestSessionStoreDelete:
         redis_mock = _make_redis_mock()
 
         with patch(
-            "src.utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
         ):
             await store.delete("chat-to-delete")
 
@@ -369,9 +365,7 @@ class TestSessionStoreDelete:
     @pytest.mark.asyncio
     async def test_delete_skips_when_redis_unavailable(self):
         store = APIToolSessionStore()
-        with patch(
-            "src.utils.api_tool_session_store.get_redis_client", return_value=None
-        ):
+        with patch("utils.api_tool_session_store.get_redis_client", return_value=None):
             await store.delete("any-chat")  # Should not raise
 
 
@@ -388,7 +382,7 @@ class TestSessionStoreExists:
         redis_mock.exists = AsyncMock(return_value=1)
 
         with patch(
-            "src.utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
         ):
             result = await store.exists("chat-123")
 
@@ -401,7 +395,7 @@ class TestSessionStoreExists:
         redis_mock.exists = AsyncMock(return_value=0)
 
         with patch(
-            "src.utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
         ):
             result = await store.exists("chat-123")
 
@@ -410,9 +404,7 @@ class TestSessionStoreExists:
     @pytest.mark.asyncio
     async def test_exists_returns_false_when_redis_unavailable(self):
         store = APIToolSessionStore()
-        with patch(
-            "src.utils.api_tool_session_store.get_redis_client", return_value=None
-        ):
+        with patch("utils.api_tool_session_store.get_redis_client", return_value=None):
             result = await store.exists("any-chat")
 
         assert result is False
@@ -431,7 +423,7 @@ class TestSessionStoreErrorHandling:
         redis_mock.get = AsyncMock(side_effect=ConnectionError("timeout"))
 
         with patch(
-            "src.utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
         ):
             result = await store.get("chat-xyz")
 
@@ -445,7 +437,7 @@ class TestSessionStoreErrorHandling:
         redis_mock.set = AsyncMock(side_effect=ConnectionError("timeout"))
 
         with patch(
-            "src.utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
         ):
             await store.save(session)  # Should not raise
 
@@ -456,7 +448,7 @@ class TestSessionStoreErrorHandling:
         redis_mock.delete = AsyncMock(side_effect=ConnectionError("timeout"))
 
         with patch(
-            "src.utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
         ):
             await store.delete("chat-xyz")  # Should not raise
 
@@ -467,7 +459,7 @@ class TestSessionStoreErrorHandling:
         redis_mock.exists = AsyncMock(side_effect=ConnectionError("timeout"))
 
         with patch(
-            "src.utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
         ):
             result = await store.exists("chat-xyz")
 

@@ -32,9 +32,9 @@ declaration:
       - field: environment
         type: string
         description: "Environment identifier (e.g., production, testing)"
-      - field: llm_connection_id
+      - field: vault_uuid
         type: string
-        description: "Connection identifier"
+        description: "Vault UUID for the LLM connection"
      
 extract_request_data:
   assign:
@@ -46,7 +46,7 @@ extract_request_data:
     embedding_scores: ${JSON.stringify(incoming.body.embedding_scores) || null}
     final_answer: ${incoming.body.final_answer}
     environment: ${incoming.body.environment}
-    llm_connection_id: ${incoming.body.llm_connection_id}
+    vault_uuid: ${incoming.body.vault_uuid}
     created_at: ${new Date().toISOString()}
   next: validate_required_fields
 
@@ -69,7 +69,7 @@ store_production_inference_result:
       embedding_scores: ${embedding_scores}
       final_answer: ${final_answer}
       environment: ${environment}
-      llm_connection_id: ${llm_connection_id}
+      vault_uuid: ${vault_uuid}
       created_at: ${created_at}
   result: store_result
   next: check_status

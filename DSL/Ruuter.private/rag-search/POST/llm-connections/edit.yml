@@ -149,6 +149,13 @@ update_production_connection:
       connection_id: ${existing_production_result.response.body[0].id}
       environment: "testing"
   result: update_result
+  next: clear_llm_cache
+
+clear_llm_cache:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_LLM_CACHE_CLEAR]"
+  result: cache_clear_result
   next: update_llm_connection
 
 update_llm_connection:

@@ -3,8 +3,8 @@
 import threading
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Union, List
-from pydantic import BaseModel
-from loguru import logger
+from pydantic import BaseModel, ValidationError
+from src.loki_logger import LokiLogger
 
 from llm_orchestrator_config.vault.vault_client import (
     VaultAgentClient,
@@ -16,6 +16,9 @@ from llm_orchestrator_config.vault.models import (
     get_secret_model,
 )
 from llm_orchestrator_config.vault.exceptions import VaultConnectionError
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="secret-resolver")
 
 
 class CachedSecret(BaseModel):
@@ -119,54 +122,44 @@ class SecretResolver:
         except VaultConnectionError:
             logger.warning(f"Vault unavailable, trying fallback for {vault_path}")
             return self._get_fallback(vault_path)
+        except ValidationError as e:
+            # The secret exists but does not match the provider's schema. A
+            # last-known-good fallback would mask a stored-data problem that no
+            # retry can fix, so report it as a misconfiguration and stop here.
+            logger.error(
+                f"Malformed secret at {vault_path} for provider {provider} - the "
+                f"stored value does not match {get_secret_model(provider).__name__} "
+                f"and must be rewritten: {e}"
+            )
+            return None
         except Exception as e:
             logger.error(f"Error resolving secret for {vault_path}: {e}")
             return self._get_fallback(vault_path)
 
     def list_available_models(self, provider: str, environment: str) -> list[str]:
-        """List available models for a provider and environment.
+        """List available models for a provider.
 
         Args:
             provider: Provider name (azure_openai, aws_bedrock)
-            environment: Environment (production, development, test)
+            environment: Environment (kept for API compatibility, not used in path)
 
         Returns:
-            List of available model names
+            List of available vault UUIDs under this provider
         """
-        if environment == "production":
-            # For production: Check provider/production path for available models
-            production_path = f"llm/connections/{provider}/{environment}"
-            try:
-                models = self.vault_client.list_secrets(production_path)
-                if models:
-                    logger.debug(
-                        f"Found {len(models)} production models for {provider}: {models}"
-                    )
-                    return models
-                else:
-                    logger.debug(f"No production models found for {provider}")
-                    return []
-
-            except Exception as e:
-                logger.debug(f"Provider {provider} not available in production: {e}")
+        # List all UUIDs under provider (no environment in path)
+        base_path = f"llm/connections/{provider}"
+        try:
+            entries = self.vault_client.list_secrets(base_path)
+            if entries:
+                logger.debug(f"Found {len(entries)} entries for {provider}: {entries}")
+                return entries
+            else:
+                logger.debug(f"No entries found for {provider}")
                 return []
-        else:
-            # For dev/test: Use existing logic with connection_id paths
-            base_path = f"llm/connections/{provider}/{environment}"
-            try:
-                models = self.vault_client.list_secrets(base_path)
-                if models:
-                    logger.debug(
-                        f"Found {len(models)} models for {provider}/{environment}"
-                    )
-                    return models
-                else:
-                    logger.debug(f"No models found for {provider}/{environment}")
-                    return []
 
-            except Exception as e:
-                logger.error(f"Error listing models for {provider}/{environment}: {e}")
-                return []
+        except Exception as e:
+            logger.error(f"Error listing models for {provider}: {e}")
+            return []
 
     def refresh_secret(self, vault_path: str) -> bool:
         """Manually refresh a specific secret.
@@ -238,16 +231,17 @@ class SecretResolver:
     ) -> str:
         """Build Vault path for a secret.
 
-        For production: llm/connections/{provider}/production/{model_name}
-        For dev/test: use connection_id if provided, otherwise model name
+        Uses UUID (connection_id) as the sole path terminal.
+        Environment is not part of the path — swaps are DB-only.
+
+        Path format: llm/connections/{provider}/{uuid}
         """
-        if environment == "production":
-            # Production uses provider/production/model_name path
-            return f"llm/connections/{provider}/{environment}/{model_name}"
-        else:
-            # Development/test can use connection_id or fall back to model name
-            model_identifier = connection_id if connection_id else model_name
-            return f"llm/connections/{provider}/{environment}/{model_identifier}"
+        if not connection_id:
+            raise ValueError(
+                f"connection_id (vault_uuid) is required to build vault path "
+                f"for provider={provider}, environment={environment}"
+            )
+        return f"llm/connections/{provider}/{connection_id}"
 
     def _get_from_cache(
         self, vault_path: str
@@ -373,6 +367,15 @@ class SecretResolver:
                 f"Vault unavailable, trying fallback for embedding {vault_path}"
             )
             return self._get_fallback(vault_path)
+        except ValidationError as e:
+            # See get_secret_for_model: a schema mismatch is a stored-data
+            # problem, not a transient one, so do not serve a stale fallback.
+            logger.error(
+                f"Malformed embedding secret at {vault_path} for provider {provider} - "
+                f"the stored value does not match "
+                f"{get_secret_model(provider).__name__} and must be rewritten: {e}"
+            )
+            return None
         except Exception as e:
             logger.error(f"Error resolving embedding secret for {vault_path}: {e}")
             return self._get_fallback(vault_path)
@@ -380,59 +383,31 @@ class SecretResolver:
     def list_available_embedding_models(
         self, provider: str, environment: str
     ) -> List[str]:
-        """List available embedding models for a provider and environment.
+        """List available embedding models for a provider.
 
         Args:
             provider: Provider name (azure_openai, aws_bedrock)
-            environment: Environment (production, development, test)
+            environment: Environment (kept for API compatibility, not used in path)
 
         Returns:
-            List of available embedding model names
+            List of available vault UUIDs under this provider
         """
-        if environment == "production":
-            # For production: Check embeddings/connections/provider/production path
-            production_path: str = f"embeddings/connections/{provider}/{environment}"
-            try:
-                models_result: Optional[list[str]] = self.vault_client.list_secrets(
-                    production_path
-                )
-                if models_result:
-                    logger.debug(
-                        f"Found {len(models_result)} production embedding models for {provider}: {models_result}"
-                    )
-                    return models_result
-                else:
-                    logger.debug(f"No production embedding models found for {provider}")
-                    return []
-
-            except Exception as e:
+        # List all UUIDs under provider (no environment in path)
+        base_path: str = f"embeddings/connections/{provider}"
+        try:
+            entries: Optional[list[str]] = self.vault_client.list_secrets(base_path)
+            if entries:
                 logger.debug(
-                    f"Provider {provider} embedding models not available in production: {e}"
+                    f"Found {len(entries)} embedding entries for {provider}: {entries}"
                 )
+                return entries
+            else:
+                logger.debug(f"No embedding entries found for {provider}")
                 return []
-        else:
-            # For dev/test: Use embeddings path with connection_id paths
-            base_path: str = f"embeddings/connections/{provider}/{environment}"
-            try:
-                models_result: Optional[list[str]] = self.vault_client.list_secrets(
-                    base_path
-                )
-                if models_result:
-                    logger.debug(
-                        f"Found {len(models_result)} embedding models for {provider}/{environment}"
-                    )
-                    return models_result
-                else:
-                    logger.debug(
-                        f"No embedding models found for {provider}/{environment}"
-                    )
-                    return []
 
-            except Exception as e:
-                logger.error(
-                    f"Error listing embedding models for {provider}/{environment}: {e}"
-                )
-                return []
+        except Exception as e:
+            logger.error(f"Error listing embedding models for {provider}: {e}")
+            return []
 
     def _build_embedding_vault_path(
         self,
@@ -443,23 +418,14 @@ class SecretResolver:
     ) -> str:
         """Build Vault path for embedding secrets.
 
-        Args:
-            provider: Provider name (azure_openai, aws_bedrock)
-            environment: Environment (production, development, test)
-            model_name: Embedding model name
-            connection_id: Optional connection ID for dev/test environments
+        Uses UUID (connection_id) as the sole path terminal.
+        Environment is not part of the path — swaps are DB-only.
 
-        Returns:
-            Vault path for embedding secrets
-
-        Examples:
-            Production: embeddings/connections/azure_openai/production/text-embedding-3-large
-            Dev/Test: embeddings/connections/azure_openai/development/dev-conn-123
+        Path format: embeddings/connections/{provider}/{uuid}
         """
-        if environment == "production":
-            # Production uses embeddings/connections/{provider}/production/{model_name} path
-            return f"embeddings/connections/{provider}/{environment}/{model_name}"
-        else:
-            # Development/test can use connection_id or fall back to model name
-            model_identifier: str = connection_id if connection_id else model_name
-            return f"embeddings/connections/{provider}/{environment}/{model_identifier}"
+        if not connection_id:
+            raise ValueError(
+                f"connection_id (vault_uuid) is required to build embedding vault path "
+                f"for provider={provider}, environment={environment}"
+            )
+        return f"embeddings/connections/{provider}/{connection_id}"

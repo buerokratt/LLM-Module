@@ -5,7 +5,9 @@ import { LLMConnectionFilters, ProductionConnectionFilters } from 'services/llmC
 interface StoreState {
   userInfo: UserInfo | null;
   userId: string;
+  userDomains: string[];
   setUserInfo: (info: UserInfo) => void;
+  setUserDomains: (domains: string[]) => void;
   llmConnectionFilters: LLMConnectionFilters;
   llmConnectionPageIndex: number;
   productionConnectionFilters: ProductionConnectionFilters;
@@ -32,7 +34,9 @@ const defaultProductionConnectionFilters: ProductionConnectionFilters = {
 const useStore = create<StoreState>((set) => ({
   userInfo: null,
   userId: '',
+  userDomains: [],
   setUserInfo: (data) => set({ userInfo: data, userId: data?.userIdCode || '' }),
+  setUserDomains: (domains: string[]) => set({ userDomains: domains }),
   llmConnectionFilters: defaultLLMConnectionFilters,
   llmConnectionPageIndex: 1,
   productionConnectionFilters: defaultProductionConnectionFilters,

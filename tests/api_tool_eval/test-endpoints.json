@@ -31,8 +31,8 @@
     "url": "https://dashboard.elering.ee/api/nps/price",
     "method": "GET",
     "params": [
-      { "name": "start", "type": "datetime", "required": true, "description": "Alguskuup\u00e4ev ja -aeg UTC formaadis (YYYY-MM-DDTHH:MM:SSZ). N\u00e4ide: 2025-01-01T00:00:00Z. Kui kasutaja annab ainult kuup\u00e4eva, kasuta alguseks T00:00:00Z." },
-      { "name": "end", "type": "datetime", "required": true, "description": "L\u00f5ppkuup\u00e4ev ja -aeg UTC formaadis (YYYY-MM-DDTHH:MM:SSZ). N\u00e4ide: 2025-01-31T23:59:59Z. Kui kasutaja annab ainult kuup\u00e4eva, kasuta l\u00f5puks T23:59:59Z." }
+      { "name": "start", "type": "datetime", "required": true, "description": "Alguskuupäev ja -aeg UTC formaadis (YYYY-MM-DDTHH:MM:SSZ). Näide: 2025-01-01T00:00:00Z. Kui kasutaja annab ainult kuupäeva, kasuta alguseks T00:00:00Z. Ei tohi olla tulevane kuupäev — kui kasutaja sisestab tulevase kuupäeva, keeldu ja palu kehtiv mineviku- või tänane kuupäev." },
+      { "name": "end", "type": "datetime", "required": true, "description": "Lõppkuupäev ja -aeg UTC formaadis (YYYY-MM-DDTHH:MM:SSZ). Näide: 2025-01-31T23:59:59Z. Kui kasutaja annab ainult kuupäeva, kasuta lõpuks T23:59:59Z. Ei tohi olla tulevane kuupäev — kui kasutaja sisestab tulevase kuupäeva, keeldu ja palu kehtiv mineviku- või tänane kuupäev." }
     ]
   },
   {
@@ -54,8 +54,8 @@
     "url": "https://api.riigikogu.ee/api/votings",
     "method": "GET",
     "params": [
-      { "name": "startDate", "type": "date", "required": true, "description": "Alguskuupäev (YYYY-MM-DD)" },
-      { "name": "endDate", "type": "date", "required": true, "description": "Lõppkuupäev (YYYY-MM-DD)" },
+      { "name": "startDate", "type": "date", "required": true, "description": "Alguskuupäev (YYYY-MM-DD). Ei tohi olla tulevane kuupäev — kui kasutaja sisestab tulevase kuupäeva, keeldu ja palu kehtiv mineviku- või tänane kuupäev." },
+      { "name": "endDate", "type": "date", "required": true, "description": "Lõppkuupäev (YYYY-MM-DD). Ei tohi olla tulevane kuupäev — kui kasutaja sisestab tulevase kuupäeva, keeldu ja palu kehtiv mineviku- või tänane kuupäev." },
       { "name": "lang", "type": "string", "required": false, "description": "Vastuse keel (ET, EN, RU). Täidetakse automaatselt kasutaja keele põhjal." }
     ]
   },
@@ -66,8 +66,8 @@
     "url": "https://api.riigikogu.ee/api/statistics/participations/plenary",
     "method": "GET",
     "params": [
-      { "name": "startDate", "type": "date", "required": true, "description": "Alguskuupäev (YYYY-MM-DD)" },
-      { "name": "endDate", "type": "date", "required": true, "description": "Lõppkuupäev (YYYY-MM-DD)" },
+      { "name": "startDate", "type": "date", "required": true, "description": "Alguskuupäev (YYYY-MM-DD). Ei tohi olla tulevane kuupäev — kui kasutaja sisestab tulevase kuupäeva, keeldu ja palu kehtiv mineviku- või tänane kuupäev." },
+      { "name": "endDate", "type": "date", "required": true, "description": "Lõppkuupäev (YYYY-MM-DD). Ei tohi olla tulevane kuupäev — kui kasutaja sisestab tulevase kuupäeva, keeldu ja palu kehtiv mineviku- või tänane kuupäev." },
       { "name": "lang", "type": "string", "required": false, "description": "Vastuse keel (ET, EN, RU). Täidetakse automaatselt kasutaja keele põhjal." }
     ]
   },

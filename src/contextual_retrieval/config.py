@@ -9,13 +9,17 @@ from pydantic import BaseModel, Field
 from typing import List
 import yaml
 from pathlib import Path
-from loguru import logger
+from src.loki_logger import LokiLogger
+
 from contextual_retrieval.constants import (
     HttpClientConstants,
     SearchConstants,
     CollectionConstants,
     BM25Constants,
 )
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="contextual-retrieval-config")
 
 
 class HttpClientConfig(BaseModel):

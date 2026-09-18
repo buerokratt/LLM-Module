@@ -36,6 +36,11 @@
     "endDate": "Lõppkuupäev",
     "preview": "Eelvaade",
     "logout": "Logi välja",
+    "present": "Kohal",
+    "away": "Eemal",
+    "csaStatus": "Nõustaja",
+    "statusClarification": "Staatuse täpsustus",
+    "notificationErrorMsg": "Midagi läks valesti",
     "change": "Muuda",
     "loading": "Laadimine",
     "asc": "kasvav",
@@ -58,6 +63,18 @@
     "showEntries": "Näita",
     "entries": "kirjeid",
     "deleteSelected": "Kustuta valik"
+  },
+  "chat": {
+    "unanswered": "Vastamata",
+    "forwarded": "Suunatud",
+    "pending": "Ootel"
+  },
+  "mainMenu": {
+    "menuLabel": "Põhinavigatsioon",
+    "closeMenu": "Kitsenda menüü",
+    "openMenu": "Ava menüü",
+    "openIcon": "Ava menüü ikoon",
+    "closeIcon": "Sulge menüü ikoon"
   },
   "menu": {
     "userManagement": "Kasutajate haldus",
@@ -155,6 +172,7 @@
       "aws": "AWS Bedrock"
     },
     "models": {
+      "gpt4.1": "GPT-4.1",
       "gpt4Mini": "GPT-4 Mini",
       "gpt4o": "GPT-4o",
       "claude35Sonnet": "Anthropic Claude 3.5 Sonnet",

@@ -3,7 +3,10 @@
 import re
 import html
 from typing import Optional, List, Dict, Any
-from loguru import logger
+from src.loki_logger import LokiLogger
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="input-sanitizer")
 
 
 class InputSanitizer:

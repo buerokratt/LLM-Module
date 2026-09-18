@@ -9,7 +9,7 @@ import dspy
 import dspy.streaming
 import pytest
 
-from src.tool_classifier.api_response_formatter import (
+from tool_classifier.api_response_formatter import (
     APIResponseFormatterModule,
     _FORMATTER_ERROR_MESSAGES,
 )

@@ -1,9 +1,9 @@
 UPDATE rag_search.llm_connections 
 SET 
     connection_status = 'inactive'
-WHERE id = :connection_id
+WHERE vault_uuid = :vault_uuid::uuid
 RETURNING 
-    id,
+    vault_uuid,
     connection_name,
     connection_status,
     used_budget,

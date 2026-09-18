@@ -115,9 +115,7 @@ tokens = re.findall(r"\w+", text.lower())  # ["mis", "suhe", "on", "euro", ...]
 
 ```python
 # Collection: "intent_collections"
-vectors_config = {
-    "dense": VectorParams(size=3072, distance=Distance.COSINE)
-}
+vectors_config = {"dense": VectorParams(size=3072, distance=Distance.COSINE)}
 sparse_vectors_config = {
     "sparse": SparseVectorParams(index=SparseIndexParams(on_disk=False))
 }
@@ -197,12 +195,12 @@ Queries Qdrant using only the dense vector to get **actual cosine similarity sco
 
 ```python
 # classifier.py → _dense_search()
-POST /collections/intent_collections/points/query
+POST / collections / intent_collections / points / query
 {
     "query": [0.023, -0.041, ...],  # 3072-dim dense vector
     "using": "dense",
-    "limit": 6,                     # DENSE_SEARCH_TOP_K * 2 (3 * 2 = 6, allows dedup)
-    "with_payload": true
+    "limit": 6,  # DENSE_SEARCH_TOP_K * 2 (3 * 2 = 6, allows dedup)
+    "with_payload": true,
 }
 ```
 
@@ -219,15 +217,15 @@ Sparse prefetch is only included if the query produces a non-empty sparse vector
 ```python
 # classifier.py → _hybrid_search()
 # First checks collection exists and has data (points_count > 0)
-POST /collections/intent_collections/points/query
+POST / collections / intent_collections / points / query
 {
     "prefetch": [
         {"query": dense_vector, "using": "dense", "limit": 10},
-        {"query": {"indices": [...], "values": [...]}, "using": "sparse", "limit": 10}
+        {"query": {"indices": [...], "values": [...]}, "using": "sparse", "limit": 10},
     ],
     "query": {"fusion": "rrf"},
     "limit": 5,
-    "with_payload": true
+    "with_payload": true,
 }
 ```
 

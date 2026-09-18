@@ -12,6 +12,8 @@ Covers:
 - Qdrant timeout during classification → fallback
 """
 
+from __future__ import annotations
+
 from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,6 +23,7 @@ from models.session_models import APIToolSession
 from models.request_models import OrchestrationRequest
 from tool_classifier.classifier import ToolClassifier
 from tool_classifier.enums import WorkflowType
+from tool_classifier.intent_decomposer import IntentDecomposerModule
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +283,6 @@ class TestClassifySessionResumeShortcut:
         ):
             result = await classifier.classify(
                 query="EE",
-                conversation_history=[],
                 language="en",
                 request=request,
             )
@@ -305,7 +307,6 @@ class TestClassifySessionResumeShortcut:
         ):
             result = await classifier.classify(
                 query="some query",
-                conversation_history=[],
                 language="en",
                 request=request,
             )
@@ -342,7 +343,6 @@ class TestClassifyIntentSwitch:
         ):
             result = await classifier.classify(
                 query="What is the weather in Tallinn?",
-                conversation_history=[],
                 language="en",
                 request=request,
             )
@@ -378,7 +378,6 @@ class TestClassifyServiceWorkflowDisabled:
         ):
             result = await classifier.classify(
                 query="public holidays",
-                conversation_history=[],
                 language="en",
                 request=_make_request("public holidays"),
             )
@@ -406,7 +405,6 @@ class TestClassifyServiceWorkflowDisabled:
         ):
             result = await classifier.classify(
                 query="tell me a joke",
-                conversation_history=[],
                 language="en",
                 request=_make_request("tell me a joke"),
             )
@@ -433,7 +431,6 @@ class TestClassifyEmbeddingFailure:
         ):
             result = await classifier.classify(
                 query="public holidays",
-                conversation_history=[],
                 language="en",
             )
 
@@ -471,8 +468,286 @@ class TestClassifyQdrantTimeout:
             classifier.api_tool_searcher.search = AsyncMock(return_value=[])
             result = await classifier.classify(
                 query="public holidays",
-                conversation_history=[],
                 language="en",
             )
 
         assert result.workflow == WorkflowType.CONTEXT
+
+
+# ---------------------------------------------------------------------------
+# IntentDecomposerModule
+# ---------------------------------------------------------------------------
+
+
+class TestIntentDecomposer:
+    """Unit tests for IntentDecomposerModule.forward() and .decompose().
+
+    The DSPy predictor is replaced with a MagicMock so no real LLM is called.
+    """
+
+    def _make_module_with_prediction(
+        self,
+        mode: str,
+        sub_queries: str,
+    ) -> IntentDecomposerModule:
+        module = IntentDecomposerModule()
+        mock_pred = MagicMock()
+        mock_pred.mode = mode
+        mock_pred.sub_queries = sub_queries
+        module.predictor = MagicMock(return_value=mock_pred)
+        return module
+
+    def test_forward_single_mode_returns_single(self) -> None:
+        from tool_classifier.intent_decomposer import DecompositionResult
+
+        module = self._make_module_with_prediction("single", "[]")
+        result = module.forward("What are the public holidays in Estonia?")
+
+        assert isinstance(result, DecompositionResult)
+        assert result.mode == "single"
+        assert result.sub_queries == []
+
+    def test_forward_parallel_mode_returns_sub_queries(self) -> None:
+        from tool_classifier.intent_decomposer import DecompositionResult
+
+        module = self._make_module_with_prediction(
+            "parallel",
+            '["public holidays in Estonia", "weather in Tallinn"]',
+        )
+        result = module.forward(
+            "What are the public holidays in Estonia AND the weather in Tallinn?"
+        )
+
+        assert isinstance(result, DecompositionResult)
+        assert result.mode == "parallel"
+        assert len(result.sub_queries) == 2
+        assert "public holidays in Estonia" in result.sub_queries
+
+    def test_forward_caps_sub_queries_at_max_endpoints(self) -> None:
+        """sub_queries exceeding MULTI_API_MAX_ENDPOINTS are truncated."""
+        from tool_classifier.intent_decomposer import (
+            DecompositionResult,
+            IntentDecomposerModule,
+        )
+        from tool_classifier.constants import MULTI_API_MAX_ENDPOINTS
+
+        module = IntentDecomposerModule()
+        # Build a prediction with more sub-queries than the cap allows
+        over_cap = ["query " + str(i) for i in range(MULTI_API_MAX_ENDPOINTS + 2)]
+        import json
+
+        mock_pred = MagicMock()
+        mock_pred.mode = "parallel"
+        mock_pred.sub_queries = json.dumps(over_cap)
+        module.predictor = MagicMock(return_value=mock_pred)
+
+        result = module.forward("many intents query")
+
+        assert isinstance(result, DecompositionResult)
+        assert result.mode == "parallel"
+        assert len(result.sub_queries) == MULTI_API_MAX_ENDPOINTS
+
+    def test_forward_unexpected_mode_falls_back_to_single(self) -> None:
+        from tool_classifier.intent_decomposer import DecompositionResult
+
+        module = self._make_module_with_prediction("unknown_value", "[]")
+        result = module.forward("some query")
+
+        assert isinstance(result, DecompositionResult)
+        assert result.mode == "single"
+        assert result.sub_queries == []
+
+    def test_forward_parallel_with_fewer_than_2_sub_queries_falls_back(self) -> None:
+        """mode=parallel but only 1 sub-query parsed → conservative fallback to single."""
+        from tool_classifier.intent_decomposer import DecompositionResult
+
+        module = self._make_module_with_prediction("parallel", '["only one query"]')
+        result = module.forward("something")
+
+        assert isinstance(result, DecompositionResult)
+        assert result.mode == "single"
+
+    def test_forward_predictor_exception_falls_back_to_single(self) -> None:
+        """Any exception from the DSPy predictor → conservative single fallback."""
+        from tool_classifier.intent_decomposer import (
+            DecompositionResult,
+            IntentDecomposerModule,
+        )
+
+        module = IntentDecomposerModule()
+        module.predictor = MagicMock(side_effect=RuntimeError("LLM unavailable"))
+
+        result = module.forward("multi intent query")
+
+        assert isinstance(result, DecompositionResult)
+        assert result.mode == "single"
+
+    def test_forward_parallel_with_invalid_json_falls_back_to_single(self) -> None:
+        """Invalid JSON in sub_queries → falls back to mode=single."""
+        from tool_classifier.intent_decomposer import DecompositionResult
+
+        module = self._make_module_with_prediction("parallel", "not valid json")
+        result = module.forward("holidays and weather")
+
+        assert isinstance(result, DecompositionResult)
+        assert result.mode == "single"
+
+    def test_forward_markdown_fenced_json_parsed_correctly(self) -> None:
+        """sub_queries wrapped in markdown code fences are unwrapped before JSON parse."""
+        from tool_classifier.intent_decomposer import DecompositionResult
+
+        fenced = '```json\n["query A", "query B"]\n```'
+        module = self._make_module_with_prediction("parallel", fenced)
+        result = module.forward("query")
+
+        assert isinstance(result, DecompositionResult)
+        assert result.mode == "parallel"
+        assert result.sub_queries == ["query A", "query B"]
+
+    @pytest.mark.asyncio
+    async def test_decompose_async_wraps_forward(self) -> None:
+        """.decompose() is the async wrapper — result matches .forward() output."""
+        from tool_classifier.intent_decomposer import DecompositionResult
+
+        module = self._make_module_with_prediction("parallel", '["sub A", "sub B"]')
+
+        with patch(
+            "tool_classifier.intent_decomposer.asyncio.to_thread",
+            new_callable=AsyncMock,
+        ) as mock_thread:
+            mock_thread.return_value = DecompositionResult(
+                mode="parallel", sub_queries=["sub A", "sub B"]
+            )
+            result = await module.decompose("two intents")
+
+        assert isinstance(result, DecompositionResult)
+        assert result.mode == "parallel"
+        assert result.sub_queries == ["sub A", "sub B"]
+
+
+# ---------------------------------------------------------------------------
+# classify() — MULTI_INTENT_ENABLED feature flag toggle
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyMultiIntentFeatureFlag:
+    """Verify the MULTI_INTENT_ENABLED flag gates the parallel decomposition path."""
+
+    @pytest.mark.asyncio
+    async def test_multi_intent_disabled_suppresses_hint_result(self) -> None:
+        """When MULTI_INTENT_ENABLED=False a multi_intent_hint result is suppressed
+        and the classifier falls through to CONTEXT/RAG."""
+        from tool_classifier.api_semantic_searcher import APIToolSearchResult
+
+        svc = _make_orchestration_service(session_store=None)
+        classifier = _make_classifier(svc)
+
+        # Build a result with multi_intent_hint=True (disambiguator rejected all)
+        hint_result = MagicMock(spec=APIToolSearchResult)
+        hint_result.endpoint_id = "ep-holidays"
+        hint_result.name = "get_public_holidays"
+        hint_result.description = "Returns public holidays"
+        hint_result.method = "GET"
+        hint_result.url = "https://openholidaysapi.org/PublicHolidays"
+        hint_result.params = []
+        hint_result.cosine_score = 0.55
+        hint_result.rrf_score = 0.01
+        hint_result.confidence = "medium"
+        hint_result.llm_validated = False
+        hint_result.multi_intent_hint = True
+        hint_result.to_dict.return_value = {"endpoint_id": "ep-holidays"}
+
+        classifier.api_tool_searcher.search = AsyncMock(return_value=[hint_result])
+
+        with (
+            patch(
+                "tool_classifier.classifier.FeatureFlags.API_TOOL_CALLING_WORKFLOW_ENABLED",
+                True,
+            ),
+            patch(
+                "tool_classifier.classifier.FeatureFlags.MULTI_INTENT_ENABLED",
+                False,
+            ),
+            patch(
+                "tool_classifier.classifier.FeatureFlags.SERVICE_WORKFLOW_ENABLED",
+                False,
+            ),
+        ):
+            result = await classifier.classify(
+                query="public holidays AND weather",
+                conversation_history=[],
+                language="en",
+                request=_make_request("public holidays AND weather"),
+            )
+
+        assert result.workflow == WorkflowType.CONTEXT
+
+    @pytest.mark.asyncio
+    async def test_multi_intent_enabled_triggers_decomposer_on_ambiguous_band(
+        self,
+    ) -> None:
+        """MULTI_INTENT_ENABLED=True + cosine in ambiguous band → IntentDecomposer runs."""
+        from tool_classifier.api_semantic_searcher import APIToolSearchResult
+        from tool_classifier.intent_decomposer import DecompositionResult
+
+        svc = _make_orchestration_service(session_store=None)
+        classifier = _make_classifier(svc)
+
+        # A result in the ambiguous band (not llm_validated, not multi_intent_hint)
+        ambiguous_result = MagicMock(spec=APIToolSearchResult)
+        ambiguous_result.endpoint_id = "ep-holidays"
+        ambiguous_result.name = "get_public_holidays"
+        ambiguous_result.description = "Returns public holidays"
+        ambiguous_result.method = "GET"
+        ambiguous_result.url = "https://openholidaysapi.org/PublicHolidays"
+        ambiguous_result.params = []
+        ambiguous_result.cosine_score = 0.50  # in [0.40, 0.60) band
+        ambiguous_result.rrf_score = 0.01
+        ambiguous_result.confidence = "medium"
+        ambiguous_result.llm_validated = False
+        ambiguous_result.multi_intent_hint = False
+        ambiguous_result.to_dict.return_value = {
+            "endpoint_id": "ep-holidays",
+            "name": "get_public_holidays",
+            "description": "Returns public holidays",
+            "method": "GET",
+            "url": "https://openholidaysapi.org/PublicHolidays",
+            "params": [],
+            "cosine_score": 0.50,
+            "rrf_score": 0.01,
+            "confidence": "medium",
+        }
+
+        classifier.api_tool_searcher.search = AsyncMock(return_value=[ambiguous_result])
+
+        # IntentDecomposer returns single → falls through to single-endpoint path
+        decomposer_result = DecompositionResult(mode="single", sub_queries=[])
+        classifier.intent_decomposer.decompose = AsyncMock(
+            return_value=decomposer_result
+        )
+
+        with (
+            patch(
+                "tool_classifier.classifier.FeatureFlags.API_TOOL_CALLING_WORKFLOW_ENABLED",
+                True,
+            ),
+            patch(
+                "tool_classifier.classifier.FeatureFlags.MULTI_INTENT_ENABLED",
+                True,
+            ),
+            patch(
+                "tool_classifier.classifier.FeatureFlags.SERVICE_WORKFLOW_ENABLED",
+                False,
+            ),
+        ):
+            result = await classifier.classify(
+                query="public holidays AND weather",
+                conversation_history=[],
+                language="en",
+                request=_make_request("public holidays AND weather"),
+            )
+
+        # Decomposer was consulted
+        classifier.intent_decomposer.decompose.assert_awaited_once()
+        # Single mode → normal API_TOOL_CALLING result
+        assert result.workflow == WorkflowType.API_TOOL_CALLING

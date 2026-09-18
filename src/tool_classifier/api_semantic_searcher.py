@@ -2,11 +2,13 @@
 
 import asyncio
 import json
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Protocol, cast
 
 import dspy
 import httpx
-from loguru import logger
+from src.utils.observation_utils import safe_observation_context
+from src.loki_logger import LokiLogger
 
 from tool_classifier.constants import (
     API_TOOL_COLLECTION,
@@ -20,6 +22,23 @@ from tool_classifier.constants import (
 )
 from tool_classifier.sparse_encoder import compute_sparse_vector
 from tool_classifier.sparse_encoder import SparseVector
+from src.utils.cost_utils import get_lm_usage_since
+
+
+def _get_current_model_name() -> str:
+    """Best-effort model name lookup from current DSPy LM."""
+    try:
+        lm = dspy.settings.lm
+        if lm and hasattr(lm, "model"):
+            model_name = lm.model
+            if isinstance(model_name, str) and model_name:
+                return model_name
+    except Exception:
+        pass
+    return "unknown"
+
+
+logger = LokiLogger(service_name="api-tool-calling")
 
 
 class EmbeddingServiceProtocol(Protocol):
@@ -108,6 +127,16 @@ class EndpointDisambiguationSignature(dspy.Signature):
     )
 
 
+@dataclass
+class DisambiguationResult:
+    """Wrapper for disambiguation result to satisfy DSPy's Langfuse callback."""
+
+    winner_id: Optional[str]
+
+    def set_lm_usage(self, *args: object, **kwargs: object) -> None:
+        """No-op stub for DSPy's internal Langfuse callback compatibility."""
+
+
 class EndpointDisambiguatorModule(dspy.Module):
     """DSPy Module for resolving ambiguous API endpoint candidates via LLM.
 
@@ -124,7 +153,7 @@ class EndpointDisambiguatorModule(dspy.Module):
         self,
         user_query: str,
         candidates: List[Dict[str, Any]],
-    ) -> Optional[str]:
+    ) -> DisambiguationResult:
         """Pick the best matching endpoint_id from candidates, or return None.
 
         Args:
@@ -133,7 +162,7 @@ class EndpointDisambiguatorModule(dspy.Module):
                 description, and cosine_score.
 
         Returns:
-            The winning endpoint_id string, or None if no endpoint clearly fits.
+            DisambiguationResult with winner_id (endpoint_id string or None).
         """
         candidates_payload = [
             {
@@ -153,14 +182,14 @@ class EndpointDisambiguatorModule(dspy.Module):
             )
             winner = result.best_endpoint_id.strip()
             if winner.lower() == "none":
-                return None
-            return winner
+                return DisambiguationResult(winner_id=None)
+            return DisambiguationResult(winner_id=winner)
         except Exception as e:
             logger.error(
                 f"EndpointDisambiguatorModule: Disambiguation failed: {e}",
                 exc_info=True,
             )
-            return None
+            return DisambiguationResult(winner_id=None)
 
 
 class APISemanticSearcher:
@@ -465,17 +494,49 @@ class APISemanticSearcher:
             f"APISemanticSearcher: disambiguating {len(candidates)} candidates "
             f"for query: {query!r}"
         )
-        # Run the synchronous DSPy LLM call in a thread pool so it does not
-        # block the asyncio event loop while waiting for the LLM response.
-        # cast: asyncio.to_thread infers Prediction from DSPy; forward() returns Optional[str]
-        winner_id = cast(
-            Optional[str],
-            await asyncio.to_thread(
-                self._disambiguator,
-                user_query=query,
-                candidates=candidate_dicts,
-            ),
-        )
+
+        history_length_before = 0
+        try:
+            lm = dspy.settings.lm
+            if lm and hasattr(lm, "history"):
+                history_length_before = len(lm.history)
+        except Exception as e:
+            logger.warning(f"Failed to get LM history length for disambiguation: {e}")
+
+        with safe_observation_context(
+            name="api_endpoint_disambiguation_llm",
+            as_type="generation",
+            input={"user_query": query, "candidates_count": len(candidates)},
+        ) as generation:
+            # Run the synchronous DSPy LLM call in a thread pool so it does not
+            # block the asyncio event loop while waiting for the LLM response.
+            disambiguation_result = cast(
+                DisambiguationResult,
+                await asyncio.to_thread(
+                    self._disambiguator,
+                    user_query=query,
+                    candidates=candidate_dicts,
+                ),
+            )
+            winner_id = disambiguation_result.winner_id
+
+            # Update Langfuse observation with output and usage
+            try:
+                if generation is not None:
+                    usage = get_lm_usage_since(history_length_before)
+                    generation.update(
+                        model=_get_current_model_name(),
+                        output={"winner": winner_id},
+                        usage_details={
+                            "input": usage.get("total_prompt_tokens", 0),
+                            "output": usage.get("total_completion_tokens", 0),
+                            "total": usage.get("total_tokens", 0),
+                        },
+                        cost_details={"total": usage.get("total_cost", 0.0)},
+                    )
+            except Exception as e:
+                logger.debug(f"Langfuse generation update skipped: {e}")
+
         if winner_id:
             logger.info(
                 f"APISemanticSearcher: disambiguator picked endpoint_id={winner_id!r}"

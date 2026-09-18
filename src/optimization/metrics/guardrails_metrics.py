@@ -5,7 +5,10 @@ Prioritizes safety: missing unsafe content (false negatives) is 3x worse than ov
 
 from typing import Any, Dict, List
 import dspy
-from loguru import logger
+from src.loki_logger import LokiLogger
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="guardrails-metrics")
 
 
 class GuardrailsMetric:

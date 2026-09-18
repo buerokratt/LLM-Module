@@ -1,0 +1,10 @@
+FROM hashicorp/vault:1.20.3
+
+# Bake the only CLI tools vault-init.sh actually needs (jq + openssl) so container
+# startup never depends on the Alpine CDN. Previously these were installed via
+# `apk add` on every boot, which failed intermittently on EC2. Retry guards the
+# one-time build against a transient mirror hiccup.
+RUN for i in 1 2 3; do \
+        apk add --no-cache jq openssl && break; \
+        echo "apk add failed (attempt $i), retrying..."; sleep 3; \
+    done

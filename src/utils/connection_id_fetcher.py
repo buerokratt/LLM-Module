@@ -8,11 +8,14 @@ environments (production, testing) that can be reused across services.
 import asyncio
 import threading
 from typing import Optional, Dict, Any
-from loguru import logger
+from src.loki_logger import LokiLogger
 import requests
 import aiohttp
 
 from src.llm_orchestrator_config.llm_ochestrator_constants import RAG_SEARCH_RESQL
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="connection-id-fetcher")
 
 
 class ConnectionIdFetcher:
@@ -29,8 +32,8 @@ class ConnectionIdFetcher:
         self.resql_base = RAG_SEARCH_RESQL
         self.timeout = 5  # seconds
 
-        # Cache connection IDs to avoid repeated requests
-        self._connection_cache: Dict[str, int] = {}
+        # Cache connection IDs and vault UUIDs to avoid repeated requests
+        self._connection_cache: Dict[str, int | str] = {}
         # Thread-safe lock for cache access
         self._cache_lock = threading.Lock()
 
@@ -87,7 +90,7 @@ class ConnectionIdFetcher:
         # Thread-safe cache check
         with self._cache_lock:
             if cache_key in self._connection_cache:
-                cached_value = self._connection_cache[cache_key]
+                cached_value = int(self._connection_cache[cache_key])
                 logger.debug(
                     f"Using cached connection_id for {environment}: {cached_value}"
                 )
@@ -147,7 +150,7 @@ class ConnectionIdFetcher:
         # Thread-safe cache check
         with self._cache_lock:
             if cache_key in self._connection_cache:
-                cached_value = self._connection_cache[cache_key]
+                cached_value = int(self._connection_cache[cache_key])
                 logger.debug(
                     f"Using cached connection_id for {environment}: {cached_value}"
                 )
@@ -212,12 +215,96 @@ class ConnectionIdFetcher:
         with self._cache_lock:
             if environment:
                 cache_key = f"{environment}_connection_id"
+                vault_key = f"{environment}_vault_uuid"
                 if cache_key in self._connection_cache:
                     del self._connection_cache[cache_key]
-                    logger.debug(f"Cleared cache for {environment} connection_id")
+                if vault_key in self._connection_cache:
+                    del self._connection_cache[vault_key]
+                    logger.debug(f"Cleared cache for {environment}")
             else:
                 self._connection_cache.clear()
                 logger.debug("Cleared all connection_id cache")
+
+    def fetch_vault_uuid_sync(self, environment: str) -> Optional[str]:
+        """
+        Synchronously fetch the vault_uuid for specified environment.
+
+        Args:
+            environment: The deployment environment ("production" or "testing")
+
+        Returns:
+            The vault_uuid (string) or None if unavailable
+        """
+        cache_key = f"{environment}_vault_uuid"
+
+        with self._cache_lock:
+            if cache_key in self._connection_cache:
+                cached_value = self._connection_cache[cache_key]
+                logger.debug(
+                    f"Using cached vault_uuid for {environment}: {cached_value}"
+                )
+                return str(cached_value)
+
+        try:
+            logger.debug(f"Fetching {environment} vault_uuid from Resql (sync)...")
+
+            endpoint = f"{self.resql_base}/get-{environment}-connection"
+            response = requests.post(endpoint, json={}, timeout=self.timeout)
+
+            if response.status_code == 200:
+                data = response.json()
+                vault_uuid = self._extract_vault_uuid_from_response(data)
+
+                if vault_uuid is not None:
+                    with self._cache_lock:
+                        self._connection_cache[cache_key] = vault_uuid
+                    logger.info(
+                        f"{environment.capitalize()} vault_uuid fetched: {vault_uuid}"
+                    )
+                    return vault_uuid
+                else:
+                    logger.warning(f"No {environment} vault_uuid found in response")
+                    return None
+            else:
+                logger.error(
+                    f"Failed to fetch {environment} vault_uuid. "
+                    f"Status: {response.status_code}, Response: {response.text}"
+                )
+                return None
+
+        except requests.exceptions.Timeout:
+            logger.error(f"Timeout while fetching {environment} vault_uuid")
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching {environment} vault_uuid: {str(e)}")
+            return None
+
+    def _extract_vault_uuid_from_response(
+        self, data: dict[str, Any] | list[Any]
+    ) -> Optional[str]:
+        """
+        Extract vault_uuid from API response data.
+
+        Args:
+            data: The JSON response data (dict or list)
+
+        Returns:
+            The vault_uuid as string, or None if not found
+        """
+        if isinstance(data, dict):
+            response_data: Any = data.get("response", data)
+        else:
+            response_data = data
+
+        if isinstance(response_data, list):
+            if len(response_data) > 0 and isinstance(response_data[0], dict):
+                vault_uuid = response_data[0].get("vaultUuid")
+                return str(vault_uuid) if vault_uuid else None
+        elif isinstance(response_data, dict):
+            vault_uuid = response_data.get("vaultUuid")
+            return str(vault_uuid) if vault_uuid else None
+
+        return None
 
 
 # Singleton instance for reuse across modules

@@ -46,3 +46,9 @@ export async function getEmbeddingModels(platformKey?: string): Promise<ModelOpt
   });
   return data?.response;
 }
+
+// Get all LLM models
+export async function getAllLLMModels(): Promise<ModelOption[]> {
+  const { data } = await apiDev.get('/rag-search/llm/models-list');
+  return data?.response;
+}

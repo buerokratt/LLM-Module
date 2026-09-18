@@ -18,7 +18,7 @@ INSERT INTO rag_search.inference_results (
     :embedding_scores::JSONB,
     :final_answer,
     :environment,
-    :llm_connection_id,
+    (SELECT id FROM rag_search.llm_connections WHERE vault_uuid = :vault_uuid::uuid),
     :created_at::timestamp with time zone
 ) RETURNING 
     id, 

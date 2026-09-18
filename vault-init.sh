@@ -7,6 +7,88 @@ INIT_FLAG="/vault/data/.initialized"
 
 echo "=== Vault Initialization Script ==="
 
+# ---------------------------------------------------------------------------
+# Helpers (used by the SUBSEQUENT DEPLOYMENT branch)
+# ---------------------------------------------------------------------------
+
+# Ensure a role_id file exists on disk; fetch from Vault if missing.
+# Usage: ensure_role_id <role-name> <role_id_file>
+ensure_role_id() {
+    role="$1"; rid_file="$2"
+    if [ -f "$rid_file" ] && [ -s "$rid_file" ]; then
+        return 0
+    fi
+    echo "Fetching role_id for $role..."
+    rid=$(wget -q -O- \
+        --header="X-Vault-Token: $ROOT_TOKEN" \
+        "$VAULT_ADDR/v1/auth/approle/role/$role/role-id" | \
+        grep -o '"role_id":"[^"]*"' | cut -d':' -f2 | tr -d '"')
+    echo "$rid" > "$rid_file"
+    chmod 640 "$rid_file"
+}
+
+# Return 0 if the on-disk role_id + secret_id still authenticate, 1 otherwise.
+# Usage: validate_secret_id <role_id_file> <secret_id_file>
+validate_secret_id() {
+    rid_file="$1"; sid_file="$2"
+    [ -f "$rid_file" ] && [ -f "$sid_file" ] || return 1
+    rid=$(cat "$rid_file"); sid=$(cat "$sid_file")
+    [ -n "$rid" ] && [ -n "$sid" ] || return 1
+    # wget returns non-zero on HTTP 400 (invalid creds); also confirm a token came back.
+    resp=$(wget -q -O- \
+        --post-data="{\"role_id\":\"$rid\",\"secret_id\":\"$sid\"}" \
+        --header='Content-Type: application/json' \
+        "$VAULT_ADDR/v1/auth/approle/login" 2>/dev/null) || return 1
+    echo "$resp" | grep -q '"client_token"' || return 1
+    return 0
+}
+
+# Mint a fresh secret_id for a role and write it to disk.
+# Usage: mint_secret_id <role-name> <secret_id_file>
+mint_secret_id() {
+    role="$1"; sid_file="$2"
+    sid=$(wget -q -O- --post-data='' \
+        --header="X-Vault-Token: $ROOT_TOKEN" \
+        "$VAULT_ADDR/v1/auth/approle/role/$role/secret-id" | \
+        grep -o '"secret_id":"[^"]*"' | cut -d':' -f2 | tr -d '"')
+    echo "$sid" > "$sid_file"
+    chmod 640 "$sid_file"
+}
+
+# Reuse the existing secret_id if it still authenticates; otherwise mint a new one.
+# Usage: reconcile_secret_id <role-name> <role_id_file> <secret_id_file>
+reconcile_secret_id() {
+    role="$1"; rid_file="$2"; sid_file="$3"
+    ensure_role_id "$role" "$rid_file"
+    if validate_secret_id "$rid_file" "$sid_file"; then
+        echo "$role: existing secret_id still valid - reusing"
+    else
+        echo "$role: secret_id invalid or missing - minting a new one"
+        mint_secret_id "$role" "$sid_file"
+    fi
+}
+
+# Create or update an AppRole that issues a PERIODIC token (no max_ttl): the
+# agent renews it forever and never re-runs approle/login in steady state.
+# secret_id_ttl=0 + secret_id_num_uses=0 keep the secret_id valid across
+# restarts. Idempotent: does not invalidate existing secret_ids, safe per run.
+# Usage: upsert_approle <role-name> <policy-name> <token-period>
+upsert_approle() {
+    role="$1"; policy="$2"; period="$3"
+    wget -q -O- --post-data='{"token_policies":["'"$policy"'"],"token_period":"'"$period"'","token_num_uses":0,"secret_id_ttl":"0","secret_id_num_uses":0,"bind_secret_id":true}' \
+        --header="X-Vault-Token: $ROOT_TOKEN" \
+        --header='Content-Type: application/json' \
+        "$VAULT_ADDR/v1/auth/approle/role/$role" >/dev/null
+}
+
+# Apply the current AppRole definitions for all three services.
+ensure_approles() {
+    echo "Ensuring AppRole configs (periodic tokens)..."
+    upsert_approle "gui-service"               "gui-policy"                 "20m"
+    upsert_approle "cron-manager-service"      "cron-manager-policy"        "30m"
+    upsert_approle "llm-orchestration-service" "llm-orchestration-policy"   "1h"
+}
+
 # Wait for Vault to be ready
 echo "Waiting for Vault..."
 for i in $(seq 1 30); do
@@ -106,6 +188,8 @@ path "secret/metadata/llm/connections/*" { capabilities = ["read", "list"] }
 path "secret/data/embeddings/connections/*" { capabilities = ["read", "list"] }
 path "secret/metadata/embeddings/connections/*" { capabilities = ["read", "list"] }
 path "secret/data/encryption/*" { capabilities = ["deny"] }
+path "secret/data/langfuse/*" { capabilities = ["read"] }
+path "secret/metadata/langfuse/*" { capabilities = ["read", "list"] }
 path "auth/token/lookup-self" { capabilities = ["read"] }'
     
     LLM_POLICY_JSON=$(echo "$LLM_POLICY" | jq -Rs '{"policy":.}')
@@ -114,27 +198,9 @@ path "auth/token/lookup-self" { capabilities = ["read"] }'
         --header='Content-Type: application/json' \
         "$VAULT_ADDR/v1/sys/policies/acl/llm-orchestration-policy" >/dev/null
     
-    # Create GUI AppRole
-    echo "Creating gui-service AppRole..."
-    wget -q -O- --post-data='{"token_policies":["gui-policy"],"token_no_default_policy":true,"token_ttl":"15m","token_max_ttl":"1h","secret_id_ttl":"24h","secret_id_num_uses":0,"bind_secret_id":true}' \
-        --header="X-Vault-Token: $ROOT_TOKEN" \
-        --header='Content-Type: application/json' \
-        "$VAULT_ADDR/v1/auth/approle/role/gui-service" >/dev/null
-    
-    # Create CronManager AppRole
-    echo "Creating cron-manager-service AppRole..."
-    wget -q -O- --post-data='{"token_policies":["cron-manager-policy"],"token_no_default_policy":true,"token_ttl":"30m","token_max_ttl":"8h","secret_id_ttl":"24h","secret_id_num_uses":0,"bind_secret_id":true}' \
-        --header="X-Vault-Token: $ROOT_TOKEN" \
-        --header='Content-Type: application/json' \
-        "$VAULT_ADDR/v1/auth/approle/role/cron-manager-service" >/dev/null
-    
-    # Create LLM Orchestration AppRole
-    echo "Creating llm-orchestration-service AppRole..."
-    wget -q -O- --post-data='{"token_policies":["llm-orchestration-policy"],"token_no_default_policy":true,"token_ttl":"1h","token_max_ttl":"8h","secret_id_ttl":"24h","secret_id_num_uses":0,"bind_secret_id":true}' \
-        --header="X-Vault-Token: $ROOT_TOKEN" \
-        --header='Content-Type: application/json' \
-        "$VAULT_ADDR/v1/auth/approle/role/llm-orchestration-service" >/dev/null
-    
+    # Create the three AppRoles (periodic tokens - see upsert_approle).
+    ensure_approles
+
     # Ensure credentials directory exists
     mkdir -p /agent/credentials
     
@@ -229,13 +295,6 @@ path "auth/token/lookup-self" { capabilities = ["read"] }'
     rm -rf "$TEMP_KEY_DIR"
     echo "RSA keypair generated and stored successfully"
     
-    # Store test LLM credentials for testing
-    echo "Creating test LLM credentials..."
-    wget -q -O- --post-data='{"data":{"access_key":"TEST_AWS_ACCESS_KEY","secret_key":"TEST_AWS_SECRET_KEY","environment":"production","model":"claude-3"}}' \
-        --header="X-Vault-Token: $ROOT_TOKEN" \
-        --header='Content-Type: application/json' \
-        "$VAULT_ADDR/v1/secret/data/llm/connections/aws_bedrock/production/claude-3" >/dev/null
-    
     # Mark as initialized
     touch "$INIT_FLAG"
     echo "=== First time setup complete ==="
@@ -276,65 +335,22 @@ else
     # Get root token
     ROOT_TOKEN=$(grep -o '"root_token":"[^"]*"' "$UNSEAL_KEYS_FILE" | cut -d':' -f2 | tr -d '"')
     export VAULT_TOKEN="$ROOT_TOKEN"
-    
+
+    # Re-apply AppRole definitions so config changes (e.g. periodic tokens)
+    # take effect on redeploy without re-initializing Vault. Idempotent and
+    # does not invalidate existing secret_ids.
+    ensure_approles
+
     # Ensure credentials directory exists
     mkdir -p /agent/credentials
     
-    # Always regenerate all secret_ids on restart
-    echo "Regenerating GUI secret_id..."
-    GUI_SECRET_ID=$(wget -q -O- --post-data='' \
-        --header="X-Vault-Token: $ROOT_TOKEN" \
-        "$VAULT_ADDR/v1/auth/approle/role/gui-service/secret-id" | \
-        grep -o '"secret_id":"[^"]*"' | cut -d':' -f2 | tr -d '"')
-    echo "$GUI_SECRET_ID" > /agent/credentials/gui_secret_id
-    
-    echo "Regenerating CronManager secret_id..."
-    CRON_SECRET_ID=$(wget -q -O- --post-data='' \
-        --header="X-Vault-Token: $ROOT_TOKEN" \
-        "$VAULT_ADDR/v1/auth/approle/role/cron-manager-service/secret-id" | \
-        grep -o '"secret_id":"[^"]*"' | cut -d':' -f2 | tr -d '"')
-    echo "$CRON_SECRET_ID" > /agent/credentials/cron_secret_id
-    
-    echo "Regenerating LLM secret_id..."
-    LLM_SECRET_ID=$(wget -q -O- --post-data='' \
-        --header="X-Vault-Token: $ROOT_TOKEN" \
-        "$VAULT_ADDR/v1/auth/approle/role/llm-orchestration-service/secret-id" | \
-        grep -o '"secret_id":"[^"]*"' | cut -d':' -f2 | tr -d '"')
-    echo "$LLM_SECRET_ID" > /agent/credentials/llm_secret_id
-    
-    # Set permissions
-    chmod 640 /agent/credentials/*_secret_id
-    
-    # Ensure role_ids exist
-    if [ ! -f /agent/credentials/gui_role_id ]; then
-        echo "Copying GUI role_id..."
-        GUI_ROLE_ID=$(wget -q -O- \
-            --header="X-Vault-Token: $ROOT_TOKEN" \
-            "$VAULT_ADDR/v1/auth/approle/role/gui-service/role-id" | \
-            grep -o '"role_id":"[^"]*"' | cut -d':' -f2 | tr -d '"')
-        echo "$GUI_ROLE_ID" > /agent/credentials/gui_role_id
-        chmod 640 /agent/credentials/gui_role_id
-    fi
-    
-    if [ ! -f /agent/credentials/cron_role_id ]; then
-        echo "Copying CronManager role_id..."
-        CRON_ROLE_ID=$(wget -q -O- \
-            --header="X-Vault-Token: $ROOT_TOKEN" \
-            "$VAULT_ADDR/v1/auth/approle/role/cron-manager-service/role-id" | \
-            grep -o '"role_id":"[^"]*"' | cut -d':' -f2 | tr -d '"')
-        echo "$CRON_ROLE_ID" > /agent/credentials/cron_role_id
-        chmod 640 /agent/credentials/cron_role_id
-    fi
-    
-    if [ ! -f /agent/credentials/llm_role_id ]; then
-        echo "Copying LLM role_id..."
-        LLM_ROLE_ID=$(wget -q -O- \
-            --header="X-Vault-Token: $ROOT_TOKEN" \
-            "$VAULT_ADDR/v1/auth/approle/role/llm-orchestration-service/role-id" | \
-            grep -o '"role_id":"[^"]*"' | cut -d':' -f2 | tr -d '"')
-        echo "$LLM_ROLE_ID" > /agent/credentials/llm_role_id
-        chmod 640 /agent/credentials/llm_role_id
-    fi
+    # Reconcile secret_ids: reuse the existing one if it still authenticates,
+    # mint a new one only if invalid or missing - keeps one stable secret_id
+    # across restarts instead of rotating every boot. reconcile_secret_id also
+    # ensures the role_id file exists first (validation needs both).
+    reconcile_secret_id "gui-service"                 /agent/credentials/gui_role_id  /agent/credentials/gui_secret_id
+    reconcile_secret_id "cron-manager-service"        /agent/credentials/cron_role_id /agent/credentials/cron_secret_id
+    reconcile_secret_id "llm-orchestration-service"   /agent/credentials/llm_role_id  /agent/credentials/llm_secret_id
 fi
 
 echo "=== Vault init complete ==="

@@ -8,7 +8,7 @@ import dspy
 import dspy.streaming
 import pytest
 
-from src.tool_classifier.multi_response_formatter import (
+from tool_classifier.multi_response_formatter import (
     MultiResponseFormatterModule,
     _MULTI_FORMATTER_ERROR_MESSAGES,
     _MAX_TOTAL_RESPONSE_BYTES,

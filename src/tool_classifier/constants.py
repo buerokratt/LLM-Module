@@ -277,3 +277,24 @@ MULTI_API_PARTIAL_FAILURE_MESSAGES = {
     "en": "Some service calls failed. Partial results may be missing.",
 }
 """Friendly message returned when a batch of API calls has partial failures."""
+
+
+# ============================================================================
+# ATC Response Cache Configuration
+# ============================================================================
+
+ATC_CACHE_KEY_PREFIX = "atc:cache"
+"""Redis key prefix for L1 exact-match response cache entries.
+Full key format: atc:cache:{chat_id}:{api_name}:{param_hash}"""
+
+ATC_LAST_CALL_KEY_PREFIX = "atc:last"
+"""Redis key prefix for L2 last-call context entries.
+Full key format: atc:last:{chat_id}"""
+
+ATC_CACHE_DEFAULT_TTL_SECONDS = 1800
+"""Default L1 cache TTL in seconds (30 minutes).
+Applied when an endpoint does not define a per-endpoint cache_ttl_seconds override."""
+
+ATC_LAST_CALL_TTL_SECONDS = 1800
+"""L2 last-call context TTL in seconds (30 minutes).
+Matches the session TTL so cached context never outlives the session."""

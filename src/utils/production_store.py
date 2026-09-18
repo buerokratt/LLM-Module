@@ -8,13 +8,16 @@ to the Ruuter endpoint for analytics and monitoring purposes.
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 import json
-from loguru import logger
+from src.loki_logger import LokiLogger
 import requests
 import aiohttp
-from src.utils.connection_id_fetcher import get_connection_id_fetcher
+
 from src.llm_orchestrator_config.llm_ochestrator_constants import (
     RAG_SEARCH_RUUTER_PUBLIC,
 )
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="production-store")
 
 
 class ProductionInferenceStore:
@@ -26,7 +29,6 @@ class ProductionInferenceStore:
         """Initialize the production inference store with Ruuter configuration."""
         self.store_endpoint = f"{RAG_SEARCH_RUUTER_PUBLIC}/inference/results/store"
         self.timeout = 10  # seconds
-        self.connection_fetcher = get_connection_id_fetcher()
 
     def _create_payload(
         self,
@@ -38,7 +40,7 @@ class ProductionInferenceStore:
         embedding_scores: List[float],
         final_answer: str,
         environment: str,
-        connection_id: Optional[int],
+        vault_uuid: Optional[str],
     ) -> Dict[str, Any]:
         """Create the payload for storing inference results."""
         return {
@@ -50,7 +52,7 @@ class ProductionInferenceStore:
             "embedding_scores": json.dumps(embedding_scores),
             "final_answer": final_answer,
             "environment": environment,
-            "llm_connection_id": connection_id,
+            "vault_uuid": vault_uuid,
             "created_at": datetime.now().isoformat(),
         }
 
@@ -105,7 +107,7 @@ class ProductionInferenceStore:
         embedding_scores: List[float],
         final_answer: str,
         environment: str,
-        connection_id: Optional[int] = None,
+        vault_uuid: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Store production inference result with comprehensive data.
@@ -119,7 +121,7 @@ class ProductionInferenceStore:
             embedding_scores: Distance scores for each chunk
             final_answer: LLM's final generated answer
             environment: Deployment environment (production/testing)
-            connection_id: LLM connection ID (optional, will be fetched if not provided)
+            vault_uuid: LLM connection vault UUID (used to look up connection_id in DB)
 
         Returns:
             Dict containing:
@@ -128,17 +130,6 @@ class ProductionInferenceStore:
                 - error (Optional[str]): Error message if failed
         """
         try:
-            # Fetch connection ID if not provided
-            if connection_id is None:
-                logger.debug(f"Fetching {environment} connection ID...")
-                connection_id = self.connection_fetcher.fetch_connection_id_sync(
-                    environment
-                )
-                if connection_id is None:
-                    logger.warning(
-                        f"Could not fetch {environment} connection ID, storing without it"
-                    )
-
             # Prepare the request payload
             payload = self._create_payload(
                 chat_id,
@@ -149,7 +140,7 @@ class ProductionInferenceStore:
                 embedding_scores,
                 final_answer,
                 environment,
-                connection_id,
+                vault_uuid,
             )
 
             logger.debug(
@@ -218,7 +209,7 @@ class ProductionInferenceStore:
         embedding_scores: List[float],
         final_answer: str,
         environment: str = "production",
-        connection_id: Optional[int] = None,
+        vault_uuid: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Async version of store_inference_result for streaming pipelines.
@@ -232,7 +223,7 @@ class ProductionInferenceStore:
             embedding_scores: Distance scores for each chunk
             final_answer: LLM's final generated answer
             environment: Deployment environment (production/testing)
-            connection_id: LLM connection ID (optional, will be fetched if not provided)
+            vault_uuid: LLM connection vault UUID (used to look up connection_id in DB)
 
         Returns:
             Dict containing:
@@ -241,17 +232,6 @@ class ProductionInferenceStore:
                 - error (Optional[str]): Error message if failed
         """
         try:
-            # Fetch connection ID if not provided
-            if connection_id is None:
-                logger.debug(f"Fetching {environment} connection ID (async)...")
-                connection_id = await self.connection_fetcher.fetch_connection_id_async(
-                    environment
-                )
-                if connection_id is None:
-                    logger.warning(
-                        f"Could not fetch {environment} connection ID, storing without it"
-                    )
-
             # Prepare the request payload
             payload = self._create_payload(
                 chat_id,
@@ -262,7 +242,7 @@ class ProductionInferenceStore:
                 embedding_scores,
                 final_answer,
                 environment,
-                connection_id,
+                vault_uuid,
             )
 
             logger.debug(

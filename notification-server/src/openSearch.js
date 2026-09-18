@@ -39,8 +39,8 @@ async function createLLMOrchestrationStreamRequest({ channelId, message, options
           authorId: options.authorId || `user-${channelId}`,
           conversationHistory: options.conversationHistory || [],
           url: options.url || "sse-stream-context",
-          environment: "production", // Streaming only works in production
-          connection_id: options.connection_id || connectionId
+          environment: options.environment || "production",
+          connection_id: options.connection_id
         };
 
         console.log(`Calling LLM orchestration stream for channel ${channelId}`);
