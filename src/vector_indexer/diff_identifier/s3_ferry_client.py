@@ -5,11 +5,15 @@ import json
 import time
 from typing import Any, Callable, Dict, Optional
 import requests
-from loguru import logger
+from loki_logger import LokiLogger
+
 from typing_extensions import Self
 
 from diff_identifier.diff_models import DiffConfig, DiffError
 from constants import get_s3_ferry_payload
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="s3-ferry-client")
 
 
 class S3Ferry:

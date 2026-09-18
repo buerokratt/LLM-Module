@@ -7,11 +7,13 @@ from pathlib import Path
 from typing import List, Dict, Any, Tuple
 import random
 import sys
+from src.loki_logger import LokiLogger
 
 # Add src to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
 
-from loguru import logger
+# Initialize Loki logger
+logger = LokiLogger(service_name="split-datasets")
 
 
 def load_dataset(filepath: Path) -> List[Dict[str, Any]]:

@@ -39,7 +39,8 @@ rails:
     streaming:
       enabled: true
       chunk_size: 200
-      context_size: 300
+      # Must stay < chunk_size; see src/guardrails/rails_config.yaml
+      context_size: 50
       stream_first: false
 prompts:
 - task: self_check_input

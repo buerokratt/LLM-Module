@@ -45,6 +45,21 @@ data:
             'Content-Security-Policy': process.env.REACT_APP_CSP,
           }),
         },
+        proxy: {
+          '/vault-agent-gui': {
+            target: 'http://localhost:8202',
+            changeOrigin: true,
+            rewrite: (path) => path.replace(/^\/vault-agent-gui/, ''),
+          },
+          '/sse': {
+            target: 'http://notifications-node:4040',
+            changeOrigin: true,
+          },
+          '/channels': {
+            target: 'http://notifications-node:4040',
+            changeOrigin: true,
+          },
+        },
       },
       resolve: {
         alias: {

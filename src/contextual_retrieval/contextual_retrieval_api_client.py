@@ -8,8 +8,9 @@ lifecycle management, and resource cleanup for all contextual retrieval componen
 import asyncio
 from typing import Optional, Dict, Any
 import httpx
-from loguru import logger
+from src.loki_logger import LokiLogger
 import time
+
 from contextual_retrieval.error_handler import SecureErrorHandler
 from contextual_retrieval.constants import (
     HttpClientConstants,
@@ -19,6 +20,9 @@ from contextual_retrieval.constants import (
     LoggingConstants,
 )
 from contextual_retrieval.config import ConfigLoader, ContextualRetrievalConfig
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="contextual-retrieval-api-client")
 
 
 class ServiceResilienceManager:

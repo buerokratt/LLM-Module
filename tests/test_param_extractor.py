@@ -8,7 +8,7 @@ import dspy
 import dspy.streaming
 import pytest
 
-from src.tool_classifier.param_extractor import (
+from tool_classifier.param_extractor import (
     ParamExtractionModule,
     strip_format_hints,
 )

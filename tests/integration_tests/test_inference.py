@@ -9,9 +9,53 @@ These tests verify:
 5. Contextual retrieval integration
 """
 
+import subprocess
 import requests
 import json
 from loguru import logger
+
+
+def _capture_orchestration_error_logs(tail: int = 300) -> str:
+    """Return recent llm-orchestration-service logs relevant to a failed inference.
+
+    Used to surface the real server-side exception in the test's assertion message
+    when the orchestration pipeline returns the generic "technical issue" content
+    (llmServiceActive=False), so we don't depend on separately retrieving CI logs.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "logs", "llm-orchestration-service", "--tail", str(tail)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception as e:  # pragma: no cover - diagnostics only
+        return f"<could not capture orchestration logs: {e}>"
+
+    combined = f"{result.stdout}\n{result.stderr}"
+    markers = (
+        "error",
+        "exception",
+        "traceback",
+        "rag_response_generation",
+        "refine",
+        "response generator",
+        "openai",
+        "azure",
+        "vault",
+        "deployment",
+        "not found",
+        "401",
+        "404",
+        "429",
+    )
+    lines = combined.splitlines()
+    relevant = [line for line in lines if any(m in line.lower() for m in markers)]
+    if relevant:
+        # Keep the tail of the relevant lines (closest to the failure)
+        return "\n".join(relevant[-80:])
+    # Fall back to the raw tail so we always surface something actionable
+    return "\n".join(lines[-60:]) or "<no orchestration logs captured>"
 
 
 class TestInference:
@@ -72,7 +116,8 @@ class TestInference:
 
         logger.info(f"Testing inference with message: {test_case['question']}")
         logger.info(
-            f"Expected vault path: llm/connections/azure_openai/test/{connection_id}"
+            "Vault secret resolved via the connection's vault_uuid "
+            "(path: llm/connections/azure_openai/<vault_uuid>)"
         )
         logger.info(f"Using payload: {json.dumps(payload)}")
         logger.info(f"Ruuter base URL: {ruuter_private_client.base_url}")
@@ -96,7 +141,12 @@ class TestInference:
         assert "inputGuardFailed" in data
         assert "content" in data
 
-        assert data["llmServiceActive"] is True
+        assert data["llmServiceActive"] is True, (
+            "Orchestration returned llmServiceActive=False (technical issue). "
+            f"Response content: {data.get('content')!r}\n"
+            "--- llm-orchestration-service error logs ---\n"
+            f"{_capture_orchestration_error_logs()}"
+        )
         assert len(data["content"]) > 0
 
         logger.info(f"Inference successful: {data['content'][:100]}...")

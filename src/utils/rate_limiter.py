@@ -4,11 +4,13 @@ import time
 from collections import defaultdict, deque
 from typing import Dict, Deque, Optional, Any
 from threading import Lock
-
-from loguru import logger
 from pydantic import BaseModel, Field, ConfigDict
 
+from src.loki_logger import LokiLogger
 from src.llm_orchestrator_config.stream_config import StreamConfig
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="rate-limiter")
 
 
 class RateLimitResult(BaseModel):

@@ -6,7 +6,10 @@ Extracts optimized prompts from DSPy guardrails modules and generates updated co
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 import json
-from loguru import logger
+from src.loki_logger import LokiLogger
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="optimized-guardrails-loader")
 
 
 class OptimizedGuardrailsLoader:

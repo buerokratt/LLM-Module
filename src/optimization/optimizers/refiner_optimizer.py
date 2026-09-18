@@ -12,12 +12,14 @@ from datetime import datetime
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 import dspy
-from loguru import logger
-
+from src.loki_logger import LokiLogger
 from optimization.metrics.refiner_metrics import (
     RefinerMetric,
     calculate_refiner_stats,
 )
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="refiner-optimizer")
 
 
 class PromptRefinerSignature(dspy.Signature):

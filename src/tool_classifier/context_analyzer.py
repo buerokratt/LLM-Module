@@ -12,11 +12,13 @@ from src.utils.observation_utils import (
     safe_observation_context,
     update_observation_safe,
 )
-from loguru import logger
+from src.loki_logger import LokiLogger
 from pydantic import BaseModel, Field
 
 from src.utils.cost_utils import get_lm_usage_since
 from tool_classifier.greeting_constants import get_greeting_response
+
+logger = LokiLogger(service_name="context-workflow")
 
 
 def _get_current_model_name() -> str:
@@ -102,6 +104,42 @@ class ConversationSummarySignature(dspy.Signature):
     summary: str = dspy.OutputField(
         desc="Concise summary capturing key topics, facts, and information discussed. "
         "Preserve specific details (numbers, names, dates) that could be referenced later."
+    )
+
+
+class IncrementalSummarySignature(dspy.Signature):
+    """Merge newly evicted conversation rounds into an existing summary.
+
+    Given an existing summary (which may be empty for the first eviction) and a
+    JSON-formatted list of conversation rounds that were just evicted from the
+    active history window, produce an updated summary that incorporates all new
+    information.
+
+    Guidelines:
+    - Preserve all factual details from the existing summary (names, numbers, dates).
+    - Integrate only new, non-redundant information from the evicted rounds.
+    - Keep the summary concise — omit filler, focus on actionable/memorable facts.
+    - Respond in the SAME language as the conversation.
+    """
+
+    existing_summary: str = dspy.InputField(
+        desc=(
+            "Current conversation summary. May be an empty string if no summary "
+            "exists yet (first eviction)."
+        )
+    )
+    new_rounds: str = dspy.InputField(
+        desc=(
+            "JSON array of conversation rounds that were just evicted from the "
+            "active history window, each with user_message, bot_message, and timestamp."
+        )
+    )
+    updated_summary: str = dspy.OutputField(
+        desc=(
+            "Updated summary that merges the existing summary with the new rounds. "
+            "Preserve all factual details; drop redundant information. "
+            "Same language as the conversation."
+        )
     )
 
 
@@ -411,14 +449,18 @@ class ContextAnalyzer:
         self,
         query: str,
         conversation_history: List[Dict[str, Any]],
+        pre_computed_summary: Optional[str] = None,
     ) -> tuple[ContextDetectionResult, Dict[str, Any]]:
         """
         Phase 1 with summary fallback: detect if query can be answered from history.
 
         Implements a 3-step flow:
         1. Check the last 10 turns via detect_context().
-        2. If cannot answer AND total history > 10 turns:
-           - Generate a concise summary of the older turns (everything before the last 10).
+        2. If cannot answer AND (total history > 10 turns OR a pre-computed summary
+           is available from Redis):
+           - Use *pre_computed_summary* directly when provided (skips the expensive
+             LLM summarisation call).
+           - Otherwise generate a concise summary of the older turns.
            - Check whether the query can be answered from that summary.
         3. If still cannot answer, return can_answer=False (workflow falls back to RAG).
 
@@ -432,6 +474,11 @@ class ContextAnalyzer:
         Args:
             query: User query to classify
             conversation_history: Full conversation history
+            pre_computed_summary: Running conversation summary retrieved from Redis.
+                When provided the LLM summary-generation step is skipped and this
+                value is used directly.  The summary path is also attempted even
+                when ``total_turns <= 10`` because evicted rounds may exist in Redis
+                beyond what is currently in *conversation_history*.
 
         Returns:
             Tuple of (ContextDetectionResult, cost_dict)
@@ -447,19 +494,35 @@ class ContextAnalyzer:
         if result.is_greeting or result.can_answer_from_context:
             return result, cost_dict
 
-        # Step 2 & 3: if history exceeds 10 turns, try summary-based detection
-        if total_turns > 10:
-            logger.info(
-                f"History has {total_turns} turns (> 10) | "
-                f"Cannot answer from recent 10 | Attempting summary-based detection"
-            )
-            older_history = conversation_history[:-10]
-            logger.info(f"Summarizing {len(older_history)} older turns")
-
+        # Step 2 & 3: try summary-based detection when history is long *or* Redis
+        # has a pre-computed summary (which may cover evicted rounds beyond what is
+        # currently in memory).
+        if total_turns > 10 or pre_computed_summary is not None:
             try:
-                summary, summary_cost = await self._generate_conversation_summary(
-                    older_history
-                )
+                if pre_computed_summary is not None:
+                    # Redis path: reuse the incremental summary, skip LLM generation.
+                    logger.info(
+                        "Pre-computed summary available | "
+                        "Skipping LLM summary generation, using Redis summary directly"
+                    )
+                    summary = pre_computed_summary
+                    summary_cost: Dict[str, Any] = {
+                        "total_cost": 0.0,
+                        "total_tokens": 0,
+                        "num_calls": 0,
+                    }
+                else:
+                    # On-demand path: summarise older turns via LLM.
+                    logger.info(
+                        f"History has {total_turns} turns (> 10) | "
+                        f"Cannot answer from recent 10 | Attempting summary-based detection"
+                    )
+                    older_history = conversation_history[:-10]
+                    logger.info(f"Summarizing {len(older_history)} older turns")
+                    summary, summary_cost = await self._generate_conversation_summary(
+                        older_history
+                    )
+
                 cost_dict = self._merge_cost_dicts(cost_dict, summary_cost)
 
                 if summary:

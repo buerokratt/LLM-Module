@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from src.tool_classifier.api_caller import APICaller, CircuitBreaker
-from src.tool_classifier.constants import (
+from tool_classifier.api_caller import APICaller, CircuitBreaker
+from tool_classifier.constants import (
     CB_STATE_CLOSED,
     CB_STATE_HALF_OPEN,
     CB_STATE_OPEN,
@@ -16,7 +16,7 @@ from src.tool_classifier.constants import (
     SERVICE_TIMEOUT_MESSAGES,
     SERVICE_UNAVAILABLE_MESSAGES,
 )
-from src.tool_classifier.models import APICallResult
+from tool_classifier.models import APICallResult
 
 
 # ---------------------------------------------------------------------------

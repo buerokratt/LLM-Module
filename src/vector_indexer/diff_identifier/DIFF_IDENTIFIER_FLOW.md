@@ -94,7 +94,7 @@ class VersionManager:
         "last_run_modified_files": 1,
         "last_run_deleted_files": 1,
         "last_cleanup_deleted_chunks": 15,
-        "last_run_timestamp": "2025-10-17T00:00:46Z"
+        "last_run_timestamp": "2025-10-17T00:00:46Z",
     },
     "processed_files": {
         "sha256_hash": {
@@ -103,9 +103,15 @@ class VersionManager:
             "file_size": 15234,
             "processed_at": "2025-10-17T00:00:46Z",
             "chunk_count": 5,  # Track chunk count for validation
-            "chunk_ids": ["uuid1", "uuid2", "uuid3", "uuid4", "uuid5"]  # Track exact chunks
+            "chunk_ids": [
+                "uuid1",
+                "uuid2",
+                "uuid3",
+                "uuid4",
+                "uuid5",
+            ],  # Track exact chunks
         }
-    }
+    },
 }
 ```
 
@@ -138,27 +144,39 @@ class ProcessedFileInfo(BaseModel):
     chunk_count: int = 0  # NEW: Track number of chunks
     chunk_ids: List[str] = Field(default_factory=list)  # NEW: Track chunk IDs
 
+
 class DiffResult(BaseModel):
     # File change detection
     new_files: List[str] = Field(..., description="Files to process for first time")
-    modified_files: List[str] = Field(default_factory=list, description="Files with changed content")
-    deleted_files: List[str] = Field(default_factory=list, description="Files removed from dataset")
-    unchanged_files: List[str] = Field(default_factory=list, description="Files with same content")
-    
+    modified_files: List[str] = Field(
+        default_factory=list, description="Files with changed content"
+    )
+    deleted_files: List[str] = Field(
+        default_factory=list, description="Files removed from dataset"
+    )
+    unchanged_files: List[str] = Field(
+        default_factory=list, description="Files with same content"
+    )
+
     # Statistics
     total_files_scanned: int
     previously_processed_count: int
     is_first_run: bool
-    
+
     # NEW: Cleanup metadata
-    chunks_to_delete: Dict[str, List[str]] = Field(default_factory=dict)  # document_hash -> chunk_ids
+    chunks_to_delete: Dict[str, List[str]] = Field(
+        default_factory=dict
+    )  # document_hash -> chunk_ids
     estimated_cleanup_count: int = Field(default=0)  # Total chunks to be removed
+
 
 class VersionState(BaseModel):
     last_updated: str
     processed_files: Dict[str, ProcessedFileInfo]
     total_processed: int
-    processing_stats: Dict[str, Any] = Field(default_factory=dict)  # NEW: Enhanced stats
+    processing_stats: Dict[str, Any] = Field(
+        default_factory=dict
+    )  # NEW: Enhanced stats
 ```
 
 ## Enhanced Processing Flow
@@ -247,8 +265,8 @@ if not files_to_process:
 ```python
 # NEW: Track chunk information in metadata
 await diff_detector.mark_files_processed(
-    processed_paths, 
-    chunks_info=collected_chunk_information  # Future enhancement
+    processed_paths,
+    chunks_info=collected_chunk_information,  # Future enhancement
 )
 ```
 
@@ -269,7 +287,7 @@ await diff_detector.mark_files_processed(
 # Efficient chunk identification for cleanup
 chunks_to_delete = {
     "document_hash_123": ["chunk_uuid_1", "chunk_uuid_2", "chunk_uuid_3"],
-    "document_hash_456": ["chunk_uuid_4", "chunk_uuid_5"]
+    "document_hash_456": ["chunk_uuid_4", "chunk_uuid_5"],
 }
 
 # Cleanup execution per collection
@@ -395,7 +413,9 @@ diff_result = await diff_detector.get_changed_files()
 logger.info(f"Cleanup metadata: {diff_result.chunks_to_delete}")
 
 # Test cleanup operations
-cleanup_count = await main_indexer._execute_cleanup_operations(qdrant_manager, diff_result)
+cleanup_count = await main_indexer._execute_cleanup_operations(
+    qdrant_manager, diff_result
+)
 logger.info(f"Total cleanup: {cleanup_count} chunks")
 ```
 
@@ -408,20 +428,22 @@ logger.info(f"Total cleanup: {cleanup_count} chunks")
 async def process_all_documents(self) -> ProcessingStats:
     # 1. Enhanced diff detection
     diff_result = await diff_detector.get_changed_files()
-    
+
     # 2. NEW: Automatic cleanup execution
     if diff_result.chunks_to_delete:
-        cleanup_count = await self._execute_cleanup_operations(qdrant_manager, diff_result)
-    
+        cleanup_count = await self._execute_cleanup_operations(
+            qdrant_manager, diff_result
+        )
+
     # 3. Selective document processing
     files_to_process = diff_result.new_files + diff_result.modified_files
     if not files_to_process:
         return self.stats  # Early exit
-    
+
     # 4. Standard processing pipeline
     documents = self._filter_documents_by_paths(files_to_process)
     results = await self._process_documents(documents)
-    
+
     # 5. Enhanced metadata update
     await diff_detector.mark_files_processed(processed_paths, chunks_info)
 ```
@@ -565,17 +587,18 @@ if is_first_run:
 current_files = version_manager.scan_current_files()
 # Returns: Dict[content_hash, file_path] for all discovered files
 
+
 def scan_current_files(self) -> Dict[str, str]:
     file_hash_map = {}
     for root, _, files in os.walk(self.config.datasets_path):
         for file in files:
             file_path = os.path.join(root, file)
             relative_path = os.path.relpath(file_path, self.config.datasets_path)
-            
+
             # Calculate content hash for change detection
             content_hash = self._calculate_file_hash(file_path)
             file_hash_map[content_hash] = relative_path
-    
+
     return file_hash_map
 ```
 
@@ -592,23 +615,24 @@ def scan_current_files(self) -> Dict[str, str]:
 processed_metadata = await s3_ferry_client.download_metadata()
 # Downloads from: s3://rag-search/resources/datasets/processed-metadata.json
 
+
 def download_metadata(self) -> Optional[Dict[str, Any]]:
     # Create temporary file for S3Ferry transfer
-    with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as temp_file:
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as temp_file:
         temp_file_path = temp_file.name
-    
+
     # Transfer S3 → FS via S3Ferry API
     response = self._retry_with_backoff(
         lambda: self.s3_ferry.transfer_file(
             destinationFilePath=temp_file_path,
-            destinationStorageType="FS", 
+            destinationStorageType="FS",
             sourceFilePath=self.config.metadata_s3_path,
-            sourceStorageType="S3"
+            sourceStorageType="S3",
         )
     )
-    
+
     if response.status_code == 200:
-        with open(temp_file_path, 'r') as f:
+        with open(temp_file_path, "r") as f:
             return json.load(f)
     elif response.status_code == 404:
         return None  # First run - no metadata exists yet
@@ -624,19 +648,23 @@ def download_metadata(self) -> Optional[Dict[str, Any]]:
 #### Phase 5: Differential Analysis
 ```python  
 # 6. Change Detection Algorithm (version_manager.py)
-changed_files = version_manager.identify_changed_files(current_files, processed_metadata)
+changed_files = version_manager.identify_changed_files(
+    current_files, processed_metadata
+)
 
-def identify_changed_files(self, current_files: Dict[str, str], 
-                          processed_state: Optional[Dict]) -> Set[str]:
+
+def identify_changed_files(
+    self, current_files: Dict[str, str], processed_state: Optional[Dict]
+) -> Set[str]:
     if not processed_state:
         return set(current_files.values())  # All files are "new"
-    
-    processed_hashes = set(processed_state.get('processed_files', {}).keys())
+
+    processed_hashes = set(processed_state.get("processed_files", {}).keys())
     current_hashes = set(current_files.keys())
-    
+
     # Identify new and modified files
     new_or_changed_hashes = current_hashes - processed_hashes
-    
+
     # Convert hashes back to file paths
     return {current_files[hash_val] for hash_val in new_or_changed_hashes}
 ```
@@ -654,8 +682,8 @@ def identify_changed_files(self, current_files: Dict[str, str],
 return DiffResult(
     new_files=list(changed_files),
     total_files_scanned=len(current_files),
-    previously_processed_count=len(processed_state.get('processed_files', {})),
-    is_first_run=is_first_run
+    previously_processed_count=len(processed_state.get("processed_files", {})),
+    is_first_run=is_first_run,
 )
 ```
 
@@ -706,11 +734,15 @@ Dataset Download → [shared-volume] → diff_identifier → [datasets mount] �
 if diff_result.new_files:
     # Process only changed files
     documents = self._filter_documents_by_paths(diff_result.new_files)
-    logger.info(f"Processing {len(documents)} documents from {len(diff_result.new_files)} changed files")
+    logger.info(
+        f"Processing {len(documents)} documents from {len(diff_result.new_files)} changed files"
+    )
 else:
     # No changes detected - skip processing entirely
     logger.info("No changes detected. Skipping processing phase.")
-    return ProcessingResult(processed_count=0, skipped_count=diff_result.total_files_scanned)
+    return ProcessingResult(
+        processed_count=0, skipped_count=diff_result.total_files_scanned
+    )
 
 # Continue with existing vector generation pipeline...
 ```
@@ -727,25 +759,26 @@ else:
 async def mark_files_processed(self, file_paths: List[str]) -> bool:
     # Update processed files metadata
     new_metadata = self._create_updated_metadata(file_paths)
-    
+
     # Upload to S3 via S3Ferry
     success = await self.s3_ferry_client.upload_metadata(new_metadata)
-    
+
     # Commit DVC state (optional - for advanced versioning)
     if success:
         self.version_manager.commit_dvc_state(f"Processed {len(file_paths)} files")
-    
+
     return success
+
 
 def _create_updated_metadata(self, file_paths: List[str]) -> Dict[str, Any]:
     current_files = self.version_manager.scan_current_files()
-    
+
     metadata = {
         "last_updated": datetime.utcnow().isoformat(),
-        "total_processed": len(file_paths), 
-        "processed_files": {}
+        "total_processed": len(file_paths),
+        "processed_files": {},
     }
-    
+
     # Add file metadata for each processed file
     for file_path in file_paths:
         file_hash = self._get_file_hash(file_path)
@@ -753,9 +786,9 @@ def _create_updated_metadata(self, file_paths: List[str]) -> Dict[str, Any]:
             content_hash=file_hash,
             original_path=file_path,
             file_size=os.path.getsize(file_path),
-            processed_at=datetime.utcnow().isoformat()
+            processed_at=datetime.utcnow().isoformat(),
         ).dict()
-    
+
     return metadata
 ```
 
@@ -1067,14 +1100,14 @@ diff_detector = DiffDetector(diff_config)  # Passes to main orchestrator
 
 # diff_detector.py - Configuration factory
 config = DiffConfig(
-    s3_ferry_url=s3_ferry_url,                    # → Used by S3FerryClient
-    metadata_s3_path=metadata_s3_path,            # → Used for S3Ferry operations
-    datasets_path=datasets_path,                  # → Used for file scanning
-    metadata_filename=metadata_filename,          # → Used to build paths
-    dvc_remote_url=dvc_remote_url,               # → Used by DVC setup
-    s3_endpoint_url=str(s3_endpoint_url),        # → Used by DVC S3 config
-    s3_access_key_id=str(s3_access_key_id),      # → Used by DVC authentication
-    s3_secret_access_key=str(s3_secret_access_key) # → Used by DVC authentication
+    s3_ferry_url=s3_ferry_url,  # → Used by S3FerryClient
+    metadata_s3_path=metadata_s3_path,  # → Used for S3Ferry operations
+    datasets_path=datasets_path,  # → Used for file scanning
+    metadata_filename=metadata_filename,  # → Used to build paths
+    dvc_remote_url=dvc_remote_url,  # → Used by DVC setup
+    s3_endpoint_url=str(s3_endpoint_url),  # → Used by DVC S3 config
+    s3_access_key_id=str(s3_access_key_id),  # → Used by DVC authentication
+    s3_secret_access_key=str(s3_secret_access_key),  # → Used by DVC authentication
 )
 ```
 
@@ -1118,7 +1151,7 @@ response = self.s3_ferry.transfer_file(
     destinationFilePath="resources/datasets/processed-metadata.json",
     destinationStorageType="S3",
     sourceFilePath="/tmp/tmpABC123.json",  # Temporary file
-    sourceStorageType="FS"
+    sourceStorageType="FS",
 )
 ```
 
@@ -1145,7 +1178,7 @@ response = self.s3_ferry.transfer_file(
     destinationFilePath="/tmp/tmpDEF456.json",  # Temporary file
     destinationStorageType="FS",
     sourceFilePath="resources/datasets/processed-metadata.json",
-    sourceStorageType="S3"
+    sourceStorageType="S3",
 )
 ```
 
@@ -1535,7 +1568,7 @@ DiffResult(
     new_files=["datasets/collection1/abc123/cleaned.txt"],
     total_files_scanned=100,
     previously_processed_count=99,
-    is_first_run=False
+    is_first_run=False,
 )
 ```
 

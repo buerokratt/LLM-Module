@@ -87,12 +87,17 @@ from grafana_configs.loki_logger import LokiLogger
 logger = LokiLogger(service_name="model-deployment-orchestrator")
 
 # Log with model context
-logger.info("Starting deployment", model_id="model123", 
-           current_env="testing", target_env="production")
+logger.info(
+    "Starting deployment",
+    model_id="model123",
+    current_env="testing",
+    target_env="production",
+)
 
 # Log errors with extra context
-logger.error("Deployment failed", model_id="model123", 
-            error_code=500, step="model_loading")
+logger.error(
+    "Deployment failed", model_id="model123", error_code=500, step="model_loading"
+)
 ```
 
 ### Accessing Grafana

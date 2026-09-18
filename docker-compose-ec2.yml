@@ -184,6 +184,8 @@ services:
       - ./src/tool_classifier:/app/src/tool_classifier
       - ./src/intent_data_enrichment:/app/src/intent_data_enrichment
       - ./src/api_tool_indexer:/app/src/api_tool_indexer
+      - ./src/__init__.py:/app/src/__init__.py:ro
+      - ./src/loki_logger.py:/app/src/loki_logger.py:ro
       - ./src/utils/decrypt_vault_secrets.py:/app/src/utils/decrypt_vault_secrets.py:ro  # Decryption utility (read-only)
       - cron_data:/app/data
       - shared-volume:/app/shared  # Access to shared resources for cross-container coordination
@@ -192,7 +194,7 @@ services:
       - ./.env:/app/.env:ro
     environment:
       - server.port=9010
-      - PYTHONPATH=/app:/app/src/vector_indexer:/app/src/intent_data_enrichment:/app/src/api_tool_indexer
+      - PYTHONPATH=/app:/app/src:/app/src/vector_indexer:/app/src/intent_data_enrichment:/app/src/api_tool_indexer
       - VAULT_AGENT_URL=http://vault-agent-cron:8203
     ports:
       - 9010:8080
@@ -645,6 +647,7 @@ services:
       - ./src/llm_config_module/config:/app/src/llm_config_module/config:ro
       - ./src/optimization/optimized_modules:/app/src/optimization/optimized_modules
       - llm_orchestration_logs:/app/logs
+      - ./grafana-configs/loki_logger.py:/app/src/loki_logger.py:ro
     networks:
       - bykstack
     depends_on:

@@ -5,14 +5,14 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.models.session_models import LastCallContext
-from src.tool_classifier.constants import (
+from models.session_models import LastCallContext
+from tool_classifier.constants import (
     ATC_CACHE_DEFAULT_TTL_SECONDS,
     ATC_CACHE_KEY_PREFIX,
     ATC_LAST_CALL_KEY_PREFIX,
     ATC_LAST_CALL_TTL_SECONDS,
 )
-from src.utils.atc_cache_store import ATCCacheStore
+from utils.atc_cache_store import ATCCacheStore
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -170,9 +170,7 @@ class TestGetL1:
         redis_mock = _make_redis_mock()
         redis_mock.get = AsyncMock(return_value=json.dumps(RESPONSE))
 
-        with patch(
-            "src.utils.atc_cache_store.get_redis_client", return_value=redis_mock
-        ):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
             result = await store.get_l1(CHAT_ID, API_NAME, PARAMS)
 
         assert result == RESPONSE
@@ -183,9 +181,7 @@ class TestGetL1:
         redis_mock = _make_redis_mock()
         redis_mock.get = AsyncMock(return_value=None)
 
-        with patch(
-            "src.utils.atc_cache_store.get_redis_client", return_value=redis_mock
-        ):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
             result = await store.get_l1(CHAT_ID, API_NAME, PARAMS)
 
         assert result is None
@@ -193,7 +189,7 @@ class TestGetL1:
     @pytest.mark.asyncio
     async def test_returns_none_when_redis_unavailable(self):
         store = ATCCacheStore()
-        with patch("src.utils.atc_cache_store.get_redis_client", return_value=None):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=None):
             result = await store.get_l1(CHAT_ID, API_NAME, PARAMS)
 
         assert result is None
@@ -204,9 +200,7 @@ class TestGetL1:
         redis_mock = _make_redis_mock()
         redis_mock.get = AsyncMock(side_effect=RuntimeError("connection lost"))
 
-        with patch(
-            "src.utils.atc_cache_store.get_redis_client", return_value=redis_mock
-        ):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
             result = await store.get_l1(CHAT_ID, API_NAME, PARAMS)
 
         assert result is None
@@ -224,9 +218,7 @@ class TestGetL1:
         redis_mock = _make_redis_mock()
         redis_mock.get = AsyncMock(side_effect=selective_get)
 
-        with patch(
-            "src.utils.atc_cache_store.get_redis_client", return_value=redis_mock
-        ):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
             result = await store.get_l1(CHAT_ID, API_NAME, different_params)
 
         assert result is None
@@ -244,9 +236,7 @@ class TestSetL1:
         redis_mock = _make_redis_mock()
         expected_key = ATCCacheStore._l1_key(CHAT_ID, API_NAME, PARAMS)
 
-        with patch(
-            "src.utils.atc_cache_store.get_redis_client", return_value=redis_mock
-        ):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
             await store.set_l1(CHAT_ID, API_NAME, PARAMS, RESPONSE)
 
         redis_mock.set.assert_called_once_with(
@@ -260,9 +250,7 @@ class TestSetL1:
         store = ATCCacheStore()
         redis_mock = _make_redis_mock()
 
-        with patch(
-            "src.utils.atc_cache_store.get_redis_client", return_value=redis_mock
-        ):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
             await store.set_l1(CHAT_ID, API_NAME, PARAMS, RESPONSE)
 
         assert redis_mock.set.call_args[1]["ex"] == ATC_CACHE_DEFAULT_TTL_SECONDS
@@ -272,9 +260,7 @@ class TestSetL1:
         store = ATCCacheStore()
         redis_mock = _make_redis_mock()
 
-        with patch(
-            "src.utils.atc_cache_store.get_redis_client", return_value=redis_mock
-        ):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
             await store.set_l1(CHAT_ID, API_NAME, PARAMS, RESPONSE, ttl=120)
 
         assert redis_mock.set.call_args[1]["ex"] == 120
@@ -282,7 +268,7 @@ class TestSetL1:
     @pytest.mark.asyncio
     async def test_no_op_when_redis_unavailable(self):
         store = ATCCacheStore()
-        with patch("src.utils.atc_cache_store.get_redis_client", return_value=None):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=None):
             await store.set_l1(CHAT_ID, API_NAME, PARAMS, RESPONSE)  # must not raise
 
     @pytest.mark.asyncio
@@ -291,9 +277,7 @@ class TestSetL1:
         redis_mock = _make_redis_mock()
         redis_mock.set = AsyncMock(side_effect=RuntimeError("write failed"))
 
-        with patch(
-            "src.utils.atc_cache_store.get_redis_client", return_value=redis_mock
-        ):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
             await store.set_l1(CHAT_ID, API_NAME, PARAMS, RESPONSE)  # must not raise
 
 
@@ -308,9 +292,7 @@ class TestL1RoundTrip:
         store = ATCCacheStore()
         _, redis_mock = _fake_redis_store()
 
-        with patch(
-            "src.utils.atc_cache_store.get_redis_client", return_value=redis_mock
-        ):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
             await store.set_l1(CHAT_ID, API_NAME, PARAMS, RESPONSE)
             result = await store.get_l1(CHAT_ID, API_NAME, PARAMS)
 
@@ -324,9 +306,7 @@ class TestL1RoundTrip:
         params_int = {"country": "EE", "year": 2026}
         params_str = {"country": "EE", "year": "2026"}
 
-        with patch(
-            "src.utils.atc_cache_store.get_redis_client", return_value=redis_mock
-        ):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
             await store.set_l1(CHAT_ID, API_NAME, params_int, RESPONSE)
             result = await store.get_l1(CHAT_ID, API_NAME, params_str)
 
@@ -339,9 +319,7 @@ class TestL1RoundTrip:
         _, redis_mock = _fake_redis_store()
         list_response = [{"date": "2026-02-24"}, {"date": "2026-06-23"}]
 
-        with patch(
-            "src.utils.atc_cache_store.get_redis_client", return_value=redis_mock
-        ):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
             await store.set_l1(CHAT_ID, API_NAME, PARAMS, list_response)
             result = await store.get_l1(CHAT_ID, API_NAME, PARAMS)
 
@@ -360,9 +338,7 @@ class TestSetAndGetL2:
         ctx = _make_last_call_ctx()
         _, redis_mock = _fake_redis_store()
 
-        with patch(
-            "src.utils.atc_cache_store.get_redis_client", return_value=redis_mock
-        ):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
             await store.set_l2(CHAT_ID, [ctx])
             result = await store.get_l2(CHAT_ID)
 
@@ -381,9 +357,7 @@ class TestSetAndGetL2:
         ctx2 = _make_last_call_ctx("get_electricity_prices")
         _, redis_mock = _fake_redis_store()
 
-        with patch(
-            "src.utils.atc_cache_store.get_redis_client", return_value=redis_mock
-        ):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
             await store.set_l2(CHAT_ID, [ctx1, ctx2])
             result = await store.get_l2(CHAT_ID)
 
@@ -400,9 +374,7 @@ class TestSetAndGetL2:
         redis_mock = _make_redis_mock()
         ctx = _make_last_call_ctx()
 
-        with patch(
-            "src.utils.atc_cache_store.get_redis_client", return_value=redis_mock
-        ):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
             await store.set_l2(CHAT_ID, [ctx])
 
         assert redis_mock.set.call_args[1]["ex"] == ATC_LAST_CALL_TTL_SECONDS
@@ -414,9 +386,7 @@ class TestSetAndGetL2:
         ctx = _make_last_call_ctx()
         expected_key = ATCCacheStore._l2_key(CHAT_ID)
 
-        with patch(
-            "src.utils.atc_cache_store.get_redis_client", return_value=redis_mock
-        ):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
             await store.set_l2(CHAT_ID, [ctx])
 
         assert redis_mock.set.call_args[0][0] == expected_key
@@ -426,9 +396,7 @@ class TestSetAndGetL2:
         store = ATCCacheStore()
         redis_mock = _make_redis_mock()
 
-        with patch(
-            "src.utils.atc_cache_store.get_redis_client", return_value=redis_mock
-        ):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
             result = await store.get_l2(CHAT_ID)
 
         assert result is None
@@ -436,7 +404,7 @@ class TestSetAndGetL2:
     @pytest.mark.asyncio
     async def test_get_l2_returns_none_when_redis_unavailable(self):
         store = ATCCacheStore()
-        with patch("src.utils.atc_cache_store.get_redis_client", return_value=None):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=None):
             result = await store.get_l2(CHAT_ID)
 
         assert result is None
@@ -447,9 +415,7 @@ class TestSetAndGetL2:
         redis_mock = _make_redis_mock()
         redis_mock.get = AsyncMock(side_effect=RuntimeError("connection reset"))
 
-        with patch(
-            "src.utils.atc_cache_store.get_redis_client", return_value=redis_mock
-        ):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
             result = await store.get_l2(CHAT_ID)
 
         assert result is None
@@ -458,7 +424,7 @@ class TestSetAndGetL2:
     async def test_set_l2_no_op_when_redis_unavailable(self):
         store = ATCCacheStore()
         ctx = _make_last_call_ctx()
-        with patch("src.utils.atc_cache_store.get_redis_client", return_value=None):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=None):
             await store.set_l2(CHAT_ID, [ctx])  # must not raise
 
     @pytest.mark.asyncio
@@ -468,9 +434,7 @@ class TestSetAndGetL2:
         redis_mock.set = AsyncMock(side_effect=RuntimeError("write error"))
         ctx = _make_last_call_ctx()
 
-        with patch(
-            "src.utils.atc_cache_store.get_redis_client", return_value=redis_mock
-        ):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
             await store.set_l2(CHAT_ID, [ctx])  # must not raise
 
 
@@ -486,9 +450,7 @@ class TestInvalidateL2:
         redis_mock = _make_redis_mock()
         expected_key = ATCCacheStore._l2_key(CHAT_ID)
 
-        with patch(
-            "src.utils.atc_cache_store.get_redis_client", return_value=redis_mock
-        ):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
             await store.invalidate_l2(CHAT_ID)
 
         redis_mock.delete.assert_called_once_with(expected_key)
@@ -499,9 +461,7 @@ class TestInvalidateL2:
         _, redis_mock = _fake_redis_store()
         ctx = _make_last_call_ctx()
 
-        with patch(
-            "src.utils.atc_cache_store.get_redis_client", return_value=redis_mock
-        ):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
             await store.set_l2(CHAT_ID, [ctx])
             await store.invalidate_l2(CHAT_ID)
             result = await store.get_l2(CHAT_ID)
@@ -514,9 +474,7 @@ class TestInvalidateL2:
         store = ATCCacheStore()
         redis_mock = _make_redis_mock()
 
-        with patch(
-            "src.utils.atc_cache_store.get_redis_client", return_value=redis_mock
-        ):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
             await store.invalidate_l2(CHAT_ID)
 
         deleted_key: str = redis_mock.delete.call_args[0][0]
@@ -526,7 +484,7 @@ class TestInvalidateL2:
     @pytest.mark.asyncio
     async def test_no_op_when_redis_unavailable(self):
         store = ATCCacheStore()
-        with patch("src.utils.atc_cache_store.get_redis_client", return_value=None):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=None):
             await store.invalidate_l2(CHAT_ID)  # must not raise
 
     @pytest.mark.asyncio
@@ -535,7 +493,5 @@ class TestInvalidateL2:
         redis_mock = _make_redis_mock()
         redis_mock.delete = AsyncMock(side_effect=RuntimeError("gone"))
 
-        with patch(
-            "src.utils.atc_cache_store.get_redis_client", return_value=redis_mock
-        ):
+        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
             await store.invalidate_l2(CHAT_ID)  # must not raise

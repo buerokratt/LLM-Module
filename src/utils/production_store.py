@@ -8,12 +8,16 @@ to the Ruuter endpoint for analytics and monitoring purposes.
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 import json
-from loguru import logger
+from src.loki_logger import LokiLogger
 import requests
 import aiohttp
+
 from src.llm_orchestrator_config.llm_ochestrator_constants import (
     RAG_SEARCH_RUUTER_PUBLIC,
 )
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="production-store")
 
 
 class ProductionInferenceStore:

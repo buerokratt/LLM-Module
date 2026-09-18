@@ -10,7 +10,9 @@ class EnrichmentConstants:
     # API Configuration
     DEFAULT_API_BASE_URL = "http://llm-orchestration-service:8100"
     DEFAULT_ENVIRONMENT = "production"
-    DEFAULT_CONNECTION_ID = "gpt-4o-mini"
+    # None → orchestration service resolves the embedding model via the
+    # DB-fetched vault UUID (path: embeddings/connections/{provider}/{vault_uuid}).
+    DEFAULT_CONNECTION_ID = None
 
     # Retry Configuration
     MAX_RETRIES = 3

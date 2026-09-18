@@ -4,7 +4,7 @@ import yaml
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field, field_validator, model_validator
-from loguru import logger
+from loki_logger import LokiLogger
 
 from vector_indexer.constants import (
     DocumentConstants,
@@ -12,6 +12,9 @@ from vector_indexer.constants import (
     ChunkingConstants,
     ProcessingConstants,
 )
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="config-loader")
 
 
 class ChunkingConfig(BaseModel):

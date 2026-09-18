@@ -1,0 +1,52 @@
+replicas: 1
+
+podAnnotations: {}
+podSecurityContext: {}
+securityContext: {}
+
+release_name: "notifications-node"
+
+notifications:
+  image:
+    repository: public.ecr.aws/e7g9l0j0/rag-module/notification-server
+    tag: latest
+    pullPolicy: IfNotPresent
+  
+  # Node.js application configuration
+  port: 4040
+  refreshInterval: 1000
+  nodeEnv: production
+  
+  # OpenSearch configuration 
+  opensearch:
+    enabled: true
+    protocol: http
+    host: opensearch-node
+    port: 9200
+    username: admin
+    password: admin
+    
+  # CORS configuration for frontend access
+  cors:
+    whitelistOrigins: "http://gui:3001,http://gui:3002,http://gui:3003,http://authentication-layer:3004,http://ruuter-public:8086,http://ruuter-private:8088"
+  
+  # BYK Stack integration
+  services:
+    ruuterUrl: "http://ruuter-public:8086"
+  
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  
+  service:
+    type: ClusterIP
+    port: 4040
+    targetPort: 4040
+  
+  # Security configuration
+  security:
+    csrfEnabled: true

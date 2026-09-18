@@ -295,13 +295,6 @@ path "auth/token/lookup-self" { capabilities = ["read"] }'
     rm -rf "$TEMP_KEY_DIR"
     echo "RSA keypair generated and stored successfully"
     
-    # Store test LLM credentials for testing
-    echo "Creating test LLM credentials..."
-    wget -q -O- --post-data='{"data":{"access_key":"TEST_AWS_ACCESS_KEY","secret_key":"TEST_AWS_SECRET_KEY","environment":"production","model":"claude-3"}}' \
-        --header="X-Vault-Token: $ROOT_TOKEN" \
-        --header='Content-Type: application/json' \
-        "$VAULT_ADDR/v1/secret/data/llm/connections/aws_bedrock/production/claude-3" >/dev/null
-    
     # Mark as initialized
     touch "$INIT_FLAG"
     echo "=== First time setup complete ==="

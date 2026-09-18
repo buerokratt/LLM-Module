@@ -1,13 +1,15 @@
 """Qdrant vector database manager for storing contextual chunks."""
 
 from typing import List, Dict, Any, Optional
-from loguru import logger
+from loki_logger import LokiLogger
 import httpx
 import uuid
 from typing_extensions import Self
 
 from vector_indexer.config.config_loader import VectorIndexerConfig
 from vector_indexer.models import ContextualChunk
+
+logger = LokiLogger(service_name="qdrant-manager")
 
 
 class QdrantOperationError(Exception):
@@ -171,22 +173,10 @@ class QdrantManager:
 
                 upsert_payload = {"points": batch}
 
-                # DEBUG: Log the actual HTTP request payload being sent to Qdrant
-                logger.info("=== QDRANT HTTP REQUEST PAYLOAD DEBUG ===")
-                logger.info(
-                    f"URL: {self.qdrant_url}/collections/{collection_name}/points"
+                # Log batch summary only (avoid massive logs)
+                logger.debug(
+                    f"Storing batch {i // batch_size + 1}: {len(batch)} points to {collection_name}"
                 )
-                logger.info("Method: PUT")
-                logger.info(f"Batch size: {len(batch)} points")
-                for idx, point in enumerate(batch):
-                    logger.info(f"Point {idx + 1}:")
-                    logger.info(f"  ID: {point['id']} (type: {type(point['id'])})")
-                    logger.info(
-                        f"  Vector length: {len(point['vector'])} (type: {type(point['vector'])})"
-                    )
-                    logger.info(f"  Vector sample: {point['vector'][:3]}...")
-                    logger.info(f"  Payload keys: {list(point['payload'].keys())}")
-                logger.info("=== END QDRANT REQUEST DEBUG ===")
 
                 response = await self.client.put(
                     f"{self.qdrant_url}/collections/{collection_name}/points",

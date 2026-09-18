@@ -3,7 +3,7 @@ name: Build and publish notification
 on:
   push:
     branches:
-      - wip
+      - dev
     paths:
       - '.env.notification'
 

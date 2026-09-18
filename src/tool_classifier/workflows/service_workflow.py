@@ -6,11 +6,13 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Protocol, Union
 import dspy
 import httpx
 from langfuse import observe
-from loguru import logger
+from src.loki_logger import LokiLogger
 
 from llm_orchestrator_config.llm_manager import LLMManager
 from src.guardrails.nemo_rails_adapter import NeMoRailsAdapter
 
+from src.utils.conversation_history_helpers import get_conversation_history
+from src.utils.conversation_history_store import ConversationHistoryStore
 from src.utils.cost_utils import get_lm_usage_since
 from src.utils.observation_utils import update_observation_safe
 
@@ -39,6 +41,11 @@ from tool_classifier.constants import (
 )
 from tool_classifier.intent_detector import IntentDetectionModule
 import time
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="service-workflow")
+
+SERVICE_INTENT_DETECTION_METRIC = "service.intent_detection"
 
 
 class LLMServiceProtocol(Protocol):
@@ -126,6 +133,12 @@ class ServiceWorkflowExecutor(BaseWorkflow):
         """Initialize service workflow executor."""
         self.llm_manager = llm_manager
         self.orchestration_service = orchestration_service
+
+    def _get_conversation_history_store(self) -> Optional[ConversationHistoryStore]:
+        """Return the conversation history store from the orchestration service, or None."""
+        if self.orchestration_service is None:
+            return None
+        return getattr(self.orchestration_service, "conversation_history_store", None)
 
     async def _semantic_search_services(
         self,
@@ -260,8 +273,19 @@ class ServiceWorkflowExecutor(BaseWorkflow):
         services: List[Dict[str, Any]],
         conversation_history: List[Any],
         chat_id: str,
+        conversation_summary: Optional[str] = None,
     ) -> tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
         """Use DSPy + LLMManager to detect service intent and extract entities.
+
+        Args:
+            user_query: The user's query string.
+            services: List of available service dicts.
+            conversation_history: Recent conversation turns (``ConversationItem`` objects).
+            chat_id: Chat identifier for logging.
+            conversation_summary: Optional summary of earlier conversation rounds
+                evicted from Redis.  When provided it is prepended to the history
+                passed to the intent detector so the LLM has additional context
+                without a separate summarisation call.
 
         Returns:
             Tuple of (intent_result, usage_info):
@@ -281,11 +305,21 @@ class ServiceWorkflowExecutor(BaseWorkflow):
             )
 
             intent_module = IntentDetectionModule()
-            history_dicts = [
-                {"authorRole": msg.authorRole, "message": msg.message}
-                for msg in conversation_history
-                if hasattr(msg, "authorRole") and hasattr(msg, "message")
-            ]
+            history_dicts: List[Dict[str, str]] = []
+            if conversation_summary:
+                history_dicts.append(
+                    {
+                        "authorRole": "system",
+                        "message": f"Summary of earlier conversation: {conversation_summary}",
+                    }
+                )
+            history_dicts.extend(
+                [
+                    {"authorRole": msg.authorRole, "message": msg.message}
+                    for msg in conversation_history
+                    if hasattr(msg, "authorRole") and hasattr(msg, "message")
+                ]
+            )
 
             with self.llm_manager.use_task_local():
                 intent_result = intent_module.forward(
@@ -369,11 +403,17 @@ class ServiceWorkflowExecutor(BaseWorkflow):
             context: Context dict to populate with results
             costs_metric: Dictionary to track LLM costs
         """
+        conversation_history, conversation_summary = await get_conversation_history(
+            chat_id=request.chatId,
+            store=self._get_conversation_history_store(),
+            fallback=request.conversationHistory,
+        )
         intent_result, intent_usage = await self._detect_service_intent(
             user_query=request.message,
             services=services,
-            conversation_history=request.conversationHistory,
+            conversation_history=conversation_history,
             chat_id=chat_id,
+            conversation_summary=conversation_summary,
         )
         costs_metric["intent_detection"] = intent_usage
 
@@ -785,7 +825,7 @@ class ServiceWorkflowExecutor(BaseWorkflow):
                     context=context,
                     costs_metric=costs_metric,
                 )
-                time_metric["service.intent_detection"] = time.time() - start_time
+                time_metric[SERVICE_INTENT_DETECTION_METRIC] = time.time() - start_time
 
                 if not context.get("service_data"):
                     context["service_id"] = matched.get("service_id")
@@ -807,7 +847,7 @@ class ServiceWorkflowExecutor(BaseWorkflow):
                     context=context,
                     costs_metric=costs_metric,
                 )
-            time_metric["service.intent_detection"] = time.time() - start_time
+            time_metric[SERVICE_INTENT_DETECTION_METRIC] = time.time() - start_time
 
         else:
             start_time = time.time()
@@ -967,7 +1007,7 @@ class ServiceWorkflowExecutor(BaseWorkflow):
                     context=context,
                     costs_metric=costs_metric,
                 )
-                time_metric["service.intent_detection"] = time.time() - start_time
+                time_metric[SERVICE_INTENT_DETECTION_METRIC] = time.time() - start_time
 
                 if not context.get("service_data"):
                     context["service_id"] = matched.get("service_id")
@@ -989,7 +1029,7 @@ class ServiceWorkflowExecutor(BaseWorkflow):
                     context=context,
                     costs_metric=costs_metric,
                 )
-            time_metric["service.intent_detection"] = time.time() - start_time
+            time_metric[SERVICE_INTENT_DETECTION_METRIC] = time.time() - start_time
 
         else:
             start_time = time.time()

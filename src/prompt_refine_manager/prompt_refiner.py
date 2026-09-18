@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Sequence, Optional, Dict, Union, cast, List
 import contextlib
-import logging
+from src.loki_logger import LokiLogger
 import dspy
 from pydantic import BaseModel, Field
 
@@ -10,7 +10,8 @@ from llm_orchestrator_config import LLMManager, LLMProvider
 from src.utils.cost_utils import get_lm_usage_since
 from src.optimization.optimized_module_loader import get_module_loader
 
-LOGGER = logging.getLogger(__name__)
+# Initialize Loki logger for prompt refiner
+LOGGER = LokiLogger(service_name="prompt-refiner")
 
 
 class ConversationHistory(BaseModel):

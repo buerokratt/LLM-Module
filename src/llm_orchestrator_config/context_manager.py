@@ -2,11 +2,13 @@
 
 from typing import Any, Dict, Optional
 
-from loguru import logger
-
+from src.loki_logger import LokiLogger
 from src.llm_orchestrator_config.llm_manager import LLMManager
 from src.models.request_models import ContextGenerationRequest
 from langfuse import observe
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="context-manager")
 
 
 class ContextGenerationManager:
@@ -51,7 +53,7 @@ Answer only with the succinct context and nothing else."""
             )
 
             # For now, call LLM directly (caching structure ready for future)
-            # TODO: Implement actual prompt caching when ready
+            # Implement actual prompt caching when ready
             response = self._call_llm_for_context(
                 prompt=full_prompt,
                 model=model_info["model"],

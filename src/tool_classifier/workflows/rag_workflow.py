@@ -1,7 +1,7 @@
 """RAG workflow executor - Layer 3: Knowledge base retrieval."""
 
 from typing import Any, AsyncIterator, Dict, Optional, Union, cast, TYPE_CHECKING
-from loguru import logger
+from src.loki_logger import LokiLogger
 
 from models.request_models import (
     OrchestrationRequest,
@@ -13,6 +13,9 @@ from tool_classifier.base_workflow import BaseWorkflow
 
 if TYPE_CHECKING:
     from llm_orchestration_service import LLMOrchestrationService
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="rag-workflow")
 
 
 class RAGWorkflowExecutor(BaseWorkflow):

@@ -209,8 +209,13 @@ jobs:
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
           SALT: ${{ secrets.SALT }}
         run: |
-          # Run tests sequentially (one at a time) to avoid rate limiting
-          uv run python -m pytest tests/deepeval_tests/standard_tests.py -v --tb=short --log-cli-level=INFO -n 0
+          # Run tests sequentially (one at a time) to avoid rate limiting.
+          # standard_tests.py    — RAG quality (DeepEval metrics on /orchestrate-eval)
+          # api_tool_tests.py    — API Tool Calling scenarios (issue #447)
+          uv run python -m pytest \
+            tests/deepeval_tests/standard_tests.py \
+            tests/deepeval_tests/api_tool_tests.py \
+            -v --tb=short --log-cli-level=INFO -n 0
       
       - name: Fix permissions on test artifacts
         if: always()
@@ -221,7 +226,11 @@ jobs:
       - name: Generate evaluation report
         if: always()
         run: uv run python tests/deepeval_tests/report_generator.py
-      
+
+      - name: Generate API tool evaluation report
+        if: always()
+        run: uv run python tests/deepeval_tests/api_tool_report_generator.py
+
       - name: Save test artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -230,8 +239,10 @@ jobs:
           path: |
             pytest_captured_results.json
             test_report.md
+            api_tool_test_results.json
+            api_tool_test_report.md
           retention-days: 30
-      
+
       - name: Comment PR with test results
         if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@v7
@@ -245,12 +256,12 @@ jobs:
                 repo: context.repo.repo,
                 issue_number: context.issue.number
               });
-              
+
               const existingComment = comments.data.find(
                 comment => comment.user.login === 'github-actions[bot]' &&
                   comment.body.includes('RAG System Evaluation Report')
               );
-              
+
               if (existingComment) {
                 await github.rest.issues.updateComment({
                   owner: context.repo.owner,
@@ -273,6 +284,50 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 body: `## RAG System Evaluation Report\n\n**Error generating test report**\n\nFailed to read or post test results. Check workflow logs for details.\n\nError: ${error.message}`
+              });
+            }
+
+      - name: Comment PR with API tool test results
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            try {
+              const reportContent = fs.readFileSync('api_tool_test_report.md', 'utf8');
+              const comments = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number
+              });
+
+              const existingComment = comments.data.find(
+                comment => comment.user.login === 'github-actions[bot]' &&
+                  comment.body.includes('API Tool Calling Evaluation Report')
+              );
+
+              if (existingComment) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: existingComment.id,
+                  body: reportContent
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: reportContent
+                });
+              }
+            } catch (error) {
+              console.error('Failed to post API tool test results:', error);
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: `## API Tool Calling Evaluation Report\n\n**Error generating report**\n\nFailed to read or post API tool test results. Check workflow logs.\n\nError: ${error.message}`
               });
             }
       

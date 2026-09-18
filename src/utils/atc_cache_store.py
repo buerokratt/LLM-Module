@@ -4,7 +4,7 @@ import hashlib
 import json
 from typing import Any
 
-from loguru import logger
+from src.loki_logger import LokiLogger
 
 from models.session_models import LastCallContext
 from tool_classifier.constants import (
@@ -14,6 +14,8 @@ from tool_classifier.constants import (
     ATC_LAST_CALL_TTL_SECONDS,
 )
 from src.utils.redis_client import get_redis_client
+
+logger = LokiLogger(service_name="atc-cache-store")
 
 
 class ATCCacheStore:
@@ -94,10 +96,7 @@ class ATCCacheStore:
             return json.loads(raw)
         except Exception as exc:
             logger.warning(
-                "[ATCCache] get_l1 failed: chat_id={} api_name={!r} error={}",
-                chat_id,
-                api_name,
-                exc,
+                f"[ATCCache] get_l1 failed: chat_id={chat_id} api_name={api_name!r} error={exc}"
             )
             return None
 
@@ -128,17 +127,11 @@ class ATCCacheStore:
                 ex=ttl,
             )
             logger.debug(
-                "[ATCCache] L1 set: chat_id={} api_name={!r} ttl={}s",
-                chat_id,
-                api_name,
-                ttl,
+                f"[ATCCache] L1 set: chat_id={chat_id} api_name={api_name!r} ttl={ttl}s"
             )
         except Exception as exc:
             logger.warning(
-                "[ATCCache] set_l1 failed: chat_id={} api_name={!r} error={}",
-                chat_id,
-                api_name,
-                exc,
+                f"[ATCCache] set_l1 failed: chat_id={chat_id} api_name={api_name!r} error={exc}"
             )
 
     # ------------------------------------------------------------------
@@ -157,9 +150,7 @@ class ATCCacheStore:
             data: list[dict[str, Any]] = json.loads(raw)
             return [LastCallContext.model_validate(item) for item in data]
         except Exception as exc:
-            logger.warning(
-                "[ATCCache] get_l2 failed: chat_id={} error={}", chat_id, exc
-            )
+            logger.warning(f"[ATCCache] get_l2 failed: chat_id={chat_id} error={exc}")
             return None
 
     async def set_l2(self, chat_id: str, contexts: list[LastCallContext]) -> None:
@@ -182,14 +173,10 @@ class ATCCacheStore:
                 ex=ATC_LAST_CALL_TTL_SECONDS,
             )
             logger.debug(
-                "[ATCCache] L2 set: chat_id={} entries={}",
-                chat_id,
-                len(contexts),
+                f"[ATCCache] L2 set: chat_id={chat_id} entries={len(contexts)}"
             )
         except Exception as exc:
-            logger.warning(
-                "[ATCCache] set_l2 failed: chat_id={} error={}", chat_id, exc
-            )
+            logger.warning(f"[ATCCache] set_l2 failed: chat_id={chat_id} error={exc}")
 
     async def invalidate_l2(self, chat_id: str) -> None:
         """Delete the L2 last-call context key for a chat session.
@@ -203,8 +190,8 @@ class ATCCacheStore:
             return
         try:
             await client.delete(self._l2_key(chat_id))
-            logger.debug("[ATCCache] L2 invalidated: chat_id={}", chat_id)
+            logger.debug(f"[ATCCache] L2 invalidated: chat_id={chat_id}")
         except Exception as exc:
             logger.warning(
-                "[ATCCache] invalidate_l2 failed: chat_id={} error={}", chat_id, exc
+                f"[ATCCache] invalidate_l2 failed: chat_id={chat_id} error={exc}"
             )

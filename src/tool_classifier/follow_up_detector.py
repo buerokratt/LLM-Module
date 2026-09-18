@@ -1,12 +1,16 @@
 """Follow-up detection using DSPy — classifies whether a user query is a follow-up to a previous ATC API call."""
 
 import json
+import time
 from typing import Any, Dict, List, TypedDict
 
 import dspy
-from loguru import logger
+from src.loki_logger import LokiLogger
+from src.utils.error_utils import generate_error_id
 
 from .param_extractor import strip_format_hints
+
+logger = LokiLogger(service_name="api-tool-calling")
 
 _VALID_FOLLOW_UP_TYPES = {"param_update", "response_question", "new_intent"}
 
@@ -36,7 +40,7 @@ def _validate_updated_params(
     for key, value in updated_params.items():
         if key not in schema_lookup:
             logger.warning(
-                f"Parameter '{key}' from LLM is not in schema; dropping it to prevent injection"
+                f"FollowUpDetectorModule: unexpected param dropped | event_type=unexpected_param_dropped param_name={key!r}"
             )
         else:
             validated[key] = value
@@ -161,6 +165,7 @@ class FollowUpDetectorModule(dspy.Module):
         params_schema_json = json.dumps(sanitized_schema, ensure_ascii=False)
 
         result = None
+        _t0 = time.time()
         try:
             result = self.detector(
                 user_query=user_query,
@@ -168,12 +173,13 @@ class FollowUpDetectorModule(dspy.Module):
                 previous_params=previous_params_json,
                 params_schema=params_schema_json,
             )
+            _duration_ms = round((time.time() - _t0) * 1000, 1)
 
             # Parse and validate follow_up_type
             follow_up_type = result.follow_up_type.strip().strip("'\"")
             if follow_up_type not in _VALID_FOLLOW_UP_TYPES:
                 logger.warning(
-                    f"Invalid follow_up_type value '{follow_up_type}'; defaulting to 'new_intent'"
+                    f"FollowUpDetectorModule: invalid follow_up_type | event_type=follow_up_type_invalid received={follow_up_type!r}"
                 )
                 follow_up_type = "new_intent"
 
@@ -187,12 +193,13 @@ class FollowUpDetectorModule(dspy.Module):
                     updated_params = json.loads(sanitized_params)
                     if not isinstance(updated_params, dict):
                         logger.warning(
-                            f"updated_params is not a dict (got {type(updated_params).__name__}); defaulting to {{}}"
+                            f"FollowUpDetectorModule: updated_params not a dict | event_type=updated_params_not_dict received_type={type(updated_params).__name__}"
                         )
                         updated_params = {}
-                except json.JSONDecodeError as e:
+                except json.JSONDecodeError as exc:
+                    _err_id = generate_error_id()
                     logger.error(
-                        f"Failed to parse updated_params JSON for param_update: {e}"
+                        f"FollowUpDetectorModule: JSON parse error in updated_params | event_type=updated_params_json_error error_id={_err_id} error={exc}"
                     )
                     updated_params = {}
 
@@ -204,11 +211,18 @@ class FollowUpDetectorModule(dspy.Module):
                 # Validate against schema to drop unexpected/injected parameters
                 updated_params = _validate_updated_params(updated_params, params_schema)
 
+            logger.debug(
+                f"FollowUpDetectorModule: detection complete | event_type=follow_up_detection_complete follow_up_type={follow_up_type} updated_params_count={len(updated_params)} duration_ms={_duration_ms}"
+            )
+
             return FollowUpDetectionResult(
                 follow_up_type=follow_up_type,
                 updated_params=updated_params,
             )
 
-        except Exception as e:
-            logger.error(f"Follow-up detection forward failed: {e}", exc_info=True)
+        except Exception as exc:
+            _err_id = generate_error_id()
+            logger.error(
+                f"FollowUpDetectorModule: detection failed | event_type=follow_up_detection_failed error_id={_err_id} error={exc}"
+            )
             return _safe_fallback

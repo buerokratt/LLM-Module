@@ -1,10 +1,10 @@
 """Standalone agentic loop for multi-turn parameter collection."""
 
 import asyncio
+import time
 from typing import Any, Dict, List, Optional
 
-from loguru import logger
-
+from src.loki_logger import LokiLogger
 from src.utils.api_tool_session_store import APIToolSessionStore
 from tool_classifier.constants import (
     CONTINUATION_QUESTION,
@@ -16,6 +16,8 @@ from tool_classifier.continuation_utils import detect_continuation_response
 from tool_classifier.enums import AgenticLoopStatus
 from tool_classifier.models import AgenticLoopResult
 from tool_classifier.param_extractor import ParamExtractionModule
+
+logger = LokiLogger(service_name="api-tool-calling")
 
 _CONTINUATION_QUESTIONS: dict[str, str] = {
     "en": CONTINUATION_QUESTION,
@@ -141,6 +143,10 @@ class AgenticLoop:
         """
         updated_turn_count = turn_count + 1
 
+        logger.info(
+            f"AgenticLoop: loop turn started | event_type=loop_turn_started chat_id={chat_id} turn_count={turn_count} max_turns={max_turns} awaiting_continuation={awaiting_continuation}"
+        )
+
         # Seed inherited params from L2 follow-up detection — turn 0 only.
         # seeded_params take lower priority than anything already in collected_params
         # (i.e. values explicitly set by the session take precedence).
@@ -153,18 +159,14 @@ class AgenticLoop:
             wants_to_continue = self._detect_continuation_response(user_message)
             if wants_to_continue:
                 logger.debug(
-                    "AgenticLoop: user chose to continue on turn {} for chat_id={}",
-                    turn_count,
-                    chat_id,
+                    f"AgenticLoop: user chose to continue on turn {turn_count} for chat_id={chat_id}"
                 )
                 # Reset the flag so normal extraction takes over from here.
                 awaiting_continuation = False
             else:
                 logger.info(
-                    "AgenticLoop: user chose to exit on turn {} for chat_id={}, "
-                    "falling back to RAG",
-                    turn_count,
-                    chat_id,
+                    f"AgenticLoop: user chose to exit on turn {turn_count} for chat_id={chat_id}, "
+                    "falling back to RAG"
                 )
                 return AgenticLoopResult(
                     status=AgenticLoopStatus.MAX_TURNS_REACHED,
@@ -176,9 +178,7 @@ class AgenticLoop:
         # Step 1 — Turn limit guard (no session save — caller deletes)
         if turn_count >= max_turns:
             logger.warning(
-                "AgenticLoop: max_turns={} reached for chat_id={}, abandoning",
-                max_turns,
-                chat_id,
+                f"AgenticLoop: max_turns={max_turns} reached for chat_id={chat_id}, abandoning"
             )
             return AgenticLoopResult(
                 status=AgenticLoopStatus.MAX_TURNS_REACHED,
@@ -188,6 +188,7 @@ class AgenticLoop:
             )
 
         # Step 2 — Extract params from the current user message
+        _t0 = time.time()
         try:
             extraction = await asyncio.to_thread(
                 self._param_extractor,
@@ -198,12 +199,14 @@ class AgenticLoop:
                 session_language,
                 turn_count,
             )
+            _duration_ms = round((time.time() - _t0) * 1000, 1)
+            logger.debug(
+                f"AgenticLoop: param extraction complete | event_type=param_extraction_complete chat_id={chat_id} turn_count={turn_count} extracted_count={len(extraction['extracted_params'])} duration_ms={_duration_ms}"
+            )
         except Exception as exc:
+            _duration_ms = round((time.time() - _t0) * 1000, 1)
             logger.error(
-                "AgenticLoop: param extraction failed on turn {} for chat_id={}: {}",
-                turn_count,
-                chat_id,
-                exc,
+                f"AgenticLoop: param extraction failed on turn {turn_count} for chat_id={chat_id}: {exc}"
             )
             # If a continuation decision was already consumed this turn, persist the
             # updated flag so the next user message is not misread as another
@@ -239,11 +242,13 @@ class AgenticLoop:
         }
         all_collected = required_param_names.issubset(merged_params.keys())
 
+        logger.debug(
+            f"AgenticLoop: params merged | event_type=params_merged chat_id={chat_id} turn_count={turn_count} required_count={len(required_param_names)} collected_count={len(merged_params)} missing_count={len(required_param_names - merged_params.keys())}"
+        )
+
         if all_collected:
-            logger.debug(
-                "AgenticLoop: all required params collected on turn {} for chat_id={}",
-                turn_count,
-                chat_id,
+            logger.info(
+                f"AgenticLoop: loop completed | event_type=loop_completed chat_id={chat_id} turn_count={turn_count} status=completed collected_count={len(merged_params)} duration_ms={_duration_ms}"
             )
             await self._save_session(
                 chat_id, merged_params, updated_turn_count, awaiting_continuation=False
@@ -257,18 +262,13 @@ class AgenticLoop:
 
         # Step 5 — Still missing params
         logger.debug(
-            "AgenticLoop: turn {} for chat_id={} — still missing: {}",
-            turn_count,
-            chat_id,
-            extraction["missing_required"],
+            f"AgenticLoop: loop needs input | event_type=loop_needs_input chat_id={chat_id} turn_count={turn_count} missing_params={extraction['missing_required']} status=needs_input"
         )
 
         # At exactly the continuation threshold, ask whether to keep going.
         if updated_turn_count == continuation_turn:
             logger.info(
-                "AgenticLoop: continuation threshold reached on turn {} for chat_id={}",
-                turn_count,
-                chat_id,
+                f"AgenticLoop: continuation threshold reached | event_type=continuation_threshold_reached chat_id={chat_id} turn_count={turn_count} continuation_turn={continuation_turn} missing_count={len(extraction['missing_required'])}"
             )
             effective_continuation_lang = continuation_language or session_language
             continuation_q = _CONTINUATION_QUESTIONS.get(
@@ -323,6 +323,10 @@ class AgenticLoop:
         """
         updated_turn_count = turn_count + 1
 
+        logger.info(
+            f"AgenticLoop: loop turn started | event_type=loop_turn_started chat_id={chat_id} turn_count={turn_count} max_turns={max_turns} awaiting_continuation={awaiting_continuation}"
+        )
+
         # Seed inherited params from L2 follow-up detection — turn 0 only.
         if turn_count == 0 and seeded_params:
             collected_params = {**seeded_params, **collected_params}
@@ -332,18 +336,14 @@ class AgenticLoop:
         if awaiting_continuation:
             wants_to_continue = self._detect_continuation_response(user_message)
             if wants_to_continue:
-                logger.debug(
-                    "AgenticLoop: user chose to continue on turn {} for chat_id={}",
-                    turn_count,
-                    chat_id,
+                logger.info(
+                    f"AgenticLoop: continuation user accepted | event_type=continuation_user_accepted chat_id={chat_id} turn_count={turn_count}"
                 )
                 awaiting_continuation = False
             else:
                 logger.info(
-                    "AgenticLoop: user chose to exit on turn {} for chat_id={}, "
-                    "falling back to RAG",
-                    turn_count,
-                    chat_id,
+                    f"AgenticLoop: user chose to exit on turn {turn_count} for chat_id={chat_id}, "
+                    "falling back to RAG"
                 )
                 return (
                     AgenticLoopResult(
@@ -358,9 +358,7 @@ class AgenticLoop:
         # Step 1 — Turn limit guard
         if turn_count >= max_turns:
             logger.warning(
-                "AgenticLoop: max_turns={} reached for chat_id={}, abandoning",
-                max_turns,
-                chat_id,
+                f"AgenticLoop: max_turns={max_turns} reached for chat_id={chat_id}, abandoning"
             )
             return (
                 AgenticLoopResult(
@@ -373,6 +371,7 @@ class AgenticLoop:
             )
 
         # Step 2 — Stream-extract params from the current user message
+        _t0 = time.time()
         try:
             question_tokens, extraction = await self._param_extractor.stream_forward(
                 user_message=user_message,
@@ -382,12 +381,14 @@ class AgenticLoop:
                 session_language=session_language,
                 turn_count=turn_count,
             )
+            _duration_ms = round((time.time() - _t0) * 1000, 1)
+            logger.debug(
+                f"AgenticLoop: param extraction complete | event_type=param_extraction_complete chat_id={chat_id} turn_count={turn_count} extracted_count={len(extraction['extracted_params'])} duration_ms={_duration_ms}"
+            )
         except Exception as exc:
+            _duration_ms = round((time.time() - _t0) * 1000, 1)
             logger.error(
-                "AgenticLoop: stream param extraction failed on turn {} for chat_id={}: {}",
-                turn_count,
-                chat_id,
-                exc,
+                f"AgenticLoop: stream param extraction failed on turn {turn_count} for chat_id={chat_id}: {exc}"
             )
             if awaiting_continuation != original_awaiting_continuation:
                 await self._save_session(
@@ -420,11 +421,13 @@ class AgenticLoop:
         }
         all_collected = required_param_names.issubset(merged_params.keys())
 
+        logger.debug(
+            f"AgenticLoop: params merged | event_type=params_merged chat_id={chat_id} turn_count={turn_count} required_count={len(required_param_names)} collected_count={len(merged_params)} missing_count={len(required_param_names - merged_params.keys())}"
+        )
+
         if all_collected:
             logger.debug(
-                "AgenticLoop: all required params collected on turn {} for chat_id={}",
-                turn_count,
-                chat_id,
+                f"AgenticLoop: all required params collected on turn {turn_count} for chat_id={chat_id}"
             )
             await self._save_session(
                 chat_id, merged_params, updated_turn_count, awaiting_continuation=False
@@ -441,17 +444,12 @@ class AgenticLoop:
 
         # Step 5 — Still missing params
         logger.debug(
-            "AgenticLoop: turn {} for chat_id={} — still missing: {}",
-            turn_count,
-            chat_id,
-            extraction["missing_required"],
+            f"AgenticLoop: turn {turn_count} for chat_id={chat_id} — still missing: {extraction['missing_required']}"
         )
 
         if updated_turn_count == continuation_turn:
             logger.info(
-                "AgenticLoop: continuation threshold reached on turn {} for chat_id={}",
-                turn_count,
-                chat_id,
+                f"AgenticLoop: continuation threshold reached on turn {turn_count} for chat_id={chat_id}"
             )
             effective_continuation_lang = continuation_language or session_language
             continuation_q = _CONTINUATION_QUESTIONS.get(
@@ -504,8 +502,7 @@ class AgenticLoop:
         try:
             if self._session_store is None:
                 logger.debug(
-                    "AgenticLoop: session store unavailable — skipping save for chat_id={}",
-                    chat_id,
+                    f"AgenticLoop: session store unavailable — skipping save for chat_id={chat_id}"
                 )
                 return
             await self._session_store.update(
@@ -516,9 +513,7 @@ class AgenticLoop:
             )
         except Exception as exc:
             logger.error(
-                "AgenticLoop: failed to save session for chat_id={}: {}",
-                chat_id,
-                exc,
+                f"AgenticLoop: failed to save session for chat_id={chat_id}: {exc}"
             )
 
     def _detect_continuation_response(self, user_message: str) -> bool:

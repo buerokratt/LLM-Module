@@ -6,10 +6,11 @@ when collection data changes.
 """
 
 from typing import List, Dict, Any, Optional, Set, TYPE_CHECKING
-from loguru import logger
+from src.loki_logger import LokiLogger
 from rank_bm25 import BM25Okapi
 import re
 import asyncio
+
 from contextual_retrieval.contextual_retrieval_api_client import get_http_client_manager
 from contextual_retrieval.error_handler import SecureErrorHandler
 from contextual_retrieval.constants import (
@@ -19,6 +20,9 @@ from contextual_retrieval.constants import (
     SearchConstants,
 )
 from contextual_retrieval.config import ConfigLoader, ContextualRetrievalConfig
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="bm25-search")
 
 if TYPE_CHECKING:
     from contextual_retrieval.contextual_retrieval_api_client import HTTPClientManager
@@ -165,7 +169,7 @@ class SmartBM25Search:
 
             logger.info(f"BM25 search found {len(results)} chunks")
 
-            # Detailed results at DEBUG level (loguru filters based on log level config)
+            # Detailed results at DEBUG level (filters based on log level config)
             logger.debug("=== BM25 SEARCH RESULTS BREAKDOWN ===")
             for i, chunk in enumerate(results[:10]):  # Show top 10 results
                 content_preview = (

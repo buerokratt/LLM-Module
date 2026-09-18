@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 from typing import List, Optional, Dict, Any
-from loguru import logger
+from loki_logger import LokiLogger
 import hashlib
 
 from diff_identifier.diff_models import DiffConfig, DiffError, DiffResult
@@ -11,6 +11,9 @@ from diff_identifier.version_manager import VersionManager
 from dotenv import load_dotenv
 
 load_dotenv(".env")
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="diff-detector")
 
 
 class DiffDetector:
@@ -144,13 +147,14 @@ class DiffDetector:
 
             logger.info(f"Marking {len(processed_file_paths)} files as processed...")
 
-            # Log chunks_info received
+            # Log chunks_info summary only (avoid massive logs)
             if chunks_info:
-                logger.info(f"RECEIVED CHUNKS INFO: {len(chunks_info)} documents")
-                for doc_hash, info in chunks_info.items():
-                    logger.info(
-                        f"   {doc_hash[:12]}... -> {info.get('chunk_count', 0)} chunks"
-                    )
+                total_chunks = sum(
+                    info.get("chunk_count", 0) for info in chunks_info.values()
+                )
+                logger.info(
+                    f"RECEIVED CHUNKS INFO: {len(chunks_info)} documents, {total_chunks} total chunks"
+                )
             else:
                 logger.warning("No chunks_info provided to mark_files_processed")
 

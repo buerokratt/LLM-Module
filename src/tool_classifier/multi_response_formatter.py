@@ -6,8 +6,7 @@ import dspy
 import dspy.streaming
 from dspy.streaming import StreamListener
 from langfuse import observe
-from loguru import logger
-
+from src.loki_logger import LokiLogger
 from llm_orchestrator_config.llm_ochestrator_constants import get_localized_message
 from src.utils.cost_utils import get_lm_usage_since
 from src.utils.observation_utils import (
@@ -33,6 +32,8 @@ def _get_current_model_name() -> str:
         pass
     return "unknown"
 
+
+logger = LokiLogger(service_name="api-tool-calling")
 
 _MAX_TOTAL_RESPONSE_BYTES: int = 100_000
 
@@ -328,15 +329,17 @@ class MultiResponseFormatterModule(dspy.Module):
 
                 stream_started = False
                 token_count = 0
-                assembled_answer = ""
+                accumulated: list[str] = []
+                final_prediction: dspy.Prediction | None = None
                 async for chunk in output_stream:
                     if isinstance(chunk, dspy.streaming.StreamResponse):
                         if chunk.signature_field_name == "unified_answer":
                             stream_started = True
                             token_count += 1
-                            assembled_answer += chunk.chunk
+                            accumulated.append(chunk.chunk)
                             yield chunk.chunk
                     elif isinstance(chunk, dspy.Prediction):
+                        final_prediction = chunk
                         # dspy.streamify did not stream individual tokens — yield the
                         # full answer from the final Prediction as a single frame.
                         if not stream_started:
@@ -347,14 +350,42 @@ class MultiResponseFormatterModule(dspy.Module):
                                     "no StreamResponse tokens — yielding full Prediction answer"
                                 )
                                 stream_started = True
-                                assembled_answer = answer
+                                accumulated.append(answer)
                                 yield answer
+
+                assembled_answer = "".join(accumulated)
 
                 if stream_started and token_count > 0:
                     logger.debug(
                         f"MultiResponseFormatterModule.stream_forward_multi: "
                         f"streamed {token_count} tokens"
                     )
+                    # DSPy streaming can drop the last few tokens before EOS.
+                    # The final dspy.Prediction holds the authoritative complete answer.
+                    # Yield any tail that wasn't delivered as StreamResponse chunks.
+                    if final_prediction is not None:
+                        full_answer = getattr(final_prediction, "unified_answer", None)
+                        if full_answer:
+                            streamed_text = assembled_answer
+                            if full_answer.startswith(streamed_text) and len(
+                                full_answer
+                            ) > len(streamed_text):
+                                tail = full_answer[len(streamed_text) :]
+                                if tail.strip():
+                                    logger.debug(
+                                        f"MultiResponseFormatterModule.stream_forward_multi: "
+                                        f"yielding {len(tail)} missing tail chars from Prediction"
+                                    )
+                                    assembled_answer += tail
+                                    yield tail
+                            elif streamed_text and not full_answer.startswith(
+                                streamed_text
+                            ):
+                                logger.warning(
+                                    "MultiResponseFormatterModule.stream_forward_multi: "
+                                    "streamed output is not a prefix of final Prediction; "
+                                    "skipping tail reconciliation"
+                                )
 
                 if not stream_started:
                     # Last-resort fallback: blocking forward() — covers cases where
@@ -391,6 +422,7 @@ class MultiResponseFormatterModule(dspy.Module):
                         metadata={
                             "stream_started": stream_started,
                             "chunk_count": token_count,
+                            "streaming": True,
                         },
                     )
                 except Exception as update_error:
@@ -488,12 +520,15 @@ class MultiResponseFormatterModule(dspy.Module):
             if total_bytes + section_bytes > _MAX_TOTAL_RESPONSE_BYTES:
                 remaining = _MAX_TOTAL_RESPONSE_BYTES - total_bytes
                 if remaining > 0:
-                    encoded = section.encode("utf-8")
-                    truncated = encoded[:remaining].decode("utf-8", errors="ignore")
-                    sections.append(
-                        truncated
-                        + "\n[NOTE: Combined results truncated due to total size limit]"
+                    suffix = (
+                        "\n[NOTE: Combined results truncated due to total size limit]"
                     )
+                    suffix_bytes = len(suffix.encode("utf-8"))
+                    encoded = section.encode("utf-8")
+                    truncated = encoded[: max(0, remaining - suffix_bytes)].decode(
+                        "utf-8", errors="ignore"
+                    )
+                    sections.append(truncated + suffix)
                     total_bytes = _MAX_TOTAL_RESPONSE_BYTES
                 break
 

@@ -8,11 +8,14 @@ environments (production, testing) that can be reused across services.
 import asyncio
 import threading
 from typing import Optional, Dict, Any
-from loguru import logger
+from src.loki_logger import LokiLogger
 import requests
 import aiohttp
 
 from src.llm_orchestrator_config.llm_ochestrator_constants import RAG_SEARCH_RESQL
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="connection-id-fetcher")
 
 
 class ConnectionIdFetcher:

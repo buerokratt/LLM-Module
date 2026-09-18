@@ -13,6 +13,14 @@ import requests
 from loguru import logger
 
 
+# Deterministic vault_uuid used for the integration-test LLM connection.
+# Vault secret paths now terminate in the connection's vault_uuid (no environment
+# segment) — see SecretResolver._build_vault_path. We pin a fixed, valid UUID so
+# the secret we write, the DB connection row, and the value the DSL forwards to
+# /orchestrate/test all line up without depending on a DB-generated UUID.
+TEST_VAULT_UUID = "00000000-0000-0000-0000-000000000001"
+
+
 # ===================== VaultAgentClient =====================
 class VaultAgentClient:
     """Client for interacting with Vault using a token written by Vault Agent"""
@@ -299,16 +307,29 @@ path "auth/token/renew-self" { capabilities = ["update"] }
         logger.info("=" * 80)
 
         # ============================================================
+        # SECRET PATHS
+        # ============================================================
+        # Vault paths now terminate in the connection's vault_uuid (no environment
+        # segment) — see SecretResolver._build_vault_path / _build_embedding_vault_path.
+        # We write both the chat and embedding secrets under the SAME pinned
+        # vault_uuid (TEST_VAULT_UUID); the testing DB connection is forced to carry
+        # this UUID in ensure_testing_connection, and inference/test.yml forwards it
+        # to /orchestrate/test. The LLM, embedding and guardrails resolvers all read
+        # the secret using this UUID as the connection_id.
+        llm_vault_path = f"llm/connections/azure_openai/{TEST_VAULT_UUID}"
+        embedding_vault_path = f"embeddings/connections/azure_openai/{TEST_VAULT_UUID}"
+
+        # ============================================================
         # CHAT MODEL SECRET (LLM path)
         # ============================================================
         logger.info("")
         logger.info("Writing LLM connection secret (chat model)...")
         llm_secret = {
-            "connection_id": "gpt-4o-mini",
+            "connection_id": TEST_VAULT_UUID,
             "endpoint": azure_endpoint,
             "api_key": azure_api_key,
             "deployment_name": azure_deployment or "gpt-4o-mini",
-            "environment": "production",
+            "environment": "test",
             "model": "gpt-4o-mini",
             "model_type": "chat",
             "api_version": "2024-02-15-preview",
@@ -317,16 +338,14 @@ path "auth/token/renew-self" { capabilities = ["update"] }
 
         logger.info(f"  chat deployment: {llm_secret['deployment_name']}")
         logger.info(f"  endpoint: {llm_secret['endpoint']}")
-        logger.info(f"  connection_id: {llm_secret['connection_id']}")
+        logger.info(f"  vault path: {llm_vault_path}")
 
         client.secrets.kv.v2.create_or_update_secret(
             mount_point="secret",
-            path="llm/connections/azure_openai/production/gpt-4o-mini",
+            path=llm_vault_path,
             secret=llm_secret,
         )
-        logger.info(
-            "LLM connection secret written to llm/connections/azure_openai/production/gpt-4o-mini"
-        )
+        logger.info(f"LLM connection secret written to {llm_vault_path}")
 
         # ============================================================
         # EMBEDDING MODEL SECRET (Embeddings path)
@@ -334,31 +353,25 @@ path "auth/token/renew-self" { capabilities = ["update"] }
         logger.info("")
         logger.info("Writing embedding model secret...")
         embedding_secret = {
-            "connection_id": "2",
+            "connection_id": TEST_VAULT_UUID,
             "endpoint": azure_embedding_endpoint,
             "api_key": azure_api_key,
             "deployment_name": azure_embedding_deployment,
-            "environment": "production",
+            "environment": "test",
             "model": "text-embedding-3-large",
             "api_version": "2024-12-01-preview",
             "tags": "azure,test,text-embedding-3-large",
         }
 
         logger.info(f"  → model: {embedding_secret['model']}")
-        logger.info(f"  → connection_id: {embedding_secret['connection_id']}")
-        logger.info(
-            "  → Vault path: embeddings/connections/azure_openai/production/text-embedding-3-large"
-        )
+        logger.info(f"  → vault path: {embedding_vault_path}")
 
-        # Write to embeddings path with connection_id in the path
         client.secrets.kv.v2.create_or_update_secret(
             mount_point="secret",
-            path="embeddings/connections/azure_openai/production/text-embedding-3-large",
+            path=embedding_vault_path,
             secret=embedding_secret,
         )
-        logger.info(
-            "Embedding secret written to embeddings/connections/azure_openai/production/text-embedding-3-large"
-        )
+        logger.info(f"Embedding secret written to {embedding_vault_path}")
 
         # ============================================================
         # VERIFY SECRETS WERE WRITTEN CORRECTLY
@@ -368,7 +381,7 @@ path "auth/token/renew-self" { capabilities = ["update"] }
         try:
             # Verify LLM path
             verify_llm = client.secrets.kv.v2.read_secret_version(
-                path="llm/connections/azure_openai/production/gpt-4o-mini",
+                path=llm_vault_path,
                 mount_point="secret",
             )
             llm_data = verify_llm["data"]["data"]
@@ -377,7 +390,7 @@ path "auth/token/renew-self" { capabilities = ["update"] }
 
             # Verify embeddings path
             verify_embedding = client.secrets.kv.v2.read_secret_version(
-                path="embeddings/connections/azure_openai/production/text-embedding-3-large",
+                path=embedding_vault_path,
                 mount_point="secret",
             )
             embedding_data = verify_embedding["data"]["data"]
@@ -395,10 +408,10 @@ path "auth/token/renew-self" { capabilities = ["update"] }
                 logger.error(error_msg)
                 raise ValueError(error_msg)
 
-            if embedding_data.get("connection_id") != "2":
+            if embedding_data.get("connection_id") != TEST_VAULT_UUID:
                 error_msg = (
                     "VAULT SECRET MISMATCH! "
-                    "Expected connection_id='2' "
+                    f"Expected connection_id='{TEST_VAULT_UUID}' "
                     f"but Vault has '{embedding_data.get('connection_id')}'"
                 )
                 logger.error(error_msg)
@@ -409,42 +422,6 @@ path "auth/token/renew-self" { capabilities = ["update"] }
         except Exception as e:
             logger.error(f"Failed to verify secrets: {e}")
             raise
-
-        # add the same secret configs to the 'testing' environment for test purposes
-        # connection_id is 1 (must match the database connection ID created by ensure_testing_connection)
-        llm_secret = {
-            "connection_id": 1,
-            "endpoint": azure_endpoint,
-            "api_key": azure_api_key,
-            "deployment_name": azure_deployment or "gpt-4o-mini",
-            "environment": "test",
-            "model": "gpt-4o-mini",
-            "model_type": "chat",
-            "api_version": "2024-02-15-preview",
-            "tags": "azure,test,chat",
-        }
-        client.secrets.kv.v2.create_or_update_secret(
-            mount_point="secret",
-            path="llm/connections/azure_openai/test/1",
-            secret=llm_secret,
-        )
-
-        embedding_secret = {
-            "connection_id": 1,
-            "endpoint": azure_embedding_endpoint,
-            "api_key": azure_api_key,
-            "deployment_name": azure_embedding_deployment,
-            "environment": "test",
-            "model": "text-embedding-3-large",
-            "api_version": "2024-12-01-preview",
-            "tags": "azure,test,text-embedding-3-large",
-        }
-        # Write to embeddings path with connection_id in the path
-        client.secrets.kv.v2.create_or_update_secret(
-            mount_point="secret",
-            path="embeddings/connections/azure_openai/test/1",
-            secret=embedding_secret,
-        )
 
         # ============================================================
         # LANGFUSE CONFIGURATION
@@ -697,7 +674,7 @@ path "auth/token/renew-self" { capabilities = ["update"] }
         """Verify the token has correct permissions to read secrets"""
         try:
             client.secrets.kv.v2.read_secret_version(
-                path="llm/connections/azure_openai/production/gpt-4o-mini",
+                path=f"llm/connections/azure_openai/{TEST_VAULT_UUID}",
                 mount_point="secret",
             )
             logger.info("Token has correct permissions to read secrets")
@@ -1205,6 +1182,10 @@ def postgres_client(rag_stack: RAGStackTestContainers):
                 database="rag-search",
                 user="postgres",
                 password="dbadmin",
+                # RAG tables were moved to the rag_search schema (Liquibase v7
+                # schema migration). Put it on the search_path so unqualified
+                # queries (e.g. FROM llm_connections) resolve.
+                options="-c search_path=rag_search,public",
             )
             logger.info("PostgreSQL connection established")
             yield conn
@@ -1372,10 +1353,9 @@ def ensure_testing_connection(postgres_client, ruuter_private_client, rag_stack)
                 f"Found existing testing gpt-4o-mini connection: "
                 f"ID={connection_id}, Name='{connection_name}'"
             )
-            logger.warning(
-                f"IMPORTANT: Vault secret must exist at path: "
-                f"llm/connections/azure_openai/test/{connection_id}"
-            )
+            # Pin the row's vault_uuid so it matches the vault secret path and the
+            # value inference/test.yml forwards to /orchestrate/test.
+            _pin_vault_uuid(postgres_client, connection_id)
             return connection_id
 
         # No testing gpt-4o-mini found - create one
@@ -1414,24 +1394,42 @@ def ensure_testing_connection(postgres_client, ruuter_private_client, rag_stack)
         connection_id = response_data["id"]
 
         logger.info(f"Created testing gpt-4o-mini connection with ID: {connection_id}")
-        logger.warning(
-            f"IMPORTANT: Vault secret must exist at path: "
-            f"llm/connections/azure_openai/test/{connection_id}"
-        )
-        logger.warning(
-            "Currently hardcoded vault path is: llm/connections/azure_openai/test/1"
-        )
-        if connection_id != 1:
-            logger.error(
-                f"CONNECTION ID MISMATCH! Database assigned ID={connection_id}, "
-                f"but vault secret is at path .../test/1"
-            )
 
         # Wait for database write
         time.sleep(2)
 
+        # Pin the row's vault_uuid so it matches the vault secret path and the
+        # value inference/test.yml forwards to /orchestrate/test.
+        _pin_vault_uuid(postgres_client, connection_id)
+
         return connection_id
 
+    finally:
+        cursor.close()
+
+
+def _pin_vault_uuid(postgres_client, connection_id: int) -> None:
+    """Force a testing connection's vault_uuid to the pinned TEST_VAULT_UUID.
+
+    Vault secret paths terminate in the connection's vault_uuid (no environment
+    segment). We write the integration-test secrets under TEST_VAULT_UUID, so the
+    DB row that inference/test.yml looks up must carry the same UUID for the
+    forwarded value to resolve to the right vault path.
+    """
+    cursor = postgres_client.cursor()
+    try:
+        cursor.execute(
+            "UPDATE llm_connections SET vault_uuid = %s WHERE id = %s",
+            (TEST_VAULT_UUID, connection_id),
+        )
+        postgres_client.commit()
+        logger.info(
+            f"Pinned vault_uuid={TEST_VAULT_UUID} on testing connection id={connection_id}"
+        )
+    except Exception as e:
+        postgres_client.rollback()
+        logger.error(f"Failed to pin vault_uuid on connection {connection_id}: {e}")
+        raise
     finally:
         cursor.close()
 

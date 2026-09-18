@@ -19,10 +19,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from models.request_models import OrchestrationRequest
-from models.session_models import APIToolSession, EndpointSessionState, LastCallContext
+from models.session_models import (
+    APIToolSession,
+    EndpointSessionState,
+    LastCallContext,
+)
 from tool_classifier.classifier import ToolClassifier
 from tool_classifier.enums import AgenticLoopStatus, WorkflowType
-from tool_classifier.models import AgenticLoopResult, APICallResult, MultiAPICallResult
+from tool_classifier.models import (
+    AgenticLoopResult,
+    APICallResult,
+    MultiAPICallResult,
+)
 from tool_classifier.workflows.api_tool_workflow import APIToolWorkflowExecutor
 from utils.atc_cache_store import ATCCacheStore
 

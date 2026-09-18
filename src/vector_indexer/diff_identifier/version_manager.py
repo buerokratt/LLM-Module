@@ -5,7 +5,8 @@ import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Any
-from loguru import logger
+from loki_logger import LokiLogger
+
 from typing_extensions import Self
 
 from diff_identifier.diff_models import (
@@ -15,6 +16,9 @@ from diff_identifier.diff_models import (
     VersionState,
 )
 from diff_identifier.s3_ferry_client import S3FerryClient
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="version-manager")
 
 
 class VersionManager:

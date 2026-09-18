@@ -103,8 +103,6 @@ def _make_qdrant_client(
     """Build a mock QdrantClient."""
     client = MagicMock()
 
-    col_mock = MagicMock()
-    col_mock.name = "some_collection"
     collections_result = MagicMock()
     collections_result.collections = [MagicMock(name=n) for n in collection_names]
     # Fix: MagicMock(name=n) doesn't work as expected — set attribute explicitly

@@ -51,9 +51,12 @@ kubectl cp store-langfuse-secrets.sh rag-module/vault-0:/tmp/store-langfuse-secr
 kubectl exec -n your-namespace vault-0 -- sh -c \
   "LANGFUSE_INIT_PROJECT_PUBLIC_KEY=pk-lf-YOUR_KEY \
    LANGFUSE_INIT_PROJECT_SECRET_KEY=sk-lf-YOUR_KEY \
+   LANGFUSE_HOST=http://langfuse-web:3005 \
    sh /tmp/store-langfuse-secrets.sh"
 ```
 
 Replace `pk-lf-YOUR_KEY` and `sk-lf-YOUR_KEY` with the actual keys from step 3.
+
+> **Note:** In Kubernetes, the Langfuse-Web service port is `3005` (mapped to container port 3000), so `LANGFUSE_HOST` must be set explicitly. In Docker Compose, the default (`http://langfuse-web:3000`) is used automatically.
 
 The script stores them at `secret/data/langfuse/config` in Vault, where the LLM Orchestration Service reads them.

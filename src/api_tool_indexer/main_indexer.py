@@ -28,7 +28,8 @@ import json
 import asyncio
 import argparse
 from typing import List
-from loguru import logger
+
+from src.loki_logger import LokiLogger
 
 from api_tool_indexer.constants import ApiToolIndexerConstants
 from api_tool_indexer.models import EndpointData, EnrichedEndpoint, IndexingResult
@@ -37,8 +38,7 @@ from api_tool_indexer.qdrant_manager import ApiToolQdrantManager
 # Reuse LLMAPIClient from intent_data_enrichment.
 from intent_data_enrichment.api_client import LLMAPIClient
 
-# Reuse sparse encoder from tool_classifier (shared BM25 implementation).
-sys.path.insert(0, "/app/src")
+logger = LokiLogger(service_name="api-tool-calling")
 try:
     from tool_classifier.sparse_encoder import compute_sparse_vector
 except ImportError:
@@ -139,9 +139,8 @@ async def _generate_context_for_endpoint(
     )
 
     logger.debug(
-        "Generated context prompt for endpoint '{}': {} chars",
-        endpoint_data.endpoint_id,
-        len(context_prompt),
+        f"Generated context prompt for endpoint '{endpoint_data.endpoint_id}': "
+        f"{len(context_prompt)} chars"
     )
 
     # context_type="api_tool" makes context_manager use API_TOOL_CONTEXT_PROMPT,
@@ -175,11 +174,10 @@ async def _generate_context_for_endpoint(
 
             context = result.get("context", "").strip()
 
-            logger.debug(
-                "context preview: {}{}",
-                context[:200].replace("\n", "\\n"),
-                "..." if len(context) > 200 else "",
+            _preview = context[:200].replace("\n", "\\n") + (
+                "..." if len(context) > 200 else ""
             )
+            logger.debug(f"context preview: {_preview}")
 
             if not context:
                 raise ValueError("Empty context returned from API")

@@ -3,13 +3,16 @@
 import asyncio
 import tiktoken
 from typing import List, Dict, Any, Optional
-from loguru import logger
+from loki_logger import LokiLogger
 
 from vector_indexer.config.config_loader import VectorIndexerConfig
 from vector_indexer.models import ProcessingDocument, BaseChunk, ContextualChunk
 from vector_indexer.api_client import LLMOrchestrationAPIClient
 from vector_indexer.error_logger import ErrorLogger
 from vector_indexer.constants import ChunkingConstants, ProcessingConstants
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="contextual-processor")
 
 
 class ContextualProcessor:

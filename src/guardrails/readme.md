@@ -118,12 +118,12 @@ Cost: $0.000156 (7 tokens)
 #### 3. **GuardrailCheckResult** (Pydantic Model)
 ```python
 class GuardrailCheckResult(BaseModel):
-    allowed: bool              # True if content passes
-    verdict: str               # "yes" = blocked, "no" = allowed
-    content: str               # Response message
+    allowed: bool  # True if content passes
+    verdict: str  # "yes" = blocked, "no" = allowed
+    content: str  # Response message
     blocked_by_rail: Optional[str]  # Exception type if blocked
-    reason: Optional[str]      # Explanation
-    error: Optional[str]       # Error message if failed
+    reason: Optional[str]  # Explanation
+    error: Optional[str]  # Error message if failed
     usage: Dict[str, Union[float, int]]  # Cost tracking
 ```
 
@@ -136,8 +136,8 @@ When `enable_rails_exceptions: true` in config:
     "role": "exception",
     "content": {
         "type": "InputRailException",
-        "message": "I'm not able to respond to that"
-    }
+        "message": "I'm not able to respond to that",
+    },
 }
 ```
 
@@ -167,11 +167,11 @@ result.usage = usage_info  # Contains: total_cost, tokens, num_calls
 **Usage Dictionary Structure**:
 ```python
 {
-    "total_cost": 0.000245,           # USD
+    "total_cost": 0.000245,  # USD
     "total_prompt_tokens": 8,
     "total_completion_tokens": 2,
     "total_tokens": 10,
-    "num_calls": 1
+    "num_calls": 1,
 }
 ```
 
@@ -181,10 +181,10 @@ result.usage = usage_info  # Contains: total_cost, tokens, num_calls
 
 ```python
 costs_metric = {
-    "input_guardrails": {...},      # Step 1
-    "prompt_refiner": {...},         # Step 2
-    "response_generator": {...},    # Step 4
-    "output_guardrails": {...}      # Step 5
+    "input_guardrails": {...},  # Step 1
+    "prompt_refiner": {...},  # Step 2
+    "response_generator": {...},  # Step 4
+    "output_guardrails": {...},  # Step 5
 }
 
 # Step 3 (retrieval) has no LLM cost
@@ -197,7 +197,7 @@ costs_metric = {
 if not input_result.allowed:
     return OrchestrationResponse(
         inputGuardFailed=True,
-        content=input_result.content  # Refusal message
+        content=input_result.content,  # Refusal message
     )
 # Saves costs: no refinement, retrieval, or generation
 ```

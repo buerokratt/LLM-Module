@@ -6,9 +6,13 @@ without hardcoded weights, adapting dynamically to result distributions.
 """
 
 from typing import List, Dict, Any, Optional
-from loguru import logger
+from src.loki_logger import LokiLogger
+
 from contextual_retrieval.constants import QueryTypeConstants
 from contextual_retrieval.config import ConfigLoader, ContextualRetrievalConfig
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="rank-fusion")
 
 
 class DynamicRankFusion:
@@ -65,7 +69,7 @@ class DynamicRankFusion:
 
             logger.info(f"Fusion completed: {len(final_results)} final results")
 
-            # Detailed results at DEBUG level (loguru filters based on log level config)
+            # Detailed results at DEBUG level (filters based on log level config)
             logger.debug("=== RANK FUSION FINAL RESULTS ===")
             for i, chunk in enumerate(final_results):
                 content_preview_len = self._config.rank_fusion.content_preview_length

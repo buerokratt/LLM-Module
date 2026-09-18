@@ -14,10 +14,10 @@ gui:
     
     #service URLs 
     services:
-      ruuterPublic: "http://<your-domain>/ruuter-public"
-      ruuterPrivate: "http://<your-domain>/ruuter-private"
-      authenticationLayer: "http://<your-domain>"
-      notificationNode: "http://notifications-node:4040"
+      ruuterPublic: "http://localhost:8086"
+      ruuterPrivate: "http://localhost:8088"
+      authenticationLayer: "http://localhost:3004"
+      notificationNode: "http://localhost:3003"
       datasetGenerator: "http://dataset-gen-service:8000"
 
     # Content Security Policy - Updated for browser access
@@ -33,7 +33,7 @@ gui:
 
     # Ingress host
     ingress:
-      host: "<your-domain>"  # Update with actual domain
+      host: "localhost"  # Update with actual domain
   
     resources:
       limits:
@@ -53,19 +53,3 @@ gui:
 # Vault Agent sidecar configuration
 vaultAgent:
   enabled: true
-  
-    
-    # ingress:
-    #   enabled: true
-    #   className: nginx
-    #   annotations:
-    #     nginx.ingress.kubernetes.io/rewrite-target: /
-    #     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-    #     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-    #     nginx.ingress.kubernetes.io/proxy-body-size: "50m"
-    #   hosts:
-    #     - host: rag.local
-    #       paths:
-    #         - path: /
-    #           pathType: Prefix
-    #   tls: []

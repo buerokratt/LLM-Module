@@ -11,7 +11,7 @@ cronmanager:
 
   environment:
     containerPort: "8080"
-    pythonPath: "/app:/app/src/vector_indexer"
+    pythonPath: "/app:/app/src:/app/src/vector_indexer:/app/src/intent_data_enrichment:/app/src/api_tool_indexer"
     VAULT_ADDR: "http://vault:8200"
 
 service:

@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
-from loguru import logger
+from src.loki_logger import LokiLogger
+from src.utils.error_utils import generate_error_id
 
 from llm_orchestrator_config.llm_ochestrator_constants import get_localized_message
 from tool_classifier.constants import (
@@ -23,7 +24,8 @@ from tool_classifier.constants import (
     SERVICE_UNAVAILABLE_MESSAGES,
 )
 from tool_classifier.models import APICallResult
-from src.utils.error_utils import generate_error_id, log_error_with_context
+
+logger = LokiLogger(service_name="api-tool-calling")
 
 
 @dataclass
@@ -86,7 +88,9 @@ class CircuitBreaker:
             if time.time() - breaker.last_failure_time >= self._cooldown_seconds:
                 breaker.state = CB_STATE_HALF_OPEN
                 breaker.probe_in_flight = True
-                logger.info(f"[CircuitBreaker] {url!r} → HALF_OPEN (probe allowed)")
+                logger.info(
+                    f"CircuitBreaker: circuit half-open | event_type=circuit_breaker_half_open url={url}"
+                )
                 return True
             return False
         # HALF_OPEN: allow exactly one probe request through; gate subsequent
@@ -101,8 +105,7 @@ class CircuitBreaker:
         breaker = self._get_state(url)
         if breaker.state != CB_STATE_CLOSED:
             logger.info(
-                f"[CircuitBreaker] {url!r} → CLOSED "
-                f"(recovered after {breaker.failure_count} failure(s))"
+                f"CircuitBreaker: circuit recovered | event_type=circuit_breaker_recovered url={url} failure_count={breaker.failure_count}"
             )
         breaker.state = CB_STATE_CLOSED
         breaker.failure_count = 0
@@ -120,8 +123,7 @@ class CircuitBreaker:
         if breaker.failure_count >= self._failure_threshold:
             if breaker.state != CB_STATE_OPEN:
                 logger.warning(
-                    f"[CircuitBreaker] {url!r} → OPEN "
-                    f"after {breaker.failure_count} failure(s)"
+                    f"CircuitBreaker: circuit opened | event_type=circuit_breaker_opened url={url} failure_count={breaker.failure_count} threshold={self._failure_threshold}"
                 )
             breaker.state = CB_STATE_OPEN
 
@@ -192,7 +194,7 @@ class APICaller:
 
         if not self._circuit_breaker.can_execute(url):
             logger.warning(
-                f"[APICaller] Circuit breaker OPEN for {url!r} — rejecting call"
+                f"APICaller: api call rejected | event_type=api_call_rejected_circuit_open url={url} method={method_upper}"
             )
             return APICallResult(
                 success=False,
@@ -202,6 +204,10 @@ class APICaller:
             )
 
         effective_timeout = timeout if timeout is not None else self._default_timeout
+        logger.debug(
+            f"APICaller: api call started | event_type=api_call_started url={url} method={method_upper} timeout={effective_timeout}"
+        )
+        _t0 = time.time()
         try:
             async with httpx.AsyncClient(
                 timeout=effective_timeout, follow_redirects=True
@@ -210,17 +216,19 @@ class APICaller:
                     response = await client.post(url, json=params)
                 else:
                     response = await client.get(url, params=params)
-                return self._handle_response(response, url, language)
+                result = self._handle_response(response, url, language)
+                _duration_ms = round((time.time() - _t0) * 1000, 1)
+                if result.success:
+                    logger.info(
+                        f"APICaller: api call success | event_type=api_call_success url={url} method={method_upper} status_code={result.status_code} duration_ms={_duration_ms}"
+                    )
+                return result
 
         except httpx.TimeoutException as exc:
-            error_id = generate_error_id()
-            log_error_with_context(
-                logger,
-                error_id,
-                "api_call_timeout",
-                None,
-                exc,
-                {"url": url, "method": method_upper},
+            _duration_ms = round((time.time() - _t0) * 1000, 1)
+            _error_id = generate_error_id()
+            logger.error(
+                f"APICaller: api call timeout | event_type=api_call_timeout url={url} method={method_upper} error_id={_error_id} duration_ms={_duration_ms} exc={exc!r}"
             )
             self._circuit_breaker.record_failure(url)
             return APICallResult(
@@ -231,14 +239,10 @@ class APICaller:
             )
 
         except httpx.RequestError as exc:
-            error_id = generate_error_id()
-            log_error_with_context(
-                logger,
-                error_id,
-                "api_call_network_error",
-                None,
-                exc,
-                {"url": url, "method": method_upper},
+            _duration_ms = round((time.time() - _t0) * 1000, 1)
+            _error_id = generate_error_id()
+            logger.error(
+                f"APICaller: api call network error | event_type=api_call_network_error url={url} method={method_upper} error_id={_error_id} duration_ms={_duration_ms} exc={exc!r}"
             )
             self._circuit_breaker.record_failure(url)
             return APICallResult(
@@ -271,8 +275,7 @@ class APICaller:
             # Not a server fault — do NOT trip the circuit breaker.
             location = response.headers.get("location", "")
             logger.warning(
-                f"[APICaller] Unresolved redirect {status_code} from {url!r} "
-                f"→ {location!r}"
+                f"APICaller: api call redirect | event_type=api_call_redirect url={url} status_code={status_code} location={location!r}"
             )
             base_msg = get_localized_message(REDIRECT_NOT_FOLLOWED_MESSAGES, language)
             error_msg = base_msg.format(
@@ -293,7 +296,7 @@ class APICaller:
             error_body = self._parse_response_body(response)
             raw_msg = error_body if isinstance(error_body, str) else str(error_body)
             logger.warning(
-                f"[APICaller] 4xx response {status_code} from {url!r}: {raw_msg[:200]}"
+                f"APICaller: api call client error | event_type=api_call_client_error url={url} status_code={status_code} error_preview={raw_msg[:200]!r}"
             )
             return APICallResult(
                 success=False,
@@ -303,9 +306,8 @@ class APICaller:
             )
 
         # 5xx — server is misbehaving; trip the circuit breaker.
-        error_id = generate_error_id()
         logger.error(
-            f"[{error_id}] [APICaller] Server error {status_code} from {url!r}"
+            f"APICaller: api call server error | event_type=api_call_server_error url={url} status_code={status_code} error_id={generate_error_id()}"
         )
         self._circuit_breaker.record_failure(url)
         return APICallResult(

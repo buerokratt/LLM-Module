@@ -1,10 +1,11 @@
 """Cost calculation utilities for LLM usage tracking."""
 
 from typing import Dict, Any, List, Tuple
-import logging
+from src.loki_logger import LokiLogger
 import dspy
 
-logger = logging.getLogger(__name__)
+# Initialize Loki logger for cost tracking
+logger = LokiLogger(service_name="cost-utils")
 
 
 def _to_float(value: str | int | float | bytes | bytearray | None) -> float:
@@ -160,6 +161,71 @@ def get_lm_usage_since(history_length_before: int) -> Dict[str, Any]:
         logger.warning(f"Failed to extract usage info: {str(e)}")
 
     return usage_info
+
+
+# Every guardrails self-check prompt opens with this phrase (see the
+# self_check_input / self_check_output tasks in src/guardrails/rails_config.yaml).
+# Matching on it lets us bill guardrail traffic separately from generation, which
+# otherwise hides inside the same LM history window.
+_GUARDRAIL_PROMPT_MARKER = "you are tasked with evaluating if a"
+
+
+def _history_entry_text(item: Dict[str, Any]) -> str:
+    """Best-effort extraction of the prompt text from an LM history entry."""
+    prompt = item.get("prompt")
+    if isinstance(prompt, str):
+        return prompt
+
+    messages = item.get("messages")
+    if isinstance(messages, list):
+        parts = []
+        for message in messages:
+            if isinstance(message, dict):
+                content = message.get("content")
+                if isinstance(content, str):
+                    parts.append(content)
+        return "\n".join(parts)
+
+    return ""
+
+
+def _is_guardrail_entry(item: Dict[str, Any]) -> bool:
+    """Whether an LM history entry is a guardrails self-check call."""
+    return _GUARDRAIL_PROMPT_MARKER in _history_entry_text(item).lower()
+
+
+def get_lm_usage_since_split(
+    history_length_before: int,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    Extract usage since a point, split into generation and guardrails buckets.
+
+    During streaming, output-rail validation calls are interleaved with the
+    generation call in the same LM history window. Reporting them as one figure
+    makes runaway guardrail spend invisible, so we attribute each entry by its
+    prompt.
+
+    Args:
+        history_length_before: The history length to measure from
+
+    Returns:
+        ``(generation_usage, guardrails_usage)``
+    """
+    generation_usage = get_default_usage_dict()
+    guardrails_usage = get_default_usage_dict()
+
+    try:
+        lm = dspy.settings.lm
+        if lm and hasattr(lm, "history"):
+            new_history = lm.history[history_length_before:]
+            guardrail_entries = [i for i in new_history if _is_guardrail_entry(i)]
+            generation_entries = [i for i in new_history if not _is_guardrail_entry(i)]
+            generation_usage = extract_cost_from_lm_history(generation_entries)
+            guardrails_usage = extract_cost_from_lm_history(guardrail_entries)
+    except Exception as e:
+        logger.warning(f"Failed to split usage info: {str(e)}")
+
+    return generation_usage, guardrails_usage
 
 
 def get_default_usage_dict() -> Dict[str, Any]:

@@ -26,7 +26,9 @@ OUTPUT_GUARDRAIL_VIOLATION_MESSAGES = {
 # Query validation messages - single generic message for all rejection types
 # (empty queries, special characters only, too short, repetitive characters)
 QUERY_VALIDATION_FAILED_MESSAGES = {
-    "et": "Palun esitage kehtiv küsimus või sõnum, et ma saaksin teid aidata."
+    "et": "Palun esitage kehtiv küsimus või sõnum, et ma saaksin teid aidata.",
+    "en": "Please provide a valid question or reply so I can assist you.",
+    "ru": "Пожалуйста, введите корректный вопрос или сообщение, чтобы я мог вам помочь.",
 }
 
 # Legacy constants for backward compatibility (English defaults)

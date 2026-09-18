@@ -2,14 +2,58 @@
 
 ## Overview
 
-The custom prompt configuration system allows admins to configure prompts via UI that automatically apply to all response generation operations. Changes are cached with a 5-minute TTL and can be immediately refreshed when updated.
+The custom prompt configuration system allows admins to configure a single organisation-level prompt via the UI that automatically applies to user-facing answer generation. Changes are cached with a 5-minute TTL and can be immediately refreshed when updated.
+
+The same configured prompt is consumed by **two** workflows — the **RAG workflow** and the **API Tool Calling workflow** — through one shared `PromptConfigurationLoader`. The **Context workflow** does **not** apply custom prompts (greetings use static templates and history answers use their own signature). See [Where Custom Prompts Are Applied (by Workflow)](#where-custom-prompts-are-applied-by-workflow).
+
+---
+
+## Where Custom Prompts Are Applied (by Workflow)
+
+All consumers read the same prompt from the shared `PromptConfigurationLoader`
+(`src/utils/prompt_config_loader.py`, 5-minute TTL cache). They differ in **how** they inject it.
+
+| Workflow | Custom prompt applied? | Where / how |
+|---|---|---|
+| **RAG** |  Yes | `ResponseGeneratorAgent` — the prompt is wrapped as `[SYSTEM INSTRUCTIONS]…[USER QUESTION]` and appended to the question for both streaming and non-streaming generation. |
+| **API Tool Calling** |  Yes | `APIToolWorkflowExecutor._get_custom_instructions()` loads the raw prompt and passes it into parameter extraction and response formatting (see below). |
+| **Context** |  No | `context_workflow.py` / `context_analyzer.py` do not load or apply the custom prompt. Greetings return static templates; history answers use `ContextResponseGenerationSignature` without injection. |
+| **Service** |  No | The response is pre-formed text from Ruuter/DMapper — there is no LLM generation step to steer. |
+| **OOD** |  No | Fixed localized out-of-scope message. |
+
+### RAG workflow
+
+- Source: [`src/llm_orchestration_service.py`](../src/llm_orchestration_service.py) → `_get_custom_instructions_for_response_generation()` builds the prefix
+  `"[SYSTEM INSTRUCTIONS]\n{prompt}\n\n[USER QUESTION]\n"` and passes it as
+  `ResponseGeneratorAgent(custom_instructions_prefix=…)`.
+- Application: [`src/response_generator/response_generate.py`](../src/response_generator/response_generate.py) applies it as
+  `augmented_question = f"{question}\n\n{custom_instructions_prefix}"` in both `forward()` and
+  `stream_response()`.
+- **Note:** despite the name `custom_instructions_prefix`, the string is **appended after** the
+  question (the wrapper text itself carries the `[USER QUESTION]` marker). It is **not** applied to
+  `PromptRefinerAgent`, which only optimises the query for retrieval.
+
+### API Tool Calling workflow
+
+- Source: [`src/tool_classifier/workflows/api_tool_workflow.py`](../src/tool_classifier/workflows/api_tool_workflow.py) → `_get_custom_instructions()` reads the **same** `prompt_config_loader`
+  (via `asyncio.to_thread`, fail-open to `""`). Unlike the RAG path, it passes the **raw** prompt
+  (no `[SYSTEM INSTRUCTIONS]` wrapper).
+- It is injected as a dedicated DSPy `custom_instructions` input field into:
+  - `ParamExtractionModule` ([`param_extractor.py`](../src/tool_classifier/param_extractor.py)) — steers how parameters are extracted from the user.
+  - `APIResponseFormatterModule` ([`api_response_formatter.py`](../src/tool_classifier/api_response_formatter.py)) — single-endpoint natural-language answer.
+  - `MultiResponseFormatterModule` ([`multi_response_formatter.py`](../src/tool_classifier/multi_response_formatter.py)) — multi-endpoint synthesis.
+- In the formatter/extractor signatures, a non-empty `custom_instructions` is followed with
+  **HIGHEST PRIORITY**, overriding defaults such as language policy, tone, and formatting.
+- Additionally, the workflow derives the response language from the prompt via
+  `_language_from_custom_instructions()` and merges any Redis conversation summary into the same
+  `custom_instructions` string before extraction.
 
 ---
 
 ## Architecture Components
 
 ### 1. **Database Layer**
-- **Table**: `public.prompt_configuration`
+- **Table**: `rag_search.prompt_configuration`
 - **Columns**: `id` (BIGINT), `prompt` (TEXT)
 - Stores the custom prompt text configured by admins
 
@@ -36,7 +80,7 @@ The custom prompt configuration system allows admins to configure prompts via UI
 
 - **ResponseGeneratorAgent** (`src/response_generator/response_generate.py`)
   - Accepts `custom_instructions_prefix` parameter
-  - Prepends custom instructions to user questions
+  - Appends custom instructions after the user question
   - Applied in both streaming and non-streaming modes
 
 ### 4. **API Endpoints**
@@ -120,8 +164,8 @@ The custom prompt configuration system allows admins to configure prompts via UI
                  ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ ResponseGeneratorAgent.forward() or stream_response()          │
-│  - Prepends custom_instructions_prefix to user question         │
-│  - Modified question = "{prefix}{user_question}"                │
+│  - Appends custom_instructions_prefix after user question       │
+│  - Modified question = "{user_question}{prefix}"                │
 └────────────────┬────────────────────────────────────────────────┘
                  │
                  ▼
@@ -169,8 +213,7 @@ The custom prompt configuration system allows admins to configure prompts via UI
 
 ### **User Request Processing**
 1. **Request Received** (Any of 3 endpoints)
-   - `/orchestrate` - Standard response
-   - `/orchestrate/test` - Test response
+   - `/orchestrate/test` - Test Sresponse
    - `/orchestrate/stream` - Streaming response
 
 2. **Service Components Initialization**
@@ -242,7 +285,7 @@ RAG_SEARCH_PROMPT_REFRESH=http://llm-orchestration-service:8100/prompt-config/re
 
 ### **1. Insert Test Prompt**
 ```sql
-INSERT INTO public.prompt_configuration (id, prompt)
+INSERT INTO rag_search.prompt_configuration (id, prompt)
 VALUES (1, 'Always respond in Estonian language. Be professional and concise.')
 ON CONFLICT (id) DO UPDATE SET prompt = EXCLUDED.prompt;
 ```
@@ -260,7 +303,7 @@ curl -X POST http://localhost:8100/orchestrate/test \
 
 ### **3. Update Prompt**
 ```sql
-UPDATE public.prompt_configuration
+UPDATE rag_search.prompt_configuration
 SET prompt = 'Provide concise answers using bullet points. Be helpful and clear.'
 WHERE id = 1;
 ```
@@ -290,14 +333,14 @@ curl -X POST http://localhost:8100/prompt-config/refresh
 
 ## Key Features
 
-✅ **TTL Caching** - 5-minute cache reduces database calls  
-✅ **Immediate Updates** - Admin changes trigger instant refresh  
-✅ **Graceful Degradation** - If refresh fails, TTL cache continues working  
-✅ **Thread-Safe** - Multiple concurrent requests handled safely  
-✅ **Retry Logic** - 3 attempts with exponential backoff for HTTP failures  
-✅ **Instruction Prepending** - Preserves DSPy optimization compatibility  
-✅ **Applied Consistently** - Works across all 3 orchestration endpoints  
-✅ **Applied to ResponseGenerator Only** - Not applied to PromptRefinerAgent
+ **TTL Caching** - 5-minute cache reduces database calls  
+ **Immediate Updates** - Admin changes trigger instant refresh  
+ **Graceful Degradation** - If refresh fails, TTL cache continues working  
+ **Thread-Safe** - Multiple concurrent requests handled safely  
+ **Retry Logic** - 3 attempts with exponential backoff for HTTP failures  
+ **Instruction Appending** - Custom instructions appended to the question without modifying the DSPy signature  
+ **Applied Consistently** - Works across all 3 orchestration endpoints  
+ **Applied to RAG & API Tool Calling** - In RAG, only the ResponseGenerator (not the PromptRefiner); in API Tool Calling, the param extractor and response formatters. Not applied to the Context workflow.
 
 ---
 
@@ -322,10 +365,10 @@ Context: [retrieved documentation chunks...]
 ```
 
 **Expected Response:**
-- In Estonian language ✅
-- Professional tone ✅
-- Concise format ✅
-- Citations included ✅
+- In Estonian language 
+- Professional tone 
+- Concise format 
+- Citations included 
 
 ---
 
@@ -348,7 +391,7 @@ Context: [retrieved documentation chunks...]
 
 ### **Prompt Not Applied**
 - Check logs for: "Custom prompt configuration loaded at startup"
-- Verify database has prompt: `SELECT * FROM public.prompt_configuration;`
+- Verify database has prompt: `SELECT * FROM rag_search.prompt_configuration;`
 - Test refresh endpoint: `curl -X POST http://localhost:8100/prompt-config/refresh`
 
 ### **Cache Not Refreshing**
@@ -365,7 +408,9 @@ Context: [retrieved documentation chunks...]
 
 ## Notes
 
-- Custom prompts apply **only to ResponseGeneratorAgent** (not PromptRefinerAgent)
-- PromptRefiner focuses on query optimization for retrieval
-- ResponseGenerator needs language policy and interaction style for user-facing content
-- This design preserves DSPy optimization compatibility by using instruction prepending instead of signature modification
+- In the **RAG** path, custom prompts apply **only to `ResponseGeneratorAgent`** (not `PromptRefinerAgent`).
+  The wrapped instructions are appended to the question rather than modifying the DSPy signature.
+- The **API Tool Calling** workflow consumes the **same** configured prompt (via the shared loader) and
+  injects the raw text as a dedicated `custom_instructions` DSPy input field on the parameter extractor
+  and the response formatters, where it is followed with highest priority.
+- The **Context** and **Service** workflows do not apply custom prompts (see the per-workflow section).

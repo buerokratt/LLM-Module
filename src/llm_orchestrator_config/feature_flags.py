@@ -1,7 +1,10 @@
 """Feature flags for tool classifier system."""
 
 import os
-from loguru import logger
+from src.loki_logger import LokiLogger
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="feature-flags")
 
 
 class FeatureFlags:

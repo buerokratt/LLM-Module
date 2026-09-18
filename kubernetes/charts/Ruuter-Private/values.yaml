@@ -6,7 +6,7 @@ images:
   scope:
     registry: "ghcr.io"
     repository: "buerokratt/ruuter"
-    tag: "v2.2.1"
+    tag: "v2.2.8"
 
 service:
   type: ClusterIP
@@ -15,7 +15,7 @@ service:
 
 env:
 
-  APPLICATION_CORS_ALLOWEDORIGINS: "http://gui:3001,http://ruuter-private:8088,http://ruuter-public:8086,http://authentication-layer:3004,http://notifications-node:4040,http://dataset-gen-service:8000,http://localhost:3001"
+  APPLICATION_CORS_ALLOWEDORIGINS: "https://ec2-34-253-140-113.eu-west-1.compute.amazonaws.com:32017,http://gui:3001,http://ruuter-private:8088,http://ruuter-public:8086,http://authentication-layer:3004,http://notifications-node:4040,http://dataset-gen-service:8000,http://localhost:3001"
   APPLICATION_HTTPCODESALLOWLIST: "200,201,202,400,401,403,500"
   APPLICATION_INTERNALREQUESTS_ALLOWEDIPS: "127.0.0.1"
   APPLICATION_LOGGING_DISPLAYREQUESTCONTENT: "true"
@@ -42,9 +42,9 @@ resources:
 
 
 ingress:
-  enabled: false  
-  host: "rag.local"       #change this to domain
-  corsAllowOrigin: "http://localhost:3001,http://localhost:3003,http://localhost:8088,http://localhost:3002,http://localhost:3004,http://localhost:8000"
+  enabled: true  
+  host: "ec2-34-253-140-113.eu-west-1.compute.amazonaws.com"       #change this to domain
+  corsAllowOrigin: "https://ec2-34-253-140-113.eu-west-1.compute.amazonaws.com:32017,http://localhost:3001,http://localhost:3003,http://localhost:8088,http://localhost:3002,http://localhost:3004,http://localhost:8000"
   ssl:
     enabled: false
     certIssuerName: "letsencrypt-prod"
@@ -55,4 +55,3 @@ pullPolicy: IfNotPresent
 
 podAnnotations:
   dsl-checksum: "initial" 
-

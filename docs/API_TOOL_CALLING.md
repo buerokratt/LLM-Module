@@ -12,17 +12,17 @@ loop collects all required parameters from the user before the API call is made.
 
 | Component | What it does | Status |
 |---|---|---|
-| **Indexing pipeline** | Takes an endpoint definition → enriches it with LLM context → stores hybrid vectors in Qdrant | ✅ Complete |
-| **Tool classifier** | At query time, routes to the best matching endpoint via hybrid search + LLM disambiguation | ✅ Complete |
-| **Multi-intent detection** | Score-band gate triggers `IntentDecomposer` (DSPy) to decompose a multi-intent query into focused sub-queries; each sub-query is matched in parallel via `asyncio.gather` | ✅ Phase 1 & 2 Complete |
-| **Agentic loop** | Multi-turn parameter collection with session persistence, language-aware clarifying questions, param correction, continuation prompt, and intent-switch detection | ✅ Complete |
-| **API caller** | Execute collected params against the real API endpoint, with circuit-breaker protection and localized error handling | ✅ Complete |
-| **Response formatter** | Convert raw API JSON into a natural-language answer via DSPy, streamed token-by-token to the GUI | ✅ Complete |
-| **Multi-endpoint loop** | Merges param schemas for all parallel endpoints; collects params across turns with a single deduplicated clarifying question per turn; distributes values back per endpoint | ✅ Phase 3 Complete |
-| **Parallel API caller** | Fires all completed endpoint calls concurrently via `asyncio.gather` with batch timeout and partial-failure handling | ✅ Phase 4 Complete |
-| **Multi-response formatter** | DSPy module that synthesises N API results into a single coherent natural-language answer; supports streaming and blocking execution | ✅ Phase 5 Complete |
-| **Full wiring** | `APIToolWorkflowExecutor` routes parallel sessions through `MultiEndpointAgenticLoop` → `MultiAPICaller` → `MultiResponseFormatterModule` with output guardrails | ✅ Phase 6 Complete |
-| **ATC Response Cache** | Two-tier Redis cache (L1 exact-match + L2 follow-up context) that eliminates redundant API calls and enables intelligent follow-up handling without re-running the agentic loop | ✅ Complete |
+| **Indexing pipeline** | Takes an endpoint definition → enriches it with LLM context → stores hybrid vectors in Qdrant |  Complete |
+| **Tool classifier** | At query time, routes to the best matching endpoint via hybrid search + LLM disambiguation |  Complete |
+| **Multi-intent detection** | Score-band gate triggers `IntentDecomposer` (DSPy) to decompose a multi-intent query into focused sub-queries; each sub-query is matched in parallel via `asyncio.gather` |  Phase 1 & 2 Complete |
+| **Agentic loop** | Multi-turn parameter collection with session persistence, language-aware clarifying questions, param correction, continuation prompt, and intent-switch detection |  Complete |
+| **API caller** | Execute collected params against the real API endpoint, with circuit-breaker protection and localized error handling |  Complete |
+| **Response formatter** | Convert raw API JSON into a natural-language answer via DSPy, streamed token-by-token to the GUI |  Complete |
+| **Multi-endpoint loop** | Merges param schemas for all parallel endpoints; collects params across turns with a single deduplicated clarifying question per turn; distributes values back per endpoint |  Phase 3 Complete |
+| **Parallel API caller** | Fires all completed endpoint calls concurrently via `asyncio.gather` with batch timeout and partial-failure handling |  Phase 4 Complete |
+| **Multi-response formatter** | DSPy module that synthesises N API results into a single coherent natural-language answer; supports streaming and blocking execution |  Phase 5 Complete |
+| **Full wiring** | `APIToolWorkflowExecutor` routes parallel sessions through `MultiEndpointAgenticLoop` → `MultiAPICaller` → `MultiResponseFormatterModule` with output guardrails |  Phase 6 Complete |
+| **ATC Response Cache** | Two-tier Redis cache (L1 exact-match + L2 follow-up context) that eliminates redundant API calls and enables intelligent follow-up handling without re-running the agentic loop |  Complete |
 
 ---
 
@@ -209,21 +209,21 @@ A `PointStruct` is built:
 
 ```python
 PointStruct(
-    id      = endpoint_id,            # UUID used directly as Qdrant point ID
-    vector  = {
-        "dense":  [v1, v2, ..., v3072],
+    id=endpoint_id,  # UUID used directly as Qdrant point ID
+    vector={
+        "dense": [v1, v2, ..., v3072],
         "sparse": {"indices": [...], "values": [...]},
     },
-    payload = {                        # Stored metadata — no extra DB lookup needed
-        "endpoint_id":      "...",
-        "name":             "get_national_holidays",
-        "description":      "...",
-        "url":              "https://openholidaysapi.org/PublicHolidays",
-        "method":           "GET",
-        "params":           [...],
+    payload={  # Stored metadata — no extra DB lookup needed
+        "endpoint_id": "...",
+        "name": "get_national_holidays",
+        "description": "...",
+        "url": "https://openholidaysapi.org/PublicHolidays",
+        "method": "GET",
+        "params": [...],
         "enriched_context": "...",
-        "service_id":       "...",
-    }
+        "service_id": "...",
+    },
 )
 ```
 
@@ -306,9 +306,9 @@ Instantiated once in `ToolClassifier.__init__()` and reuses the shared Qdrant `h
 
 ```python
 APISemanticSearcher(
-    embedding_service=orchestration_service,   # generates dense embeddings
-    qdrant_client=self._qdrant_client,         # shared connection pool
-    disambiguator=None,                        # optional: inject for testing
+    embedding_service=orchestration_service,  # generates dense embeddings
+    qdrant_client=self._qdrant_client,  # shared connection pool
+    disambiguator=None,  # optional: inject for testing
 )
 ```
 
@@ -861,7 +861,7 @@ Results are **deduplicated by endpoint name** (a single endpoint matched by two 
 
 ```python
 class ExecutionMode(str, Enum):
-    SINGLE   = "single"
+    SINGLE = "single"
     PARALLEL = "parallel"
 ```
 
@@ -947,7 +947,7 @@ await multi_loop.stream_run_turn(
     chat_id=chat_id,
     user_message=request.message,
     conversation_history=conversation_history,
-    endpoint_states=session.parallel_endpoints,   # list[EndpointSessionState]
+    endpoint_states=session.parallel_endpoints,  # list[EndpointSessionState]
     turn_count=session.turn_count,
     awaiting_continuation=session.awaiting_continuation,
     session_language=effective_session_language,
@@ -979,7 +979,9 @@ call_payloads = [
     {**state.endpoint, "call_params": state.collected_params}
     for state in parallel_endpoints
 ]
-multi_result = await MultiAPICaller(api_caller).call_all(call_payloads, language=detected_language)
+multi_result = await MultiAPICaller(api_caller).call_all(
+    call_payloads, language=detected_language
+)
 ```
 
 ---
@@ -1402,7 +1404,7 @@ endpoint A sends a message that strongly matches endpoint B), both the session a
 L2 key are cleaned up:
 
 ```python
-await session_store.delete(request.chatId)        # existing behaviour
+await session_store.delete(request.chatId)  # existing behaviour
 if FeatureFlags.ATC_RESPONSE_CACHE_ENABLED:
     await ATCCacheStore().invalidate_l2(request.chatId)
 ```

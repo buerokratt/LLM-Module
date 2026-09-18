@@ -10,7 +10,10 @@ import json
 from datetime import datetime
 import threading
 import dspy
-from loguru import logger
+from src.loki_logger import LokiLogger
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="optimized-module-loader")
 
 
 class OptimizedModuleLoader:

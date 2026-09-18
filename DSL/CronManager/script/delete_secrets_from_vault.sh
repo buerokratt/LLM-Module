@@ -6,9 +6,18 @@
 set -e  # Exit on any error
 
 # Configuration
-# Use vaultAgentUrl which points to vault-agent-cron proxy
-# The agent automatically injects the authentication token
-VAULT_ADDR="${vaultAgentUrl:-http://vault-agent-cron:8203}"
+# Resolve Vault Agent URL:
+# 1. Use vaultAgentUrl env var if set (from container env or CronManager request)
+# 2. Auto-detect Kubernetes via KUBERNETES_SERVICE_HOST (injected by kubelet, cannot be disabled)
+# 3. Auto-detect Kubernetes via service account token (mounted by default in every pod)
+# 4. Fallback to Docker Compose hostname
+if [ -n "$vaultAgentUrl" ]; then
+    VAULT_ADDR="$vaultAgentUrl"
+elif [ -n "$KUBERNETES_SERVICE_HOST" ] || [ -f "/var/run/secrets/kubernetes.io/serviceaccount/token" ]; then
+    VAULT_ADDR="http://localhost:8203"
+else
+    VAULT_ADDR="http://vault-agent-cron:8203"
+fi
 
 # Logging function
 log() {

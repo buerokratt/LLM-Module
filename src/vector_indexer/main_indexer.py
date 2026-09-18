@@ -7,9 +7,8 @@ import sys
 from pathlib import Path
 from datetime import datetime
 from typing import List, Optional, Dict, Any
-from loguru import logger
+from loki_logger import LokiLogger
 import hashlib
-
 
 # Add src to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
@@ -22,7 +21,10 @@ from vector_indexer.error_logger import ErrorLogger
 from vector_indexer.models import ProcessingStats, DocumentInfo
 from vector_indexer.diff_identifier import DiffDetector, create_diff_config, DiffError
 from vector_indexer.diff_identifier.diff_models import DiffResult
-from src.vector_indexer.dataset_download import download_and_extract_dataset
+from vector_indexer.dataset_download import download_and_extract_dataset
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="main-indexer")
 
 
 class VectorIndexer:
@@ -217,14 +219,11 @@ class VectorIndexer:
                                 f"CHUNK COUNT: Document {doc_info.document_hash[:12]}... (content: {content_hash[:12]}...) -> {chunk_count} chunks ({failed_chunks} failed)"
                             )
 
-                # Log the complete chunks_info dictionary
+                # Log summary only (avoid massive logs for large datasets)
+                total_chunks = sum(info["chunk_count"] for info in chunks_info.values())
                 logger.info(
-                    f"CHUNKS INFO SUMMARY: {len(chunks_info)} documents tracked"
+                    f"CHUNKS INFO SUMMARY: {len(chunks_info)} documents tracked, {total_chunks} total chunks"
                 )
-                for doc_hash, info in chunks_info.items():
-                    logger.info(
-                        f"   {doc_hash[:12]}... -> {info['chunk_count']} chunks"
-                    )
 
                 # Calculate final statistics
                 self.stats.end_time = datetime.now()
@@ -664,22 +663,8 @@ async def main() -> int:
     parser.add_argument("--signed-url", help="Signed URL for dataset download")
     args = parser.parse_args()
 
-    # Configure logging
-    logger.remove()  # Remove default handler
-    logger.add(
-        sys.stdout,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-        level="INFO",
-    )
-
-    # Add file logging
-    logger.add(
-        "vector_indexer.log",
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
-        level="DEBUG",
-        rotation="10 MB",
-        retention="7 days",
-    )
+    # LokiLogger handles all logging (console + Loki service)
+    # No additional configuration needed
 
     indexer = None
     try:

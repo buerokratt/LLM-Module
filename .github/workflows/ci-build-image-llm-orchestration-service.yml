@@ -3,7 +3,7 @@ name: Build and publish llm_orchestration_service
 on:
   push:
     branches:
-      - wip
+      - dev
     paths:
       - '.env.llm_orchestration_service'
 
@@ -33,7 +33,7 @@ jobs:
            echo "$GITHUB_ENV"
       - name: Docker Build
         run: | 
-           docker image build --tag $DOCKER_TAG_CUSTOM -f Dockerfile.llm_orchestration_service .
+           docker image build --tag $DOCKER_TAG_CUSTOM -f Dockerfile.llm_orchestration_service --no-cache .
 
       - name: Log in to GitHub container registry
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u $ --password-stdin

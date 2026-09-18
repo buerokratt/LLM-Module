@@ -8,11 +8,28 @@ import json
 import yaml
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
-from loguru import logger
+from src.loki_logger import LokiLogger
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="extract-guardrails-prompts")
 
 # Constants
 FULL_TRACEBACK_MSG = "Full traceback:"
 FEW_SHOT_EXAMPLES_HEADER = "\nFew-shot Examples (from optimization):"
+
+# Output-rails streaming buffer, written into every generated config.
+#
+# OUTPUT_STREAMING_CONTEXT_SIZE MUST stay below OUTPUT_STREAMING_CHUNK_SIZE.
+# NeMo's RollingBuffer drains with ``buffer = buffer[-context_size:]`` after each
+# flush; if context_size >= chunk_size the buffer never falls back below the
+# flush threshold, so every subsequent token flushes on its own and triggers a
+# full self_check_output LLM round-trip. That makes streaming latency and cost
+# scale linearly with answer length.
+#
+# Keep in sync with rails.output.streaming in src/guardrails/rails_config.yaml.
+OUTPUT_STREAMING_CHUNK_SIZE = 200
+OUTPUT_STREAMING_CONTEXT_SIZE = 50
+OUTPUT_STREAMING_STREAM_FIRST = False
 
 # Type aliases for better readability
 JsonDict = Dict[str, Any]
@@ -359,9 +376,17 @@ def _ensure_required_config_structure(base_config: Dict[str, Any]) -> None:
 
     # Set required streaming parameters (override existing values to ensure consistency)
     output_streaming["enabled"] = True
-    output_streaming["chunk_size"] = 200
-    output_streaming["context_size"] = 300
-    output_streaming["stream_first"] = False
+    output_streaming["chunk_size"] = OUTPUT_STREAMING_CHUNK_SIZE
+    output_streaming["context_size"] = OUTPUT_STREAMING_CONTEXT_SIZE
+    output_streaming["stream_first"] = OUTPUT_STREAMING_STREAM_FIRST
+
+    if OUTPUT_STREAMING_CONTEXT_SIZE >= OUTPUT_STREAMING_CHUNK_SIZE:
+        raise ValueError(
+            f"Invalid output-rails streaming constants: context_size="
+            f"{OUTPUT_STREAMING_CONTEXT_SIZE} must be < chunk_size="
+            f"{OUTPUT_STREAMING_CHUNK_SIZE}. Generating a config with this "
+            f"setting would cause one guardrail LLM call per streamed token."
+        )
 
     logger.info("✓ Ensured required rails and streaming configuration structure")
 

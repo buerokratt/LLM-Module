@@ -90,6 +90,10 @@ class LLMManager:
         """
         try:
             self._config = self._config_loader.load_config()
+        except ConfigurationError:
+            # The loader's message already identifies the environment and what
+            # the operator needs to do; re-wrapping only buries it.
+            raise
         except Exception as e:
             raise ConfigurationError(f"Failed to load LLM configuration: {e}") from e
 

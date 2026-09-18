@@ -12,15 +12,15 @@ from typing import NoReturn
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.backends import default_backend
-from loguru import logger
 
-# Configure logger to write ONLY to stderr (stdout is reserved for decrypted value)
-logger.remove()  # Remove default handler
-logger.add(
-    sys.stderr,
-    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan> - <level>{message}</level>",
-    level="INFO",
-)
+try:
+    # In cron-manager: loki_logger.py is mounted into /app/src/vector_indexer/
+    from loki_logger import LokiLogger
+except ModuleNotFoundError:
+    # In the main llm-service: import via the full src package path.
+    from src.loki_logger import LokiLogger
+
+logger = LokiLogger(service_name="vault-secrets-decryptor")
 
 
 def base64url_to_bytes(base64url_string: str) -> bytes:

@@ -212,9 +212,11 @@ All FastAPI route handlers use Pydantic models for request/response validation:
 from pydantic import BaseModel
 from fastapi import FastAPI
 
+
 class UserRequest(BaseModel):
     name: str
     age: int
+
 
 @app.post("/users")
 async def create_user(user: UserRequest):

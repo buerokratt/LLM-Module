@@ -10,7 +10,9 @@ metadata:
     component: vault-agent
 data:
   cron-agent.hcl: |
-   
+    # Vault Agent Configuration for CronManager Service
+    # This agent provides CronManager with access to encryption keys and write access to secrets
+
     vault {
       address = "http://vault:8200"
       retry {
@@ -29,7 +31,7 @@ data:
         }
       }
 
-      # Write token to shared volume for agent to use
+      # Write token to file for CronManager service to use
       sink "file" {
         config = {
           path = "{{ .Values.agent.tokenPath }}/token"
@@ -38,12 +40,12 @@ data:
       }
     }
 
-    # Caching configuration for CronManager
+    # Caching configuration
     cache {
-      default_lease_duration = "{{ .Values.agent.tokenTTL }}"
+      default_lease_duration = "{{ .Values.agent.tokenTTL }}"  # Medium TTL for CronManager
     }
 
-    # API proxy listener - CronManager connects to localhost:{{ .Values.agent.port }}
+    # API proxy listener for CronManager service
     listener "tcp" {
       address     = "0.0.0.0:{{ .Values.agent.port }}"
       tls_disable = true
@@ -52,7 +54,5 @@ data:
     # API proxy configuration
     api_proxy {
       use_auto_auth_token = true
-      enforce_consistency = "always"
-      when_inconsistent = "forward"
     }
 {{- end }}

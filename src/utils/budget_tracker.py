@@ -1,10 +1,13 @@
 """Budget tracking utility for LLM connection usage."""
 
 from typing import Optional, Dict, Any, cast, List
-from loguru import logger
+from src.loki_logger import LokiLogger
 import requests
 
 from ..llm_orchestrator_config.llm_ochestrator_constants import RAG_SEARCH_RESQL
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="budget-tracker")
 
 
 class BudgetTracker:

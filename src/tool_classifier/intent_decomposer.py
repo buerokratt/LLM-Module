@@ -6,11 +6,13 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 import dspy
-from loguru import logger
+from src.loki_logger import LokiLogger
 
 from src.utils.cost_utils import get_lm_usage_since
 from src.utils.observation_utils import safe_observation_context
 from tool_classifier.constants import MULTI_API_MAX_ENDPOINTS
+
+logger = LokiLogger(service_name="api-tool-calling")
 
 
 def _get_current_model_name() -> str:

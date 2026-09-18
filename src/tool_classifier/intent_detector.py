@@ -5,10 +5,14 @@ from typing import Any, Dict, List, Optional
 
 import dspy
 from langfuse import observe
-from loguru import logger
+from src.loki_logger import LokiLogger
 
 from src.utils.cost_utils import get_lm_usage_since
 from src.utils.observation_utils import update_observation_safe
+
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="intent-detector")
 
 
 def _get_current_model_name() -> str:

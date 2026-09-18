@@ -36,6 +36,14 @@ spec:
             mountPath: /app/scripts
           - name: vector-indexer
             mountPath: /app/src/vector_indexer
+          - name: tool-classifier
+            mountPath: /app/src/tool_classifier
+          - name: intent-data-enrichment
+            mountPath: /app/src/intent_data_enrichment
+          - name: api-tool-indexer
+            mountPath: /app/src/api_tool_indexer
+          - name: src-utils
+            mountPath: /app/src/utils
           command:
             - sh
             - -c
@@ -45,12 +53,20 @@ spec:
                 mkdir -p /app/src/vector_indexer &&
                 mkdir -p /app/scripts &&
                 mkdir -p /DSL &&
-                mkdir -p /app/src/utils
+                mkdir -p /app/src/utils &&
+                mkdir -p /app/src/tool_classifier &&
+                mkdir -p /app/src/intent_data_enrichment &&
+                mkdir -p /app/src/api_tool_indexer
                 
                 cp -r /tmp/rag/DSL/CronManager/DSL/* /DSL/ &&
                 cp -r /tmp/rag/DSL/CronManager/script/* /app/scripts/ &&
                 cp -r /tmp/rag/src/vector_indexer/* /app/src/vector_indexer/ &&
-                cp -r /tmp/rag/src/utils/decrypt_vault_secrets.py /app/src/utils/ &&
+                cp -r /tmp/rag/src/tool_classifier/* /app/src/tool_classifier/ &&
+                cp -r /tmp/rag/src/intent_data_enrichment/* /app/src/intent_data_enrichment/ &&
+                cp -r /tmp/rag/src/api_tool_indexer/* /app/src/api_tool_indexer/ &&
+                cp /tmp/rag/src/utils/decrypt_vault_secrets.py /app/src/utils/ &&
+                cp /tmp/rag/src/__init__.py /app/src/__init__.py &&
+                cp /tmp/rag/grafana-configs/loki_logger.py /app/src/vector_indexer/loki_logger.py &&
                 
                 # Set execute permissions on all shell scripts
                 chmod +x /app/scripts/*.sh &&
@@ -91,7 +107,7 @@ spec:
               value: {{ .Values.cronmanager.environment.pythonPath | quote }}
             {{- if .Values.vaultAgent.enabled }}
             # Vault Agent proxy URL (localhost sidecar)
-            - name: VAULT_AGENT_URL
+            - name: vaultAgentUrl
               value: "http://localhost:8203"
             {{- end }}
             - name: RAG_MODULE_RUUTER_PRIVATE
@@ -112,6 +128,14 @@ spec:
               mountPath: /app/scripts
             - name: vector-indexer
               mountPath: /app/src/vector_indexer
+            - name: tool-classifier
+              mountPath: /app/src/tool_classifier
+            - name: intent-data-enrichment
+              mountPath: /app/src/intent_data_enrichment
+            - name: api-tool-indexer
+              mountPath: /app/src/api_tool_indexer
+            - name: src-utils
+              mountPath: /app/src/utils
             - name: datasets
               mountPath: /app/datasets
          
@@ -122,7 +146,15 @@ spec:
           emptyDir: {}
         - name: vector-indexer
           emptyDir: {}
+        - name: tool-classifier
+          emptyDir: {}
+        - name: intent-data-enrichment
+          emptyDir: {}
+        - name: api-tool-indexer
+          emptyDir: {}
         - name: datasets
+          emptyDir: {}
+        - name: src-utils
           emptyDir: {}
         - name: cronmanager-data
           persistentVolumeClaim:

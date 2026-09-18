@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Union, cast
 
 import yaml
 from dotenv import load_dotenv
-from loguru import logger
+from src.loki_logger import LokiLogger
 
 from llm_orchestrator_config.config.schema import (
     LLMConfiguration,
@@ -26,6 +26,9 @@ from llm_orchestrator_config.exceptions import (
 
 # Constants
 DEFAULT_CONFIG_FILENAME = "llm_config.yaml"
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="config-loader")
 
 # Type alias for configuration values that can be processed
 ConfigValue = Union[str, Dict[str, Any], List[Any], int, float, bool, None]
@@ -132,6 +135,11 @@ class ConfigurationLoader:
         except yaml.YAMLError as e:
             raise ConfigurationError(f"Failed to parse YAML configuration: {e}") from e
         except Exception as e:
+            # Already a ConfigurationError with a specific, operator-facing
+            # message (e.g. "No production LLM connection configured") - keep it
+            # verbatim instead of nesting another prefix in front of it.
+            if isinstance(e, ConfigurationError):
+                raise
             raise ConfigurationError(f"Failed to load configuration: {e}") from e
 
     def _resolve_vault_secrets(self, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -196,11 +204,17 @@ class ConfigurationLoader:
         if "providers" not in config:
             return
 
-        # connection_id (vault_uuid) is required for all environments
+        # connection_id (vault_uuid) is required for all environments. A missing
+        # one means no connection row exists for this environment at all - the
+        # operator has not configured one yet, so say that rather than naming an
+        # internal field.
         if not self.connection_id:
-            raise ConfigurationError(
-                f"connection_id (vault_uuid) is required for {self.environment} environment"
+            logger.error(
+                f"No {self.environment} LLM connection configured. "
+                f"Create a {self.environment} connection so its credentials are "
+                f"stored in Vault."
             )
+            raise ConfigurationError(f"No {self.environment} LLM connection configured")
 
         try:
             providers_to_update: Dict[str, Dict[str, Any]] = {}
@@ -240,8 +254,12 @@ class ConfigurationLoader:
                             f"(vault_uuid: {self.connection_id})"
                         )
                     else:
+                        # Either nothing is stored for this provider under this
+                        # connection, or what is stored failed validation - the
+                        # resolver logs which one.
                         logger.warning(
-                            f"No secret found for {provider_name} with vault_uuid {self.connection_id}"
+                            f"No usable {provider_name} credentials for vault_uuid "
+                            f"{self.connection_id} - skipping this provider"
                         )
 
                 except Exception as e:
@@ -253,11 +271,20 @@ class ConfigurationLoader:
                     # Continue to next provider instead of failing completely
                     continue
 
-            # Check if we have any providers configured
+            # Check if we have any providers configured. Reaching here means a
+            # connection row exists but none of its provider secrets could be
+            # loaded from Vault - either the cron has not written them yet or
+            # what it wrote does not match the expected schema (see the
+            # per-provider warnings above for which, and why).
             if not providers_to_update:
+                logger.error(
+                    f"No usable LLM provider for the {self.environment} connection "
+                    f"(vault_uuid: {self.connection_id}). The connection exists but "
+                    f"none of its credentials could be loaded from Vault - see the "
+                    f"per-provider messages above."
+                )
                 raise ConfigurationError(
-                    f"No providers available for {self.environment} environment "
-                    f"with vault_uuid {self.connection_id}"
+                    f"No usable LLM provider for the {self.environment} connection"
                 )
 
             # Update the configuration with only available providers

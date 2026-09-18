@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import dspy
 import pytest
 
-from src.tool_classifier.follow_up_detector import (
+from tool_classifier.follow_up_detector import (
     FollowUpDetectorModule,
     _validate_updated_params,
 )

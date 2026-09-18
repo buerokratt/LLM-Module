@@ -6,7 +6,10 @@ Combines scope detection accuracy with answer quality using DSPy's SemanticF1.
 from typing import Any, Dict, List
 import dspy
 from dspy.evaluate import SemanticF1
-from loguru import logger
+from src.loki_logger import LokiLogger
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="generator-metrics")
 
 
 class GeneratorMetric:

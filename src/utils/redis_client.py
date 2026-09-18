@@ -4,7 +4,9 @@ import os
 from typing import Any, Optional
 
 import redis.asyncio as aioredis
-from loguru import logger
+from src.loki_logger import LokiLogger
+
+logger = LokiLogger(service_name="redis_client")
 
 
 _redis_client: Optional[aioredis.Redis] = None  # type: ignore[type-arg]
@@ -69,7 +71,7 @@ async def init_redis_client() -> aioredis.Redis:
     # Verify connectivity
     await _redis_client.ping()
     logger.info(
-        "Redis session store connected (db={})", os.getenv("REDIS_SESSION_DB", "1")
+        f"Redis session store connected (db={os.getenv('REDIS_SESSION_DB', '1')})"
     )
     return _redis_client
 

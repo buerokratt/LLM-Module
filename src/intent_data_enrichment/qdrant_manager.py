@@ -2,7 +2,7 @@
 
 import uuid
 from typing import Optional, List
-from loguru import logger
+from src.loki_logger import LokiLogger
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -19,6 +19,9 @@ from qdrant_client.models import (
 
 from intent_data_enrichment.constants import EnrichmentConstants
 from intent_data_enrichment.models import EnrichedService
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="intent-qdrant-manager")
 
 # Error messages
 _CLIENT_NOT_INITIALIZED = "Qdrant client not initialized"

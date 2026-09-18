@@ -6,8 +6,10 @@ existing contextual embeddings created by the vector indexer.
 """
 
 from typing import List, Dict, Any, Optional, Protocol, TYPE_CHECKING
-from loguru import logger
+from src.loki_logger import LokiLogger
+
 import asyncio
+
 from contextual_retrieval.contextual_retrieval_api_client import get_http_client_manager
 from contextual_retrieval.error_handler import SecureErrorHandler
 from contextual_retrieval.constants import (
@@ -16,6 +18,9 @@ from contextual_retrieval.constants import (
     LoggingConstants,
 )
 from contextual_retrieval.config import ConfigLoader, ContextualRetrievalConfig
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="qdrant-search")
 
 if TYPE_CHECKING:
     from contextual_retrieval.contextual_retrieval_api_client import HTTPClientManager
@@ -151,7 +156,7 @@ class QdrantContextualSearch:
                 f"Semantic search found {len(all_results)} chunks across {len(collections)} collections"
             )
 
-            # Detailed results at DEBUG level (loguru filters based on log level config)
+            # Detailed results at DEBUG level (filters based on log level config)
             logger.debug("=== SEMANTIC SEARCH RESULTS BREAKDOWN ===")
             for i, chunk in enumerate(all_results[:10]):  # Show top 10 results
                 content_preview = (

@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Union, cast, Iterator, AsyncIterator
 import asyncio
 import dspy
-from loguru import logger
+from src.loki_logger import LokiLogger
 from langfuse import observe
 from src.utils.observation_utils import update_observation_safe
 
@@ -19,6 +19,9 @@ from langchain_core.language_models.llms import LLM
 from langchain_core.outputs import GenerationChunk
 from src.guardrails.guardrails_llm_configs import TEMPERATURE, MAX_TOKENS, MODEL_NAME
 from src.utils.cost_utils import get_lm_usage_since
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="dspy-nemo-adapter")
 
 
 class DSPyNeMoLLM(LLM):

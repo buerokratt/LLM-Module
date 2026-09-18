@@ -2,9 +2,11 @@
 
 import asyncio
 import json
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from loguru import logger
+from src.loki_logger import LokiLogger
+from src.utils.error_utils import generate_error_id
 
 from models.session_models import EndpointSessionState
 from utils.api_tool_session_store import APIToolSessionStore
@@ -20,6 +22,8 @@ from tool_classifier.continuation_utils import detect_continuation_response
 from tool_classifier.enums import AgenticLoopStatus
 from tool_classifier.models import AgenticLoopResult
 from tool_classifier.param_extractor import ParamExtractionModule, strip_format_hints
+
+logger = LokiLogger(service_name="api-tool-calling")
 
 _CONTINUATION_QUESTIONS: dict[str, str] = {
     "en": CONTINUATION_QUESTION,
@@ -154,8 +158,7 @@ class MultiEndpointAgenticLoop:
         """
         if not endpoint_states:
             logger.debug(
-                "MultiEndpointAgenticLoop: no endpoints provided for chat_id={} — returning COMPLETED",
-                chat_id,
+                f"MultiEndpointAgenticLoop: no endpoints provided for chat_id={chat_id} — returning COMPLETED"
             )
             return AgenticLoopResult(
                 status=AgenticLoopStatus.COMPLETED,
@@ -168,22 +171,25 @@ class MultiEndpointAgenticLoop:
         max_turns, continuation_turn = self._compute_turn_limits(num_endpoints)
         updated_turn_count = turn_count + 1
 
+        logger.info(
+            f"MultiEndpointAgenticLoop: multi loop turn started | event_type=multi_loop_turn_started"
+            f" chat_id={chat_id} turn_count={turn_count} endpoint_count={num_endpoints}"
+            f" incomplete_count={sum(1 for s in endpoint_states if not s.completed)}"
+        )
+
         # Step 0 — Continuation decision
         if awaiting_continuation:
             wants_to_continue = detect_continuation_response(user_message)
             if wants_to_continue:
-                logger.debug(
-                    "MultiEndpointAgenticLoop: user chose to continue on turn {} for chat_id={}",
-                    turn_count,
-                    chat_id,
+                logger.info(
+                    f"MultiEndpointAgenticLoop: continuation user accepted | event_type=continuation_user_accepted"
+                    f" chat_id={chat_id} turn_count={turn_count}"
                 )
                 awaiting_continuation = False
             else:
                 logger.info(
-                    "MultiEndpointAgenticLoop: user chose to exit on turn {} for chat_id={}, "
-                    "falling back to RAG",
-                    turn_count,
-                    chat_id,
+                    f"MultiEndpointAgenticLoop: continuation user declined | event_type=continuation_user_declined"
+                    f" chat_id={chat_id} turn_count={turn_count} status=max_turns_reached"
                 )
                 return AgenticLoopResult(
                     status=AgenticLoopStatus.MAX_TURNS_REACHED,
@@ -195,9 +201,8 @@ class MultiEndpointAgenticLoop:
         # Step 1 — Turn limit guard (no session save — caller deletes)
         if turn_count >= max_turns:
             logger.warning(
-                "MultiEndpointAgenticLoop: max_turns={} reached for chat_id={}, abandoning",
-                max_turns,
-                chat_id,
+                f"MultiEndpointAgenticLoop: turn limit reached | event_type=turn_limit_reached"
+                f" chat_id={chat_id} turn_count={turn_count} max_turns={max_turns}"
             )
             return AgenticLoopResult(
                 status=AgenticLoopStatus.MAX_TURNS_REACHED,
@@ -211,6 +216,13 @@ class MultiEndpointAgenticLoop:
             endpoint_states
         )
 
+        logger.debug(
+            f"MultiEndpointAgenticLoop: schema merged | event_type=schema_merged"
+            f" chat_id={chat_id} turn_count={turn_count}"
+            f" total_param_count={sum(len(s.endpoint.get('params', [])) for s in endpoint_states if not s.completed)}"
+            f" deduplicated_count={len(merged_schema)} namespaced_count={len(namespace_map)}"
+        )
+
         # Step 3 — Namespaced already_collected for the LLM extractor
         merged_already_collected = self._build_namespaced_already_collected(
             endpoint_states, namespace_map
@@ -220,6 +232,7 @@ class MultiEndpointAgenticLoop:
         intent_groups = self._build_intent_groups(
             endpoint_states, merged_already_collected, namespace_map
         )
+        _t0 = time.time()
         try:
             extraction = await asyncio.to_thread(
                 self._param_extractor,
@@ -231,12 +244,18 @@ class MultiEndpointAgenticLoop:
                 turn_count,
                 intent_groups,
             )
+            _duration_ms = round((time.time() - _t0) * 1000, 1)
+            logger.debug(
+                f"MultiEndpointAgenticLoop: param extraction complete | event_type=param_extraction_complete"
+                f" chat_id={chat_id} turn_count={turn_count}"
+                f" extracted_count={len(extraction['extracted_params'])} duration_ms={_duration_ms}"
+            )
         except Exception as exc:
+            _duration_ms = round((time.time() - _t0) * 1000, 1)
             logger.error(
-                "MultiEndpointAgenticLoop: param extraction failed on turn {} for chat_id={}: {}",
-                turn_count,
-                chat_id,
-                exc,
+                f"MultiEndpointAgenticLoop: param extraction failed | event_type=param_extraction_failed"
+                f" chat_id={chat_id} turn_count={turn_count}"
+                f" error_id={generate_error_id()} duration_ms={_duration_ms} exc={exc}"
             )
             await self._save_session(
                 chat_id,
@@ -282,10 +301,10 @@ class MultiEndpointAgenticLoop:
         merged_after = self._merged_collected(endpoint_states)
 
         if all_done:
-            logger.debug(
-                "MultiEndpointAgenticLoop: all endpoints completed on turn {} for chat_id={}",
-                turn_count,
-                chat_id,
+            logger.info(
+                f"MultiEndpointAgenticLoop: all endpoints completed | event_type=multi_loop_all_endpoints_completed"
+                f" chat_id={chat_id} turn_count={turn_count} endpoint_count={num_endpoints}"
+                f" status=completed duration_ms={_duration_ms}"
             )
             await self._save_session(
                 chat_id,
@@ -302,18 +321,17 @@ class MultiEndpointAgenticLoop:
 
         # Step 7 — Still missing params
         logger.debug(
-            "MultiEndpointAgenticLoop: turn {} for chat_id={} — still missing: {}",
-            turn_count,
-            chat_id,
-            extraction["missing_required"],
+            f"MultiEndpointAgenticLoop: loop needs input | event_type=loop_needs_input"
+            f" chat_id={chat_id} turn_count={turn_count}"
+            f" missing_params={extraction['missing_required']} status=needs_input"
         )
 
         # At exactly the continuation threshold, ask whether to keep going.
         if updated_turn_count == continuation_turn:
             logger.info(
-                "MultiEndpointAgenticLoop: continuation threshold reached on turn {} for chat_id={}",
-                turn_count,
-                chat_id,
+                f"MultiEndpointAgenticLoop: continuation threshold reached | event_type=continuation_threshold_reached"
+                f" chat_id={chat_id} turn_count={turn_count} continuation_turn={continuation_turn}"
+                f" missing_count={len(extraction['missing_required'])}"
             )
             effective_lang = continuation_language or session_language
             continuation_q = _CONTINUATION_QUESTIONS.get(
@@ -379,8 +397,7 @@ class MultiEndpointAgenticLoop:
         """
         if not endpoint_states:
             logger.debug(
-                "MultiEndpointAgenticLoop: no endpoints provided for chat_id={} — returning COMPLETED",
-                chat_id,
+                f"MultiEndpointAgenticLoop: no endpoints provided for chat_id={chat_id} — returning COMPLETED"
             )
             return (
                 AgenticLoopResult(
@@ -396,22 +413,25 @@ class MultiEndpointAgenticLoop:
         max_turns, continuation_turn = self._compute_turn_limits(num_endpoints)
         updated_turn_count = turn_count + 1
 
+        logger.info(
+            f"MultiEndpointAgenticLoop: multi loop turn started | event_type=multi_loop_turn_started"
+            f" chat_id={chat_id} turn_count={turn_count} endpoint_count={num_endpoints}"
+            f" incomplete_count={sum(1 for s in endpoint_states if not s.completed)}"
+        )
+
         # Step 0 — Continuation decision
         if awaiting_continuation:
             wants_to_continue = detect_continuation_response(user_message)
             if wants_to_continue:
-                logger.debug(
-                    "MultiEndpointAgenticLoop: user chose to continue on turn {} for chat_id={}",
-                    turn_count,
-                    chat_id,
+                logger.info(
+                    f"MultiEndpointAgenticLoop: continuation user accepted | event_type=continuation_user_accepted"
+                    f" chat_id={chat_id} turn_count={turn_count}"
                 )
                 awaiting_continuation = False
             else:
                 logger.info(
-                    "MultiEndpointAgenticLoop: user chose to exit on turn {} for chat_id={}, "
-                    "falling back to RAG",
-                    turn_count,
-                    chat_id,
+                    f"MultiEndpointAgenticLoop: continuation user declined | event_type=continuation_user_declined"
+                    f" chat_id={chat_id} turn_count={turn_count} status=max_turns_reached"
                 )
                 return (
                     AgenticLoopResult(
@@ -426,9 +446,8 @@ class MultiEndpointAgenticLoop:
         # Step 1 — Turn limit guard
         if turn_count >= max_turns:
             logger.warning(
-                "MultiEndpointAgenticLoop: max_turns={} reached for chat_id={}, abandoning",
-                max_turns,
-                chat_id,
+                f"MultiEndpointAgenticLoop: turn limit reached | event_type=turn_limit_reached"
+                f" chat_id={chat_id} turn_count={turn_count} max_turns={max_turns}"
             )
             return (
                 AgenticLoopResult(
@@ -454,6 +473,7 @@ class MultiEndpointAgenticLoop:
         intent_groups = self._build_intent_groups(
             endpoint_states, merged_already_collected, namespace_map
         )
+        _t0 = time.time()
         try:
             question_tokens, extraction = await self._param_extractor.stream_forward(
                 user_message=user_message,
@@ -464,12 +484,18 @@ class MultiEndpointAgenticLoop:
                 turn_count=turn_count,
                 intent_groups=intent_groups,
             )
+            _duration_ms = round((time.time() - _t0) * 1000, 1)
+            logger.debug(
+                f"MultiEndpointAgenticLoop: param extraction complete | event_type=param_extraction_complete"
+                f" chat_id={chat_id} turn_count={turn_count}"
+                f" extracted_count={len(extraction['extracted_params'])} duration_ms={_duration_ms}"
+            )
         except Exception as exc:
+            _duration_ms = round((time.time() - _t0) * 1000, 1)
             logger.error(
-                "MultiEndpointAgenticLoop: stream param extraction failed on turn {} for chat_id={}: {}",
-                turn_count,
-                chat_id,
-                exc,
+                f"MultiEndpointAgenticLoop: param extraction failed | event_type=param_extraction_failed"
+                f" chat_id={chat_id} turn_count={turn_count}"
+                f" error_id={generate_error_id()} duration_ms={_duration_ms} exc={exc}"
             )
             await self._save_session(
                 chat_id,
@@ -517,10 +543,10 @@ class MultiEndpointAgenticLoop:
         merged_after = self._merged_collected(endpoint_states)
 
         if all_done:
-            logger.debug(
-                "MultiEndpointAgenticLoop: all endpoints completed on turn {} for chat_id={}",
-                turn_count,
-                chat_id,
+            logger.info(
+                f"MultiEndpointAgenticLoop: all endpoints completed | event_type=multi_loop_all_endpoints_completed"
+                f" chat_id={chat_id} turn_count={turn_count} endpoint_count={num_endpoints}"
+                f" status=completed duration_ms={_duration_ms}"
             )
             await self._save_session(
                 chat_id,
@@ -540,17 +566,16 @@ class MultiEndpointAgenticLoop:
 
         # Step 7 — Still missing params
         logger.debug(
-            "MultiEndpointAgenticLoop: turn {} for chat_id={} — still missing: {}",
-            turn_count,
-            chat_id,
-            extraction["missing_required"],
+            f"MultiEndpointAgenticLoop: loop needs input | event_type=loop_needs_input"
+            f" chat_id={chat_id} turn_count={turn_count}"
+            f" missing_params={extraction['missing_required']} status=needs_input"
         )
 
         if updated_turn_count == continuation_turn:
             logger.info(
-                "MultiEndpointAgenticLoop: continuation threshold reached on turn {} for chat_id={}",
-                turn_count,
-                chat_id,
+                f"MultiEndpointAgenticLoop: continuation threshold reached | event_type=continuation_threshold_reached"
+                f" chat_id={chat_id} turn_count={turn_count} continuation_turn={continuation_turn}"
+                f" missing_count={len(extraction['missing_required'])}"
             )
             effective_lang = continuation_language or session_language
             continuation_q = _CONTINUATION_QUESTIONS.get(
@@ -664,9 +689,7 @@ class MultiEndpointAgenticLoop:
             return question
         except Exception as exc:
             logger.warning(
-                "MultiEndpointAgenticLoop: failed to regenerate clarifying question "
-                "after enforcement: {}",
-                exc,
+                f"MultiEndpointAgenticLoop: failed to regenerate clarifying question after enforcement | exc={exc}"
             )
             return ""
 
@@ -878,11 +901,8 @@ class MultiEndpointAgenticLoop:
                     # Warn on type conflicts
                     if param_type != seen_types[name]:
                         logger.warning(
-                            "MultiEndpointAgenticLoop: param '{}' has conflicting types "
-                            "across endpoints ({} vs {}). Using first occurrence's type.",
-                            name,
-                            seen_types[name],
-                            param_type,
+                            f"MultiEndpointAgenticLoop: param '{name}' has conflicting types "
+                            f"across endpoints ({seen_types[name]} vs {param_type}). Using first occurrence's type."
                         )
 
                     # Promote to required if required in any owner
@@ -1094,12 +1114,10 @@ class MultiEndpointAgenticLoop:
                     if value == existing:
                         continue
                     logger.warning(
-                        "MultiEndpointAgenticLoop: overwriting '{}' on completed endpoint '{}' "
-                        "(old={!r}, new={!r})",
-                        original_name,
-                        state.endpoint.get("name", "<unnamed>"),
-                        existing,
-                        value,
+                        f"MultiEndpointAgenticLoop: overwriting completed endpoint param"
+                        f" | event_type=endpoint_param_overwrite"
+                        f" endpoint_name={state.endpoint.get('name', '<unnamed>')}"
+                        f" param_name={original_name} old_value={repr(existing)} new_value={repr(value)}"
                     )
                 state.collected_params[original_name] = value
             else:
@@ -1112,12 +1130,10 @@ class MultiEndpointAgenticLoop:
                         if value == existing:
                             continue
                         logger.warning(
-                            "MultiEndpointAgenticLoop: overwriting '{}' on completed endpoint '{}' "
-                            "(old={!r}, new={!r})",
-                            param_name,
-                            state.endpoint.get("name", "<unnamed>"),
-                            existing,
-                            value,
+                            f"MultiEndpointAgenticLoop: overwriting completed endpoint param"
+                            f" | event_type=endpoint_param_overwrite"
+                            f" endpoint_name={state.endpoint.get('name', '<unnamed>')}"
+                            f" param_name={param_name} old_value={repr(existing)} new_value={repr(value)}"
                         )
                     state.collected_params[param_name] = value
 
@@ -1134,8 +1150,8 @@ class MultiEndpointAgenticLoop:
             if required_names.issubset(state.collected_params.keys()):
                 state.completed = True
                 logger.debug(
-                    "MultiEndpointAgenticLoop: endpoint '{}' completed",
-                    state.endpoint.get("name", "<unnamed>"),
+                    f"MultiEndpointAgenticLoop: endpoint completed | event_type=endpoint_completed"
+                    f" endpoint_name={state.endpoint.get('name', '<unnamed>')}"
                 )
 
     def _enforce_sequential_parallel_completion(
@@ -1220,11 +1236,10 @@ class MultiEndpointAgenticLoop:
                 and later_values_normalized.isdisjoint(first_values_normalized)
             ):
                 logger.debug(
-                    "MultiEndpointAgenticLoop: endpoint '{}' completed with values "
-                    "distinct from '{}' — keeping both (user provided separate params "
-                    "for each intent)",
-                    state.endpoint.get("name", "<unnamed>"),
-                    first_state.endpoint.get("name", "<unnamed>"),
+                    f"MultiEndpointAgenticLoop: parallel endpoints completed with distinct values — keeping both"
+                    f" | event_type=enforcement_parallel_completion"
+                    f" endpoint_name={state.endpoint.get('name', '<unnamed>')}"
+                    f" first_endpoint_name={first_state.endpoint.get('name', '<unnamed>')}"
                 )
                 continue
 
@@ -1232,9 +1247,9 @@ class MultiEndpointAgenticLoop:
             # to multiple endpoints. Clear this endpoint so the loop re-asks.
             if later_values_normalized == first_values_normalized:
                 logger.debug(
-                    "MultiEndpointAgenticLoop: clearing params from endpoint '{}' — "
-                    "multiple endpoints completed simultaneously with identical values",
-                    state.endpoint.get("name", "<unnamed>"),
+                    f"MultiEndpointAgenticLoop: clearing duplicate params from endpoint"
+                    f" | event_type=enforcement_sequential_conflict"
+                    f" endpoint_name={state.endpoint.get('name', '<unnamed>')}"
                 )
                 for param in params_schema:
                     if isinstance(param, dict) and param.get("required", False):
@@ -1321,9 +1336,9 @@ class MultiEndpointAgenticLoop:
                 continue
             if later_values == first_values:
                 logger.debug(
-                    "MultiEndpointAgenticLoop: clearing duplicate conflicting params "
-                    "from endpoint '{}' — user gave a single value, not separate ones",
-                    state.endpoint.get("name", "<unnamed>"),
+                    f"MultiEndpointAgenticLoop: clearing duplicate conflicting params from endpoint"
+                    f" | event_type=enforcement_sequential_conflict"
+                    f" endpoint_name={state.endpoint.get('name', '<unnamed>')}"
                 )
                 for name in shared_names:
                     state.collected_params.pop(name, None)
@@ -1389,8 +1404,7 @@ class MultiEndpointAgenticLoop:
         try:
             if self._session_store is None:
                 logger.debug(
-                    "MultiEndpointAgenticLoop: session store unavailable — skipping save for chat_id={}",
-                    chat_id,
+                    f"MultiEndpointAgenticLoop: session store unavailable — skipping save for chat_id={chat_id}"
                 )
                 return
             await self._session_store.update(
@@ -1401,7 +1415,6 @@ class MultiEndpointAgenticLoop:
             )
         except Exception as exc:
             logger.error(
-                "MultiEndpointAgenticLoop: failed to save session for chat_id={}: {}",
-                chat_id,
-                exc,
+                f"MultiEndpointAgenticLoop: failed to save session | event_type=session_save_failed"
+                f" chat_id={chat_id} turn_count={turn_count} error_id={generate_error_id()} exc={exc}"
             )

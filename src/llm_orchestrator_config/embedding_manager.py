@@ -6,12 +6,14 @@ from typing import Any, Dict, List, Optional
 
 import dspy
 import numpy as np
-from loguru import logger
+from src.loki_logger import LokiLogger
 from pydantic import BaseModel
-
 from .vault.vault_client import VaultAgentClient
 from .config.loader import ConfigurationLoader
 from .exceptions import ConfigurationError
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="embedding-manager")
 
 
 class EmbeddingFailure(BaseModel):

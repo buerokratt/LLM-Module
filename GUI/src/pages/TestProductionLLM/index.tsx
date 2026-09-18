@@ -374,7 +374,7 @@ const TestProductionLLM: FC = () => {
               </div>
             ))}
             
-            {isLoading && (
+            {isLoading && (messages.length === 0 || messages[messages.length - 1].isUser) && (
               <div className="test-production-llm__message test-production-llm__message--bot">
                 <div className="test-production-llm__message-content">
                   <div className="test-production-llm__typing">

@@ -1,10 +1,13 @@
 """OOD workflow executor - Layer 4: Out-of-domain fallback."""
 
 from typing import Any, AsyncIterator, Dict, Optional
-from loguru import logger
+from src.loki_logger import LokiLogger
 
 from models.request_models import OrchestrationRequest, OrchestrationResponse
 from tool_classifier.base_workflow import BaseWorkflow
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="ood-workflow")
 
 
 class OODWorkflowExecutor(BaseWorkflow):
@@ -22,13 +25,6 @@ class OODWorkflowExecutor(BaseWorkflow):
     - "Tell me a joke" (not government service)
     - Questions with no relevant knowledge
 
-    Implementation Status: SKELETON
-    Returns None (will implement to return OOD message)
-
-    TODO - Implementation (Simple):
-    - Return localized OUT_OF_SCOPE_MESSAGE
-    - Set questionOutOfLLMScope flag to True
-    - For streaming: chunk message and stream for UX consistency
     """
 
     def __init__(self) -> None:
@@ -80,7 +76,7 @@ class OODWorkflowExecutor(BaseWorkflow):
             f"(not implemented - returning None for now)"
         )
 
-        # TODO: Implement OOD response logic here
+        # Implement OOD response logic here
         # For now, return None (will be implemented as simple message return)
         return None
 
@@ -129,6 +125,6 @@ class OODWorkflowExecutor(BaseWorkflow):
             f"(not implemented - returning None for now)"
         )
 
-        # TODO: Implement OOD streaming logic here
+        # Implement OOD streaming logic here
         # For now, return None (will be implemented as simple message streaming)
         return None

@@ -60,7 +60,7 @@ call_orchestrate_endpoint:
   args:
     url: "[#RAG_SEARCH_LLM_ORCHESTRATOR]/test"
     body:
-      connectionId: ${connectionId}
+      connectionId: ${connection_result.response.body[0].vaultUuid}
       message: ${message}
       environment: "testing"
     headers:

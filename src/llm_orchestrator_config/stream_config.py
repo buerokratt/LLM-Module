@@ -5,8 +5,13 @@ class StreamConfig:
     """Hardcoded configuration for streaming limits and timeouts."""
 
     # Timeout Configuration
-    MAX_STREAM_DURATION_SECONDS: int = 300  # 5 minutes
-    IDLE_TIMEOUT_SECONDS: int = 60  # 1 minute idle timeout
+    MAX_STREAM_DURATION_SECONDS: int = 300  # 5 minutes, total wall clock
+    # Measured between chunks, not cumulatively: a long answer that keeps
+    # producing tokens is never cut off, however long it takes in total.
+    IDLE_TIMEOUT_SECONDS: int = 60  # 1 minute with no output at all
+    # How often to emit an SSE comment frame while the stream is quiet, so
+    # intermediate proxies see traffic and hold the connection open.
+    HEARTBEAT_INTERVAL_SECONDS: int = 15
 
     # Size Limits
     MAX_MESSAGE_LENGTH: int = 10000  # Maximum characters in message

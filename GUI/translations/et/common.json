@@ -172,6 +172,7 @@
       "aws": "AWS Bedrock"
     },
     "models": {
+      "gpt4.1": "GPT-4.1",
       "gpt4Mini": "GPT-4 Mini",
       "gpt4o": "GPT-4o",
       "claude35Sonnet": "Anthropic Claude 3.5 Sonnet",

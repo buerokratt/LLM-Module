@@ -3,11 +3,13 @@
 from typing import Any, Optional
 
 from fastapi import HTTPException, Request, status
-from loguru import logger
+from src.loki_logger import LokiLogger
 from redis import WatchError
 
 from models.session_models import APIToolSession
 from src.utils.redis_client import get_redis_client
+
+logger = LokiLogger(service_name="api-tool-session-store")
 
 _SESSION_KEY_PREFIX = "session:"
 _SESSION_TTL_SECONDS = 1800  # 30 minutes, sliding
@@ -36,9 +38,7 @@ class APIToolSessionStore:
         """
         client = get_redis_client()
         if client is None:
-            logger.warning(
-                "[SessionStore] Redis unavailable - get({}) skipped", chat_id
-            )
+            logger.warning(f"[SessionStore] Redis unavailable - get({chat_id}) skipped")
             return None
 
         try:
@@ -47,7 +47,7 @@ class APIToolSessionStore:
                 return None
             return APIToolSession.model_validate_json(raw)
         except Exception as exc:
-            logger.error("[SessionStore] get({}) failed: {}", chat_id, exc)
+            logger.error(f"[SessionStore] get({chat_id}) failed: {exc}")
             return None
 
     async def save(self, session: APIToolSession) -> None:
@@ -59,7 +59,7 @@ class APIToolSessionStore:
         client = get_redis_client()
         if client is None:
             logger.warning(
-                "[SessionStore] Redis unavailable - save({}) skipped", session.chat_id
+                f"[SessionStore] Redis unavailable - save({session.chat_id}) skipped"
             )
             return
 
@@ -69,9 +69,9 @@ class APIToolSessionStore:
                 session.model_dump_json(),
                 ex=_SESSION_TTL_SECONDS,
             )
-            logger.debug("[SessionStore] Session saved for chat_id={}", session.chat_id)
+            logger.debug(f"[SessionStore] Session saved for chat_id={session.chat_id}")
         except Exception as exc:
-            logger.error("[SessionStore] save({}) failed: {}", session.chat_id, exc)
+            logger.error(f"[SessionStore] save({session.chat_id}) failed: {exc}")
 
     async def update(self, chat_id: str, **fields: Any) -> Optional[APIToolSession]:
         """Atomically update a session using optimistic locking (WATCH/MULTI/EXEC).
@@ -97,7 +97,7 @@ class APIToolSessionStore:
         client = get_redis_client()
         if client is None:
             logger.warning(
-                "[SessionStore] Redis unavailable - update({}) skipped", chat_id
+                f"[SessionStore] Redis unavailable - update({chat_id}) skipped"
             )
             return None
 
@@ -112,8 +112,7 @@ class APIToolSessionStore:
                     if raw is None:
                         await pipe.unwatch()
                         logger.warning(
-                            "[SessionStore] update({}) - session not found, skipping",
-                            chat_id,
+                            f"[SessionStore] update({chat_id}) - session not found, skipping"
                         )
                         return None
 
@@ -125,27 +124,22 @@ class APIToolSessionStore:
                     await pipe.execute()
 
                     logger.debug(
-                        "[SessionStore] Session updated for chat_id={}", chat_id
+                        f"[SessionStore] Session updated for chat_id={chat_id}"
                     )
                     return updated
 
             except WatchError:
                 logger.debug(
-                    "[SessionStore] update({}) - concurrent modification detected, "
-                    "retrying (attempt {}/{})",
-                    chat_id,
-                    attempt + 1,
-                    _UPDATE_MAX_RETRIES,
+                    f"[SessionStore] update({chat_id}) - concurrent modification detected, "
+                    f"retrying (attempt {attempt + 1}/{_UPDATE_MAX_RETRIES})"
                 )
                 continue
             except Exception as exc:
-                logger.error("[SessionStore] update({}) failed: {}", chat_id, exc)
+                logger.error(f"[SessionStore] update({chat_id}) failed: {exc}")
                 return None
 
         logger.error(
-            "[SessionStore] update({}) - exhausted {} retries due to concurrent writes",
-            chat_id,
-            _UPDATE_MAX_RETRIES,
+            f"[SessionStore] update({chat_id}) - exhausted {_UPDATE_MAX_RETRIES} retries due to concurrent writes"
         )
         return None
 
@@ -158,15 +152,15 @@ class APIToolSessionStore:
         client = get_redis_client()
         if client is None:
             logger.warning(
-                "[SessionStore] Redis unavailable - delete({}) skipped", chat_id
+                f"[SessionStore] Redis unavailable - delete({chat_id}) skipped"
             )
             return
 
         try:
             await client.delete(_key(chat_id))
-            logger.debug("[SessionStore] Session deleted for chat_id={}", chat_id)
+            logger.debug(f"[SessionStore] Session deleted for chat_id={chat_id}")
         except Exception as exc:
-            logger.error("[SessionStore] delete({}) failed: {}", chat_id, exc)
+            logger.error(f"[SessionStore] delete({chat_id}) failed: {exc}")
 
     async def exists(self, chat_id: str) -> bool:
         """Check whether a session exists for the given chat_id.
@@ -181,7 +175,7 @@ class APIToolSessionStore:
         try:
             return bool(await client.exists(_key(chat_id)))
         except Exception as exc:
-            logger.error("[SessionStore] exists({}) failed: {}", chat_id, exc)
+            logger.error(f"[SessionStore] exists({chat_id}) failed: {exc}")
             return False
 
 
@@ -197,8 +191,7 @@ def require_session_store(request: Request) -> APIToolSessionStore:
     )
     if store is None:
         logger.error(
-            "[SessionStore] Session store unavailable — returning 503 for {}",
-            request.url.path,
+            f"[SessionStore] Session store unavailable — returning 503 for {request.url.path}"
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

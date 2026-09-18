@@ -12,13 +12,14 @@ from src.utils.observation_utils import (
     safe_observation_context,
     update_observation_safe,
 )
-from loguru import logger
-
+from src.loki_logger import LokiLogger
 from llm_orchestrator_config.llm_ochestrator_constants import get_localized_message
 from src.utils.cost_utils import get_lm_usage_since
 
+logger = LokiLogger(service_name="api-tool-calling")
+
 _MAX_ITEMS: int = 500
-_MAX_RESPONSE_BYTES: int = 50_000
+_MAX_RESPONSE_BYTES: int = 150_000
 
 
 def _get_current_model_name() -> str:
@@ -54,7 +55,7 @@ class APIResponseFormatterSignature(dspy.Signature):
       message that no results were found for the query.
     - If api_response contains an error field or error status, explain the issue to the user
       in a friendly, non-technical way.
-    - If the data contains more than 20 items, summarize the key highlights rather than
+    - If the data contains more than 50 items, summarize the key highlights rather than
       listing every item. Always mention the total count when summarizing.
     - Output must be clean text — no markdown headers (##), no code blocks (```), no raw
       JSON. The answer must be ready for direct display to the user.
@@ -374,15 +375,17 @@ class APIResponseFormatterModule(dspy.Module):
 
                 stream_started = False
                 token_count = 0
-                assembled_answer = ""
+                accumulated: list[str] = []
+                final_prediction: dspy.Prediction | None = None
                 async for chunk in output_stream:
                     if isinstance(chunk, dspy.streaming.StreamResponse):
                         if chunk.signature_field_name == "formatted_answer":
                             stream_started = True
                             token_count += 1
-                            assembled_answer += chunk.chunk
+                            accumulated.append(chunk.chunk)
                             yield chunk.chunk
                     elif isinstance(chunk, dspy.Prediction):
+                        final_prediction = chunk
                         # dspy.streamify did not stream individual tokens — yield the
                         # full answer from the final Prediction as a single frame.
                         if not stream_started:
@@ -393,13 +396,43 @@ class APIResponseFormatterModule(dspy.Module):
                                     "no StreamResponse tokens — yielding full Prediction answer"
                                 )
                                 stream_started = True
-                                assembled_answer = answer
+                                accumulated.append(answer)
                                 yield answer
+
+                assembled_answer = "".join(accumulated)
 
                 if stream_started and token_count > 0:
                     logger.debug(
                         f"APIResponseFormatterModule.stream_forward: streamed {token_count} tokens"
                     )
+                    # DSPy streaming can drop the last few tokens before EOS.
+                    # The final dspy.Prediction holds the authoritative complete answer.
+                    # Yield any tail that wasn't delivered as StreamResponse chunks.
+                    if final_prediction is not None:
+                        full_answer = getattr(
+                            final_prediction, "formatted_answer", None
+                        )
+                        if full_answer:
+                            streamed_text = assembled_answer
+                            if full_answer.startswith(streamed_text) and len(
+                                full_answer
+                            ) > len(streamed_text):
+                                tail = full_answer[len(streamed_text) :]
+                                if tail.strip():
+                                    logger.debug(
+                                        f"APIResponseFormatterModule.stream_forward: "
+                                        f"yielding {len(tail)} missing tail chars from Prediction"
+                                    )
+                                    assembled_answer += tail
+                                    yield tail
+                            elif streamed_text and not full_answer.startswith(
+                                streamed_text
+                            ):
+                                logger.warning(
+                                    "APIResponseFormatterModule.stream_forward: "
+                                    "streamed output is not a prefix of final Prediction; "
+                                    "skipping tail reconciliation"
+                                )
 
                 if not stream_started:
                     # Last-resort fallback: blocking forward() — covers cases where
@@ -531,9 +564,14 @@ class APIResponseFormatterModule(dspy.Module):
 
         encoded = api_response_str.encode("utf-8")
         if len(encoded) > _MAX_RESPONSE_BYTES:
-            truncated_str = encoded[:_MAX_RESPONSE_BYTES].decode(
+            suffix = "\n[NOTE: Response truncated due to size limit]"
+            suffix_bytes = len(suffix.encode("utf-8"))
+            truncated_str = encoded[: _MAX_RESPONSE_BYTES - suffix_bytes].decode(
                 "utf-8", errors="ignore"
             )
-            return truncated_str + "\n[NOTE: Response truncated due to size limit]"
+            logger.warning(
+                f"API response exceeded byte limit: {len(encoded)} bytes — truncating to {len(truncated_str.encode('utf-8'))} bytes"
+            )
+            return truncated_str + suffix
 
         return api_response_str

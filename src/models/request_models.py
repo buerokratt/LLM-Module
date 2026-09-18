@@ -6,7 +6,10 @@ import json
 
 from src.utils.input_sanitizer import InputSanitizer
 from src.llm_orchestrator_config.stream_config import StreamConfig
-from loguru import logger
+from src.loki_logger import LokiLogger
+
+# Initialize Loki logger
+logger = LokiLogger(service_name="request-models")
 
 
 class ConversationItem(BaseModel):
@@ -100,7 +103,6 @@ class OrchestrationRequest(BaseModel):
         cls, v: List[ConversationItem]
     ) -> List[ConversationItem]:
         """Validate conversation history limits."""
-        from loguru import logger
 
         # Limit number of conversation history items
         max_history_items = 100

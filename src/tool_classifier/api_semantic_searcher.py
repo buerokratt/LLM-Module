@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Protocol, cast
 import dspy
 import httpx
 from src.utils.observation_utils import safe_observation_context
-from loguru import logger
+from src.loki_logger import LokiLogger
 
 from tool_classifier.constants import (
     API_TOOL_COLLECTION,
@@ -36,6 +36,9 @@ def _get_current_model_name() -> str:
     except Exception:
         pass
     return "unknown"
+
+
+logger = LokiLogger(service_name="api-tool-calling")
 
 
 class EmbeddingServiceProtocol(Protocol):

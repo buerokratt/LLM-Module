@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import List, Dict, Any, Tuple, AsyncIterator, Optional
 import re
 import dspy
-import logging
+from src.loki_logger import LokiLogger
 import asyncio
 import dspy.streaming
 from dspy.streaming import StreamListener
@@ -17,11 +17,8 @@ from src.utils.cost_utils import get_lm_usage_since
 from src.optimization.optimized_module_loader import get_module_loader
 from src.vector_indexer.constants import ResponseGenerationConstants
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+# Initialize Loki logger for response generator
+logger = LokiLogger(service_name="response-generator")
 
 
 def _get_current_model_name() -> str:

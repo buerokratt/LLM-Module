@@ -80,13 +80,7 @@ execute_indexing:
       params: ${params}
   result: indexing_result
   on_error: handle_cron_error
-  next: check_indexing_status
-
-check_indexing_status:
-  switch:
-    - condition: ${200 <= indexing_result.response.statusCodeValue && indexing_result.response.statusCodeValue < 300}
-      next: assign_success
-  next: assign_cron_failure
+  next: assign_success
 
 handle_cron_error:
   log: "ERROR: Failed to queue api_tool indexing job - ${indexing_result.error || 'CronManager unreachable'}"
@@ -98,7 +92,7 @@ assign_cron_failure:
       success: false
       error: "INDEXING_QUEUE_FAILED"
       message: "Failed to queue indexing job. CronManager may be unavailable."
-      details: ${indexing_result.error}
+      details: ${indexing_result.error || 'CronManager unreachable'}
   next: return_server_error
 
 assign_success:

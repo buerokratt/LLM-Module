@@ -4,16 +4,16 @@ import asyncio
 
 import pytest
 
-from src.tool_classifier.api_caller import APICaller
-from src.tool_classifier.constants import (
+from tool_classifier.api_caller import APICaller
+from tool_classifier.constants import (
     CIRCUIT_BREAKER_OPEN_MESSAGES,
     MULTI_API_BATCH_TIMEOUT,
     MULTI_API_PARTIAL_FAILURE_MESSAGES,
     SERVICE_TIMEOUT_MESSAGES,
     SERVICE_UNAVAILABLE_MESSAGES,
 )
-from src.tool_classifier.models import APICallResult
-from src.tool_classifier.multi_api_caller import MultiAPICaller
+from tool_classifier.models import APICallResult
+from tool_classifier.multi_api_caller import MultiAPICaller
 
 
 # ---------------------------------------------------------------------------

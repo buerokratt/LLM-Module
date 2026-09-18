@@ -4,7 +4,8 @@ for the api_tool_collection used by the API Tool Calling workflow.
 
 import uuid
 from typing import Any, Dict, List, Optional
-from loguru import logger
+
+from src.loki_logger import LokiLogger
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -21,6 +22,8 @@ from qdrant_client.models import (
 
 from api_tool_indexer.constants import ApiToolIndexerConstants
 from api_tool_indexer.models import EnrichedEndpoint
+
+logger = LokiLogger(service_name="api-tool-calling")
 
 # Error messages
 _CLIENT_NOT_INITIALIZED = "Qdrant client not initialized"

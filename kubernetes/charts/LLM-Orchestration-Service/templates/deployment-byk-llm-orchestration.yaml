@@ -21,6 +21,7 @@ spec:
       initContainers:
         - name: volume-init
           image: "{{ .Values.initContainer.image.repository }}:{{ .Values.initContainer.image.tag }}"
+          imagePullPolicy: {{ .Values.initContainer.image.pullPolicy }}
           command:
             - sh
             - -c
@@ -145,6 +146,11 @@ spec:
             {{- if .Values.volumes.logs.enabled }}
             - name: logs-volume
               mountPath: {{ .Values.volumes.logs.mountPath }}
+            {{- end }}
+            {{- if .Values.vaultAgent.enabled }}
+            - name: vault-agent-llm-token
+              mountPath: /agent/llm-token
+              readOnly: true
             {{- end }}
           
           resources:
