@@ -11,6 +11,7 @@ import CreateLLMConnection from 'pages/LLMConnections/CreateLLMConnection';
 import ViewLLMConnection from 'pages/LLMConnections/ViewLLMConnection';
 import TestProductionLLM from 'pages/TestProductionLLM';
 import PromptConfigurations from 'pages/PromptConfigurations';
+import useTabCloseEffect from 'hooks/useTabCloseEffects';
 
 const isLocal = import.meta.env.REACT_APP_LOCAL?.toLowerCase() === 'true';
 
@@ -45,6 +46,8 @@ const App: FC = () => {
     }
   }, [isLoading, userInfo, navigate, hasRedirected, location.pathname]);
 
+  useTabCloseEffect();
+  
   return (
     <>
       {isLoading ? (
