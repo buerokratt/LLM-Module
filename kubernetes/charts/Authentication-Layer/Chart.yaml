@@ -1,6 +1,0 @@
-apiVersion: v2
-name: Authentication-Layer
-description: Authentication Layer Service for RAG
-type: application
-version: 0.1.0
-appVersion: "1.0"

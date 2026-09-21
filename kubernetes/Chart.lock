@@ -20,9 +20,6 @@ dependencies:
 - name: TIM
   repository: file://./charts/TIM
   version: 0.1.0
-- name: Authentication-Layer
-  repository: file://./charts/Authentication-Layer
-  version: 0.1.0
 - name: CronManager
   repository: file://./charts/CronManager
   version: 0.1.0
