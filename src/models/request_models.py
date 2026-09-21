@@ -177,6 +177,23 @@ class OrchestrationResponse(BaseModel):
         default=None,
         description="Retrieved chunks with metadata, populated only in EVAL_MODE",
     )
+    tool_calls: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description=(
+            "API Tool Calling: the resolved external tool call(s) behind this "
+            "answer (name, method, url, input_parameters, success, status_code, "
+            "cache_source). Populated only in EVAL_MODE."
+        ),
+    )
+    workflow: Optional[str] = Field(
+        default=None,
+        description=(
+            "Which workflow produced this answer (WorkflowType value: service, "
+            "api_tool_calling, context, rag, ood). Populated only in EVAL_MODE "
+            "when the tool classifier is enabled, on the blocking endpoints "
+            "(/orchestrate, /orchestrate-eval); the SSE stream is not tagged."
+        ),
+    )
 
 
 # New models for embedding and context generation
@@ -301,6 +318,14 @@ class TestOrchestrationResponse(BaseModel):
     chunks: Optional[List[ChunkInfo]] = Field(
         default=None, description="Retrieved chunks with rank and content"
     )
+    workflow: Optional[str] = Field(
+        default=None,
+        description=(
+            "Which workflow produced this answer (WorkflowType value). Populated "
+            "only in EVAL_MODE when the tool classifier is enabled, on the "
+            "blocking endpoints; the SSE stream is not tagged."
+        ),
+    )
 
 
 class DeepEvalTestOrchestrationResponse(BaseModel):
@@ -313,4 +338,6 @@ class DeepEvalTestOrchestrationResponse(BaseModel):
     content: str
     retrieval_context: Optional[List[Dict[str, Any]]] = None
     refined_questions: Optional[List[str]] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None  # API Tool Calling eval data
+    workflow: Optional[str] = None  # Workflow that answered (classifier enabled)
     expected_output: Optional[str] = None  # For DeepEval

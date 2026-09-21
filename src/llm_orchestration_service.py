@@ -1573,7 +1573,7 @@ class LLMOrchestrationService:
         time_metric[timing_key] = time.time() - start_time
 
         # Populate retrieval_context for eval mode (DeepEval metrics need this)
-        eval_mode = os.getenv("EVAL_MODE", "false").lower() == "true"
+        eval_mode = FeatureFlags.eval_mode_enabled()
         if eval_mode and isinstance(generated_response, OrchestrationResponse):
             eval_chunks: List[Dict[str, Any]] = []
             for chunk in relevant_chunks:
@@ -1870,6 +1870,10 @@ class LLMOrchestrationService:
                         questionOutOfLLMScope=False,
                         inputGuardFailed=False,
                         content=localized_msg,
+                        # EVAL_MODE only (None in production): the external tool
+                        # call already happened; keep it visible so evaluation
+                        # can score tool selection separately from the block.
+                        tool_calls=generated_response.tool_calls,
                     )
 
             logger.info("Output guardrails check passed")
@@ -2971,8 +2975,13 @@ class LLMOrchestrationService:
         logger.info("Generating context for chunks using Anthropic methodology")
 
         try:
-            # Lazy initialization of context manager
-            context_manager = self._get_context_manager()
+            # Lazy initialization of context manager. Passing the request's
+            # connection_id lets dev/test indexers work without Resql; see the
+            # singleton caveat on _get_context_manager.
+            context_manager = self._get_context_manager(
+                environment=request.environment,
+                connection_id=request.connection_id,
+            )
 
             return context_manager.generate_context_with_caching(request)
         except Exception as e:
@@ -3036,20 +3045,41 @@ class LLMOrchestrationService:
 
         return self._embedding_manager
 
-    def _get_context_manager(self) -> "ContextGenerationManager":
-        """Lazy initialization of ContextGenerationManager for vector indexer."""
+    def _get_context_manager(
+        self,
+        environment: str = PRODUCTION_DEPLOYMENT_ENVIRONMENT,
+        connection_id: Optional[str] = None,
+    ) -> "ContextGenerationManager":
+        """Lazy initialization of ContextGenerationManager for vector indexer.
+
+        Mirrors the ``/embeddings`` path: a ``connection_id`` supplied by the
+        caller (dev/test indexers, the deepeval stack) is used as-is, so no
+        Resql lookup is needed; only when it is absent is the environment's
+        vault_uuid looked up in the DB (Resql has routes for ``production`` and
+        ``testing`` only, so ``development`` without a connection_id fails with
+        ``ConfigurationError``, exactly like ``/embeddings``).
+
+        Caveat: ``LLMManager`` is a process-wide singleton bound by the first
+        construction that succeeds, and ``ContextGenerationManager`` uses the
+        global DSPy LM. The arguments therefore select the connection only when
+        this is the first LLM manager created in the process (the case in the
+        eval stack); afterwards every caller shares that one connection. One
+        cached context manager reflects that reality.
+        """
         if not hasattr(self, "_context_manager"):
             from src.llm_orchestrator_config.context_manager import (
                 ContextGenerationManager,
             )
-            from src.utils.connection_id_fetcher import get_connection_id_fetcher
 
-            # Resolve production vault_uuid from DB before creating LLM manager
-            fetcher = get_connection_id_fetcher()
-            connection_id = fetcher.fetch_vault_uuid_sync("production")
+            if not connection_id:
+                from src.utils.connection_id_fetcher import get_connection_id_fetcher
+
+                # Resolve the environment's vault_uuid from DB before creating LLM manager
+                fetcher = get_connection_id_fetcher()
+                connection_id = fetcher.fetch_vault_uuid_sync(environment)
 
             llm_manager = LLMManager(
-                environment="production", connection_id=connection_id
+                environment=environment, connection_id=connection_id
             )
             self._context_manager = ContextGenerationManager(llm_manager)
             logger.debug("Lazy initialized ContextGenerationManager for vector indexer")
