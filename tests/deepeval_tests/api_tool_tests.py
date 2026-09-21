@@ -3,14 +3,20 @@ DeepEval tests for the API Tool Calling feature (issue #447).
 
 Covers the single-intent (Scenarios 1-4) and multi-intent (MI-1..MI-8) scenarios
 listed in the issue against the running orchestration service. Each scenario
-walks the ``/orchestrate`` endpoint turn-by-turn via the testcontainers-backed
-``orchestration_client`` fixture, extracts the final agentic-loop tool call,
-and scores it with a DeepEval agentic metric:
+walks the ``/orchestrate-eval`` endpoint turn-by-turn via the
+testcontainers-backed ``orchestration_client`` fixture. When the agentic loop
+completes, the service (running with ``EVAL_MODE=true``) attaches the resolved
+external call(s) to the response as ``tool_calls`` — name, method, url,
+input_parameters, success, status_code — so the tests score the *resolved call*
+rather than parsing the natural-language answer. Each scenario is scored with a
+DeepEval agentic metric:
 
 * **Strict single-intent (S1, S2a, S2b, S3)** — the issue specifies an
   "Expected endpoint" + URL/params per scenario. Scored with
   ``ToolCorrectnessMetric`` (deterministic name + input-parameter comparison,
-  ``threshold=1.0``).
+  ``threshold=1.0``). The called tool's parameters are restricted to the
+  expected keys before scoring, so optional extras the loop also collected
+  (e.g. ``languageIsoCode``) do not fail the scenario.
 
 * **Loose single-intent (S4)** — the issue documents the 5-turn flow but does
   not specify an expected resolution. Scored with
@@ -18,9 +24,10 @@ and scores it with a DeepEval agentic metric:
   the resolved tool call).
 
 * **Multi-intent (MI-1..MI-8)** — issue lists only queries (EN+ET). If the
-  system resolves a tool call, scored with ``ArgumentCorrectnessMetric``; if
-  it asks a clarifying question instead, the test only verifies routing to
-  ATC (i.e. non-empty reply, not silent RAG/OOD).
+  system resolves tool call(s), scored with ``ArgumentCorrectnessMetric``; if
+  it asks a clarifying question instead, the test verifies via the eval-only
+  ``workflow`` field that the API Tool Calling workflow answered (a silent
+  fall-through to CONTEXT/RAG/OOD fails).
 
 Endpoints are matched by ``name`` — the UUIDs in the issue do happen to match
 those in ``tests/api_tool_eval/test-endpoints.json``, but name matching is the
@@ -30,6 +37,8 @@ Depends on:
 * ``orchestration_client`` — provides the testcontainers-mapped base URL.
 * ``api_tool_endpoints_indexed`` — seeds the API tool fixture into Qdrant's
   ``api_tool_collection`` so the agentic loop can find the endpoints.
+* The eval stack (``docker-compose-eval.yml``) running with
+  ``TOOL_CLASSIFIER_ENABLED=true`` and ``EVAL_MODE=true``.
 """
 
 import datetime
@@ -44,8 +53,16 @@ import requests
 from deepeval.metrics import ArgumentCorrectnessMetric, ToolCorrectnessMetric
 from deepeval.test_case import LLMTestCase, ToolCall, ToolCallParams
 
-REQUEST_TIMEOUT = 60
-ENVIRONMENT = "development"
+# A single turn can take well over a minute: agentic-loop LLM calls, the external
+# API call, LLM response formatting and the output-guardrail check all run in
+# sequence (a 60 s limit produced a spurious ReadTimeout in a real run).
+REQUEST_TIMEOUT = 180
+# Must match the connection seeded into Vault by the ``rag_stack`` fixture in
+# conftest.py (``llm/connections/azure_openai/evalconnection-1``) and the values
+# used by standard_tests.py. Vault paths are keyed by connection_id only, so a
+# missing connection_id makes the LLM manager raise before any workflow runs.
+ENVIRONMENT = "testing"
+CONNECTION_ID = "evalconnection-1"
 AUTHOR_ID = "api-tool-deepeval"
 
 # Where the result-collector writes the per-scenario record consumed by
@@ -53,20 +70,25 @@ AUTHOR_ID = "api-tool-deepeval"
 # comment / artifact markdown.
 RESULTS_FILE = Path("api_tool_test_results.json")
 
-# Strict scenarios assert the exact expected tool was called with the exact
-# expected params (extras allowed — see ToolCorrectnessMetric docs on
-# should_exact_match). Threshold 1.0 because the deterministic comparison
-# scores fractionally over expected_tools, and we want every expected param
-# present and correct.
+# Strict scenarios assert the expected tool was called and every expected
+# param is present with the expected value. ToolCorrectnessMetric scores
+# fractionally over the parameter dict *including* extras (an extra key
+# lowers the score below 1.0), so the called tool's params are first
+# restricted to the expected keys — see _restrict_to_expected(). Threshold
+# 1.0 then means: right tool, all expected params correct.
 STRICT_TOOL_THRESHOLD = 1.0
 
 # Loose scenarios are graded by an LLM judge — 0.7 matches the threshold used
 # for the RAG metrics in standard_tests.py.
 JUDGE_THRESHOLD = 0.7
 
+# Value of the eval-only ``workflow`` response field when the API Tool Calling
+# workflow produced the answer (tool_classifier.enums.WorkflowType.API_TOOL_CALLING).
+API_TOOL_WORKFLOW = "api_tool_calling"
+
 
 # ---------------------------------------------------------------------------
-# HTTP helpers (mirror tests/api_tool_eval/integration_test_*.py)
+# HTTP helpers
 # ---------------------------------------------------------------------------
 
 
@@ -87,9 +109,12 @@ def _send_turn(
         "conversationHistory": history,
         "url": "deepeval-test",
         "environment": ENVIRONMENT,
+        "connection_id": CONNECTION_ID,
     }
+    # /orchestrate-eval runs the same pipeline as /orchestrate but, under
+    # EVAL_MODE=true, also returns eval-only fields (``tool_calls``).
     resp = requests.post(
-        f"{base_url}/orchestrate",
+        f"{base_url}/orchestrate-eval",
         json=payload,
         timeout=REQUEST_TIMEOUT,
     )
@@ -109,29 +134,39 @@ def _append_history(
     ]
 
 
-def _parse_completed(content: str) -> Optional[Dict[str, Any]]:
-    """Return the parsed JSON if content is a completed agentic-loop payload,
-    else None. A completed payload carries both ``endpoint`` and
-    ``collected_params`` keys."""
-    try:
-        data = json.loads(content)
-    except (json.JSONDecodeError, TypeError):
-        return None
-    if "collected_params" in data and "endpoint" in data:
-        return data
-    return None
+def _tool_calls_from_response(resp: Dict[str, Any]) -> List[ToolCall]:
+    """Build DeepEval ToolCalls from the eval-only ``tool_calls`` field.
+
+    Empty when the turn did not complete a tool call (clarifying question,
+    fallback to RAG/OOD, or the service is not running in EVAL_MODE).
+    """
+    records = resp.get("tool_calls") or []
+    return [
+        ToolCall(
+            name=str(rec.get("name", "")),
+            input_parameters=dict(rec.get("input_parameters") or {}),
+        )
+        for rec in records
+        if isinstance(rec, dict)
+    ]
 
 
-def _to_tool_call(content: str) -> Optional[ToolCall]:
-    """Build a DeepEval ToolCall from a completed agentic-loop payload, or
-    None if the response wasn't a completed JSON."""
-    data = _parse_completed(content)
-    if data is None:
-        return None
-    ep = data.get("endpoint", {})
-    name = ep.get("name", "") if isinstance(ep, dict) else str(ep)
-    params = data.get("collected_params", {}) or {}
-    return ToolCall(name=name, input_parameters=params)
+def _restrict_to_expected(called: ToolCall, expected: ToolCall) -> ToolCall:
+    """Return ``called`` with input_parameters limited to the keys in ``expected``.
+
+    ToolCorrectnessMetric compares parameter dicts key-by-key over the *union*
+    of keys, so an optional parameter the loop also collected would lower the
+    score even when every expected parameter is correct. Dropping the extras
+    makes the metric express "all expected params present and correct".
+    Missing or wrong expected params still fail (they are not added).
+    """
+    if called.name != expected.name:
+        return called
+    expected_keys = set((expected.input_parameters or {}).keys())
+    params = {
+        k: v for k, v in (called.input_parameters or {}).items() if k in expected_keys
+    }
+    return ToolCall(name=called.name, input_parameters=params)
 
 
 def _conversation_text(turns: List[Dict[str, Any]]) -> str:
@@ -143,17 +178,53 @@ def _conversation_text(turns: List[Dict[str, Any]]) -> str:
     return "\n".join(f"USER: {t['user']}" for t in turns)
 
 
-def _walk_turns(base_url: str, label: str, turns: List[Dict[str, Any]]) -> str:
+def _run_turn(
+    base_url: str,
+    chat_id: str,
+    message: str,
+    history: List[Dict[str, str]],
+) -> Dict[str, Any]:
+    """Send one turn and return a self-contained record of it.
+
+    The record (``user``, ``bot``, ``workflow``, ``tool_calls``,
+    ``input_guard_failed``, ``latency_s``) is what the results JSON stores for
+    every turn so failures can be diagnosed from the report alone. The raw
+    response is kept under ``raw`` for the metric code.
+    """
+    started = time.monotonic()
+    resp = _send_turn(base_url, chat_id, message, history)
+    return {
+        "user": message,
+        "bot": resp.get("content", ""),
+        "workflow": resp.get("workflow"),
+        "tool_calls": [
+            _tool_call_to_dict(tc) for tc in _tool_calls_from_response(resp)
+        ],
+        "input_guard_failed": bool(resp.get("inputGuardFailed", False)),
+        "latency_s": round(time.monotonic() - started, 1),
+        "raw": resp,
+    }
+
+
+def _walk_turns(
+    base_url: str, label: str, turns: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
     """POST each turn in sequence, maintaining a stable chatId + history.
-    Returns the final bot response content."""
+    Returns one record per turn (see :func:`_run_turn`); the last one is the
+    final answer."""
     chat_id = _make_chat_id(label)
     history: List[Dict[str, str]] = []
-    final_content = ""
+    records: List[Dict[str, Any]] = []
     for turn in turns:
-        resp = _send_turn(base_url, chat_id, turn["user"], history)
-        final_content = resp.get("content", "")
-        history = _append_history(history, turn["user"], final_content)
-    return final_content
+        rec = _run_turn(base_url, chat_id, turn["user"], history)
+        records.append(rec)
+        history = _append_history(history, turn["user"], rec["bot"])
+    return records
+
+
+def _transcript(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Turn records without the raw response, for the results JSON."""
+    return [{k: v for k, v in rec.items() if k != "raw"} for rec in records]
 
 
 def _tool_call_to_dict(tc: Optional[ToolCall]) -> Optional[Dict[str, Any]]:
@@ -197,6 +268,8 @@ class ApiToolResultCollector:
         actual_tool: Optional[Dict[str, Any]] = None,
         final_response_preview: str = "",
         extra: Optional[Dict[str, Any]] = None,
+        turns: Optional[List[Dict[str, Any]]] = None,
+        input_guard_failed: Optional[bool] = None,
     ) -> None:
         self.results["total_tests"] += 1
         if error:
@@ -218,6 +291,8 @@ class ApiToolResultCollector:
                 "expected_tool": expected_tool,
                 "actual_tool": actual_tool,
                 "final_response_preview": final_response_preview,
+                "input_guard_failed": input_guard_failed,
+                "turns": turns or [],
                 "extra": extra or {},
             }
         )
@@ -423,21 +498,30 @@ def test_api_tool_strict_single_intent(
 
     expected_tool: ToolCall = scenario["expected_tool"]
     final_content = ""
+    workflow: Optional[str] = None
+    tool_calls: List[ToolCall] = []
     actual_tool: Optional[ToolCall] = None
+    records: List[Dict[str, Any]] = []
     score: Optional[float] = None
     reason = ""
     passed = False
     error = ""
 
     try:
-        final_content = _walk_turns(
+        records = _walk_turns(
             orchestration_client.base_url, scenario["label"], scenario["turns"]
         )
-        actual_tool = _to_tool_call(final_content)
+        final_resp = records[-1]["raw"]
+        final_content = final_resp.get("content", "")
+        workflow = final_resp.get("workflow")
+        tool_calls = _tool_calls_from_response(final_resp)
+        actual_tool = tool_calls[0] if tool_calls else None
         test_case = LLMTestCase(
             input=_conversation_text(scenario["turns"]),
             actual_output=final_content,
-            tools_called=[actual_tool] if actual_tool is not None else [],
+            tools_called=[
+                _restrict_to_expected(tc, expected_tool) for tc in tool_calls
+            ],
             expected_tools=[expected_tool],
         )
         metric = ToolCorrectnessMetric(
@@ -452,6 +536,7 @@ def test_api_tool_strict_single_intent(
             f"[{scenario['id']}] tool correctness {score} < "
             f"{STRICT_TOOL_THRESHOLD}: {reason}\n"
             f"Expected tool: {expected_tool.name}({expected_tool.input_parameters})\n"
+            f"Resolved tool calls: {[_tool_call_to_dict(tc) for tc in tool_calls]}\n"
             f"Final response: {final_content[:300]}"
         )
     except AssertionError:
@@ -472,6 +557,12 @@ def test_api_tool_strict_single_intent(
             expected_tool=_tool_call_to_dict(expected_tool),
             actual_tool=_tool_call_to_dict(actual_tool),
             final_response_preview=final_content[:300],
+            turns=_transcript(records),
+            input_guard_failed=records[-1]["input_guard_failed"] if records else None,
+            extra={
+                "workflow": workflow,
+                "tool_calls": [_tool_call_to_dict(tc) for tc in tool_calls],
+            },
         )
 
 
@@ -532,35 +623,44 @@ def test_api_tool_loose_single_intent(
     """Scenario 4 (EN/ET) — issue gives no expected resolution.
 
     Asserts:
-    1. The final turn produced a completed JSON tool call (i.e. the agentic
-       loop actually resolved, didn't fall through to RAG).
+    1. The final turn resolved at least one tool call (``tool_calls`` is
+       non-empty), i.e. the agentic loop actually completed and did not fall
+       through to RAG or stall on a clarifying question.
     2. The LLM judge ``ArgumentCorrectnessMetric`` is satisfied that the
        chosen tool's arguments fit the conversation input.
     """
     del api_tool_endpoints_indexed  # consumed for its setup side effect only
 
     final_content = ""
+    workflow: Optional[str] = None
+    tool_calls: List[ToolCall] = []
     actual_tool: Optional[ToolCall] = None
+    records: List[Dict[str, Any]] = []
     score: Optional[float] = None
     reason = ""
     passed = False
     error = ""
 
     try:
-        final_content = _walk_turns(
+        records = _walk_turns(
             orchestration_client.base_url, scenario["label"], scenario["turns"]
         )
-        actual_tool = _to_tool_call(final_content)
+        final_resp = records[-1]["raw"]
+        final_content = final_resp.get("content", "")
+        workflow = final_resp.get("workflow")
+        tool_calls = _tool_calls_from_response(final_resp)
+        actual_tool = tool_calls[0] if tool_calls else None
 
-        assert actual_tool is not None, (
-            f"[{scenario['id']}] expected a completed JSON tool call on the "
-            f"final turn but got: {final_content[:300]}"
+        assert tool_calls, (
+            f"[{scenario['id']}] expected a resolved tool call on the final "
+            f"turn but tool_calls was empty (workflow={workflow!r}). "
+            f"Response: {final_content[:300]}"
         )
 
         test_case = LLMTestCase(
             input=_conversation_text(scenario["turns"]),
             actual_output=final_content,
-            tools_called=[actual_tool],
+            tools_called=tool_calls,
         )
         metric = ArgumentCorrectnessMetric(threshold=JUDGE_THRESHOLD)
         metric.measure(test_case)
@@ -570,7 +670,7 @@ def test_api_tool_loose_single_intent(
         assert passed, (
             f"[{scenario['id']}] argument correctness {score} < "
             f"{JUDGE_THRESHOLD}: {reason}\n"
-            f"Resolved tool: {actual_tool.name}({actual_tool.input_parameters})"
+            f"Resolved tool calls: {[_tool_call_to_dict(tc) for tc in tool_calls]}"
         )
     except AssertionError:
         raise
@@ -589,20 +689,28 @@ def test_api_tool_loose_single_intent(
             error=error,
             actual_tool=_tool_call_to_dict(actual_tool),
             final_response_preview=final_content[:300],
+            turns=_transcript(records),
+            input_guard_failed=records[-1]["input_guard_failed"] if records else None,
+            extra={
+                "workflow": workflow,
+                "tool_calls": [_tool_call_to_dict(tc) for tc in tool_calls],
+            },
         )
 
 
 # ---------------------------------------------------------------------------
 # Multi-Intent scenarios (issue #447, MI-1..MI-8)
 #
-# Issue lists 8 queries (EN + ET) with no expected resolution. Under Phase 1
-# the orchestrator decomposes the query and falls back to a single endpoint
-# (see tests/api_tool_eval/integration_test_multi_intent.py docstring). We:
+# Issue lists 8 queries (EN + ET) with no expected resolution. The orchestrator
+# decomposes the query; depending on the ATC phase it either collects params for
+# all matched endpoints in parallel or falls back to a single endpoint. We:
 #
-# * If the system resolves a tool call → score with ArgumentCorrectnessMetric
+# * If the system resolves tool call(s) → score with ArgumentCorrectnessMetric
 #   (LLM judges whether the chosen args fit the multi-intent query).
-# * If the system asks a clarifying question → accept it (still ATC-routed),
-#   only assert the reply is non-empty (rules out a silent RAG/OOD fallthrough).
+# * If the input guardrail blocked the query → fail, reported as such.
+# * If the system asks a clarifying question → pass only when the eval-only
+#   ``workflow`` field says the API Tool Calling workflow asked it (a silent
+#   CONTEXT/RAG/OOD fallthrough fails).
 # ---------------------------------------------------------------------------
 
 
@@ -715,26 +823,34 @@ def test_api_tool_multi_intent(
 
     query = scenario[f"query_{lang}"]
     content = ""
+    workflow: Optional[str] = None
+    tool_calls: List[ToolCall] = []
     actual_tool: Optional[ToolCall] = None
+    records: List[Dict[str, Any]] = []
     score: Optional[float] = None
     reason = ""
     passed = False
     error = ""
-    outcome = "unknown"  # "tool_call" | "clarifying_question"
+    outcome = "unknown"  # "tool_call" | "clarifying_question" | "input_guard_blocked"
 
     try:
         base_url = orchestration_client.base_url
         chat_id = _make_chat_id(f"{scenario['label']}-{lang}")
-        resp = _send_turn(base_url, chat_id, query, [])
+        records = [_run_turn(base_url, chat_id, query, [])]
+        resp = records[-1]["raw"]
         content = resp.get("content", "")
-        actual_tool = _to_tool_call(content)
+        workflow = resp.get("workflow")
+        tool_calls = _tool_calls_from_response(resp)
+        actual_tool = tool_calls[0] if tool_calls else None
 
-        if actual_tool is not None:
+        if tool_calls:
+            # Parallel multi-intent execution yields one record per endpoint;
+            # the judge sees all of them.
             outcome = "tool_call"
             test_case = LLMTestCase(
                 input=query,
                 actual_output=content,
-                tools_called=[actual_tool],
+                tools_called=tool_calls,
             )
             metric = ArgumentCorrectnessMetric(threshold=JUDGE_THRESHOLD)
             metric.measure(test_case)
@@ -744,18 +860,34 @@ def test_api_tool_multi_intent(
             assert passed, (
                 f"[{scenario['id']} {lang}] argument correctness {score} "
                 f"< {JUDGE_THRESHOLD}: {reason}\n"
-                f"Resolved tool: {actual_tool.name}({actual_tool.input_parameters})"
+                f"Resolved tool calls: {[_tool_call_to_dict(tc) for tc in tool_calls]}"
+            )
+        elif records[-1]["input_guard_failed"]:
+            # Blocked before classification ever ran — a guardrail finding,
+            # reported distinctly from a routing failure.
+            outcome = "input_guard_blocked"
+            passed = False
+            reason = "Input guardrail blocked the query before classification"
+            raise AssertionError(
+                f"[{scenario['id']} {lang}] input guardrail blocked the query; "
+                f"the API Tool Calling workflow never ran. Got: {content[:300]!r}"
             )
         else:
             outcome = "clarifying_question"
-            # No tool call yet — must at least be a non-empty clarifying reply
-            # (rules out silent failure / RAG fallthrough returning no content).
-            passed = bool(content.strip())
+            # No tool call yet — acceptable only if the API Tool Calling
+            # workflow is the one asking. ``workflow`` is the eval-only field
+            # set by ToolClassifier under EVAL_MODE; a CONTEXT/RAG/OOD answer
+            # here means the multi-intent query was misrouted.
+            passed = workflow == API_TOOL_WORKFLOW and bool(content.strip())
             assert passed, (
-                f"[{scenario['id']} {lang}] empty response — multi-intent query "
-                f"failed routing entirely. Got: {content!r}"
+                f"[{scenario['id']} {lang}] expected the API Tool Calling "
+                f"workflow to answer (tool call or clarifying question) but "
+                f"workflow={workflow!r}. Got: {content[:300]!r}"
             )
-            reason = "Resolved to a clarifying question (no tool call yet)"
+            reason = (
+                "Resolved to a clarifying question from the API Tool Calling "
+                "workflow (no tool call yet)"
+            )
     except AssertionError:
         raise
     except Exception as e:
@@ -775,5 +907,13 @@ def test_api_tool_multi_intent(
             error=error,
             actual_tool=_tool_call_to_dict(actual_tool),
             final_response_preview=content[:300],
-            extra={"language": lang, "outcome": outcome, "query": query},
+            turns=_transcript(records),
+            input_guard_failed=records[-1]["input_guard_failed"] if records else None,
+            extra={
+                "language": lang,
+                "outcome": outcome,
+                "query": query,
+                "workflow": workflow,
+                "tool_calls": [_tool_call_to_dict(tc) for tc in tool_calls],
+            },
         )

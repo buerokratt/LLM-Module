@@ -434,7 +434,7 @@ path "auth/token/renew-self" { capabilities = ["update"] }
         try:
             # Verify LLM path
             verify_llm = client.secrets.kv.v2.read_secret_version(
-                path="llm/connections/azure_openai/development/evalconnection-1",
+                path="llm/connections/azure_openai/evalconnection-1",
                 mount_point="secret",
             )
             llm_data = verify_llm["data"]["data"]
@@ -443,7 +443,7 @@ path "auth/token/renew-self" { capabilities = ["update"] }
 
             # Verify embeddings path
             verify_embedding = client.secrets.kv.v2.read_secret_version(
-                path="embeddings/connections/azure_openai/development/evalconnection-1",
+                path="embeddings/connections/azure_openai/evalconnection-1",
                 mount_point="secret",
             )
             embedding_data = verify_embedding["data"]["data"]
@@ -513,7 +513,9 @@ path "auth/token/renew-self" { capabilities = ["update"] }
                         str(self.compose_file_path),
                         "logs",
                         "--tail",
-                        "200",
+                        # The orchestration service emits hundreds of lines per
+                        # agentic-loop turn; 200 hid every diagnosis in practice.
+                        "5000" if service == "llm-orchestration-service" else "200",
                         service,
                     ],
                     capture_output=True,
@@ -617,7 +619,7 @@ path "auth/token/renew-self" { capabilities = ["update"] }
         """Verify the token has correct permissions to read secrets"""
         try:
             client.secrets.kv.v2.read_secret_version(
-                path="llm/connections/azure_openai/development/evalconnection-1",
+                path="llm/connections/azure_openai/evalconnection-1",
                 mount_point="secret",
             )
             logger.info("Token has correct permissions to read secrets")

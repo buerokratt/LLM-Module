@@ -184,10 +184,47 @@ def render_failures(results: Dict[str, Any]) -> str:
             out += f"- **Expected:** {_fmt_tool(s['expected_tool'])}\n"
         out += f"- **Actual:** {_fmt_tool(s.get('actual_tool'))}\n"
         out += f"- **Reason:** {reason}\n"
+        if s.get("extra", {}).get("workflow") is not None or s.get(
+            "input_guard_failed"
+        ):
+            out += (
+                f"- **Workflow:** `{s.get('extra', {}).get('workflow')}`"
+                f"{' — input guardrail blocked' if s.get('input_guard_failed') else ''}\n"
+            )
         if preview:
             out += f"- **Response preview:** `{preview}`\n"
+        out += _render_transcript(s.get("turns") or [])
         out += "\n"
     return out
+
+
+def _render_transcript(turns: List[Dict[str, Any]]) -> str:
+    """Compact per-turn transcript: what was sent, what came back, who answered."""
+    if not turns:
+        return ""
+    out = "- **Turns:**\n\n"
+    out += "  | # | User | Bot | Workflow | Tool calls | s |\n"
+    out += "  |---|---|---|---|---|---|\n"
+    for i, t in enumerate(turns, start=1):
+        user = _cell(t.get("user", ""))
+        bot = _cell(t.get("bot", ""))
+        wf = t.get("workflow") or "—"
+        if t.get("input_guard_failed"):
+            wf = f"{wf} (input guard)"
+        # Tool-call cells contain repr() of free-text parameter values, which can
+        # hold '|' or newlines — escape them like the User/Bot cells.
+        calls = (
+            _cell(", ".join(_fmt_tool(tc) for tc in t.get("tool_calls") or []), 160)
+            or "—"
+        )
+        wf = _cell(wf, 40)
+        out += f"  | {i} | {user} | {bot} | `{wf}` | {calls} | {t.get('latency_s', '—')} |\n"
+    return out
+
+
+def _cell(text: str, limit: int = 110) -> str:
+    text = (text or "").replace("\n", " ").replace("|", "\\|")
+    return text if len(text) <= limit else text[:limit] + "…"
 
 
 def render_errors(results: Dict[str, Any]) -> str:
@@ -199,6 +236,9 @@ def render_errors(results: Dict[str, Any]) -> str:
         sid = s.get("id", "?")
         err = s.get("error") or "_(no error captured)_"
         out += f"- 💥 `{sid}` — {err}\n"
+        transcript = _render_transcript(s.get("turns") or [])
+        if transcript:
+            out += "  " + transcript.replace("\n", "\n  ").rstrip() + "\n"
     return out + "\n"
 
 

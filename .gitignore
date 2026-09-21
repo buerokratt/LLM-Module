@@ -23,3 +23,9 @@ vault/keys/*.pem.old
 .github/instructions/snyk_rules.instructions.md
 # Dynamically created Ruuter health endpoint for tests
 DSL/Ruuter.private/rag-search/GET/health.yml
+# Local eval-run artifacts (deepeval judge config, downloaded RAG embeddings, vault-agent token, API-tool eval outputs)
+.deepeval/
+tests/data/test_embeddings.json
+test-vault/agent-out/
+api_tool_test_results.json
+api_tool_test_report.md
