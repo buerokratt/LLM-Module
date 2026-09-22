@@ -83,8 +83,6 @@ spec:
           value: {{ .Values.gui.services.ruuterPrivate | quote }}
         - name: REACT_APP_EXTERNAL_API_URL
           value: {{ .Values.gui.services.datasetGenerator | quote }}
-        - name: REACT_APP_CUSTOMER_SERVICE_LOGIN
-          value: {{ printf "%s/et/dev-auth" .Values.gui.services.authenticationLayer | quote }}
         - name: REACT_APP_NOTIFICATION_NODE_URL
           value: {{ .Values.gui.services.notificationNode | quote }}
         - name: REACT_APP_CSP

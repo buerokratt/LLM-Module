@@ -21,7 +21,7 @@ tim:
     - POSTGRES_PASSWORD: "tim"
 
   config:
-    security_allowlist_jwt: "ruuter-public,ruuter-private,ruuter,ruuter-internal,data-mapper,resql,tim,tim-postgresql,chat-widget,authentication-layer,127.0.0.1,::1"
+    security_allowlist_jwt: "ruuter-public,ruuter-private,ruuter,ruuter-internal,data-mapper,resql,tim,tim-postgresql,chat-widget,127.0.0.1,::1"
     jwt_issuer: "tim-issuer"
     spring_profiles_active: "dev"
     logging_level_root: "DEBUG"
