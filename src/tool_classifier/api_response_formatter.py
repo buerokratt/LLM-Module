@@ -219,6 +219,7 @@ class APIResponseFormatterModule(dspy.Module):
         try:
             normalized = self._normalize_response(api_response)
             normalized = self._annotate_empty(normalized)
+            normalized = self._prepend_list_summary(normalized)
             normalized = self._truncate_if_needed(normalized)
             response_language = _LANGUAGE_NAMES.get(detected_language, "English")
             params_context = build_params_context(collected_params)
@@ -359,6 +360,7 @@ class APIResponseFormatterModule(dspy.Module):
             try:
                 normalized = self._normalize_response(api_response)
                 normalized = self._annotate_empty(normalized)
+                normalized = self._prepend_list_summary(normalized)
                 normalized = self._truncate_if_needed(normalized)
                 response_language = _LANGUAGE_NAMES.get(detected_language, "English")
                 params_context = build_params_context(collected_params)
@@ -545,6 +547,53 @@ class APIResponseFormatterModule(dspy.Module):
         if parsed is None or parsed == [] or parsed == {}:
             return "[EMPTY RESPONSE: The API returned no data for this query]"
         return api_response_str
+
+    @staticmethod
+    def _prepend_list_summary(api_response_str: str) -> str:
+        """Prepend computed aggregate statistics for list responses.
+
+        Runs BEFORE truncation so the LLM always sees the correct totals even
+        when the raw JSON is cut short by the byte-size limit.  Without this,
+        the LLM must count items from a potentially truncated (and malformed)
+        JSON string, which produces non-deterministic results.
+        """
+        try:
+            parsed = json.loads(api_response_str)
+        except (json.JSONDecodeError, ValueError):
+            return api_response_str
+
+        if not isinstance(parsed, list) or len(parsed) < 2:
+            return api_response_str
+
+        if not all(isinstance(item, dict) for item in parsed):
+            return api_response_str
+
+        total = len(parsed)
+
+        # Collect values for every numeric (int/float, non-bool) field.
+        numeric_fields: Dict[str, List[float]] = {}
+        for item in parsed:
+            for key, value in item.items():
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    numeric_fields.setdefault(key, []).append(float(value))
+
+        lines: List[str] = [f"[COMPUTED STATISTICS (full {total}-item response):"]
+        for field, values in numeric_fields.items():
+            f_min = min(values)
+            f_max = max(values)
+            f_sum = sum(values)
+            # Binary 0/1 field — report counts rather than raw sum.
+            if f_min == 0.0 and f_max == 1.0 and all(v in (0.0, 1.0) for v in values):
+                count_one = int(f_sum)
+                lines.append(
+                    f"  {field}: {count_one} items with value=1, "
+                    f"{total - count_one} items with value=0"
+                )
+            else:
+                lines.append(f"  {field}: total={f_sum}, min={f_min}, max={f_max}")
+        lines.append("]")
+
+        return "\n".join(lines) + "\n" + api_response_str
 
     @staticmethod
     def _truncate_if_needed(api_response_str: str) -> str:

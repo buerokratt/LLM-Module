@@ -33,14 +33,17 @@ from src.llm_orchestrator_config.llm_ochestrator_constants import (
     INPUT_GUARDRAIL_VIOLATION_MESSAGES,
     OUTPUT_GUARDRAIL_VIOLATION_MESSAGE,
     OUTPUT_GUARDRAIL_VIOLATION_MESSAGES,
+    OUTPUT_GUARDRAIL_VIOLATION_PARTIAL_MESSAGES,
     QUERY_VALIDATION_FAILED_MESSAGES,
     get_localized_message,
-    GUARDRAILS_BLOCKED_PHRASES,
+    is_output_guardrail_violation,
     TEST_DEPLOYMENT_ENVIRONMENT,
     STREAM_TOKEN_LIMIT_MESSAGE,
     PRODUCTION_DEPLOYMENT_ENVIRONMENT,
     RUUTER_PROMPT_CONFIG_ENDPOINT,
     PROMPT_CONFIG_CACHE_TTL,
+    CONNECTION_INACTIVE_MESSAGES,
+    BUDGET_EXCEEDED_MESSAGES,
 )
 from src.llm_orchestrator_config.stream_config import StreamConfig
 from src.vector_indexer.constants import ResponseGenerationConstants
@@ -67,6 +70,7 @@ from src.utils.query_validator import validate_query_basic
 from src.utils.sse_utils import extract_content_from_sse
 from src.utils.conversation_history_store import should_save_history, save_history_round
 from src.utils.conversation_history_helpers import get_conversation_history
+from src.utils.guardrail_followup import get_repeated_violation_message
 from src.guardrails import NeMoRailsAdapter, GuardrailCheckResult
 from src.contextual_retrieval import ContextualRetriever
 from src.contextual_retrieval.bm25_search import SmartBM25Search
@@ -94,6 +98,8 @@ _HISTORY_EXCLUDED_MESSAGES: frozenset[str] = frozenset(
         *INPUT_GUARDRAIL_VIOLATION_MESSAGES.values(),
         *OUTPUT_GUARDRAIL_VIOLATION_MESSAGES.values(),
         *QUERY_VALIDATION_FAILED_MESSAGES.values(),
+        *CONNECTION_INACTIVE_MESSAGES.values(),
+        *BUDGET_EXCEEDED_MESSAGES.values(),
         STREAM_TOKEN_LIMIT_MESSAGE,
     }
 )
@@ -368,6 +374,34 @@ class LLMOrchestrationService:
             # Using setattr for type safety - adds dynamic attribute to Pydantic model instance
             setattr(request, "_detected_language", detected_language)  # noqa: B010
 
+            # STEP 0.15: If the previous turn was blocked by guardrails and this
+            # message is a bare "why?" follow-up, repeat the same violation
+            # message instead of routing a context-less query through the
+            # classifier (blocked turns are never persisted to Redis history,
+            # so the client-resent conversationHistory is the source of truth).
+            repeated_violation = get_repeated_violation_message(request)
+            if repeated_violation:
+                logger.info(
+                    f"[{request.chatId}] 'why' follow-up after guardrail violation - "
+                    f"repeating violation message"
+                )
+                log_step_timings(time_metric, request.chatId)
+                if request.environment == TEST_DEPLOYMENT_ENVIRONMENT:
+                    return TestOrchestrationResponse(
+                        llmServiceActive=True,
+                        questionOutOfLLMScope=False,
+                        inputGuardFailed=repeated_violation.is_input_violation,
+                        content=repeated_violation.message,
+                        chunks=None,
+                    )
+                return OrchestrationResponse(
+                    chatId=request.chatId,
+                    llmServiceActive=True,
+                    questionOutOfLLMScope=False,
+                    inputGuardFailed=repeated_violation.is_input_violation,
+                    content=repeated_violation.message,
+                )
+
             # STEP 0.1: Multi-step service prefix check (bypass NLU pipeline)
             if request.message.startswith(SERVICE_STEP_PREFIXES):
                 logger.info(
@@ -415,6 +449,43 @@ class LLMOrchestrationService:
                         questionOutOfLLMScope=False,
                         inputGuardFailed=False,
                         content=validation_msg,
+                    )
+
+            # STEP 0.6: Connection status & budget pre-validation
+            _validation_vault_uuid = request.connection_id
+            if not _validation_vault_uuid and request.environment == "production":
+                from src.utils.connection_id_fetcher import get_connection_id_fetcher
+
+                fetcher = get_connection_id_fetcher()
+                _validation_vault_uuid = fetcher.fetch_vault_uuid_sync("production")
+
+            start_time = time.time()
+            is_allowed, block_message = self._validate_connection_before_processing(
+                vault_uuid=_validation_vault_uuid,
+                environment=request.environment,
+                detected_language=detected_language,
+            )
+            time_metric["connection_budget_validation"] = time.time() - start_time
+
+            if not is_allowed:
+                logger.warning(
+                    f"[{request.chatId}] Connection/budget validation blocked request"
+                )
+                if request.environment == TEST_DEPLOYMENT_ENVIRONMENT:
+                    return TestOrchestrationResponse(
+                        llmServiceActive=False,
+                        questionOutOfLLMScope=False,
+                        inputGuardFailed=False,
+                        content=block_message or "",
+                        chunks=None,
+                    )
+                else:
+                    return OrchestrationResponse(
+                        chatId=request.chatId,
+                        llmServiceActive=False,
+                        questionOutOfLLMScope=False,
+                        inputGuardFailed=False,
+                        content=block_message or "",
                     )
 
             # Initialize all service components (only for valid queries, with timing)
@@ -512,9 +583,7 @@ class LLMOrchestrationService:
             log_step_timings(time_metric, request.chatId)
 
             # Update budget for the LLM connection
-            self._update_connection_budget(
-                request.connection_id, costs_metric, request.environment
-            )
+            self._update_connection_budget(request.connection_id, costs_metric)
 
             if self.langfuse_config.langfuse_client:
                 langfuse = self.langfuse_config.langfuse_client
@@ -563,9 +632,7 @@ class LLMOrchestrationService:
             log_step_timings(time_metric, request.chatId)
 
             # Update budget even on error
-            self._update_connection_budget(
-                request.connection_id, costs_metric, request.environment
-            )
+            self._update_connection_budget(request.connection_id, costs_metric)
 
             return self._create_error_response(request)
 
@@ -629,6 +696,22 @@ class LLMOrchestrationService:
         # Using setattr for type safety - adds dynamic attribute to Pydantic model instance
         setattr(request, "_detected_language", detected_language)  # noqa: B010
 
+        # STEP 0.15: If the previous turn was blocked by guardrails and this
+        # message is a bare "why?" follow-up, repeat the same violation
+        # message instead of streaming a context-less query through the
+        # classifier (blocked turns are never persisted to Redis history,
+        # so the client-resent conversationHistory is the source of truth).
+        repeated_violation = get_repeated_violation_message(request)
+        if repeated_violation:
+            logger.info(
+                f"[{request.chatId}] Streaming - 'why' follow-up after guardrail "
+                f"violation - repeating violation message"
+            )
+            yield self.format_sse(request.chatId, repeated_violation.message)
+            yield self.format_sse(request.chatId, "END")
+            log_step_timings(time_metric, request.chatId)
+            return
+
         # STEP 0.1: Multi-step service prefix check (bypass NLU pipeline)
         if request.message.startswith(SERVICE_STEP_PREFIXES):
             logger.info(
@@ -664,6 +747,30 @@ class LLMOrchestrationService:
 
             # Yield SSE format error + END marker
             yield self.format_sse(request.chatId, validation_msg)
+            yield self.format_sse(request.chatId, "END")
+            return  # Stop processing
+
+        # Step 0.6: Connection status & budget pre-validation
+        _validation_vault_uuid = request.connection_id
+        if not _validation_vault_uuid and request.environment == "production":
+            from src.utils.connection_id_fetcher import get_connection_id_fetcher
+
+            fetcher = get_connection_id_fetcher()
+            _validation_vault_uuid = fetcher.fetch_vault_uuid_sync("production")
+
+        start_time = time.time()
+        is_allowed, block_message = self._validate_connection_before_processing(
+            vault_uuid=_validation_vault_uuid,
+            environment=request.environment,
+            detected_language=detected_language,
+        )
+        time_metric["connection_budget_validation"] = time.time() - start_time
+
+        if not is_allowed:
+            logger.warning(
+                f"[{request.chatId}] Connection/budget validation blocked request"
+            )
+            yield self.format_sse(request.chatId, block_message or "")
             yield self.format_sse(request.chatId, "END")
             return  # Stop processing
 
@@ -823,7 +930,6 @@ class LLMOrchestrationService:
                         self._update_connection_budget(
                             request.connection_id,
                             {"streaming_total": _total_usage},
-                            request.environment,
                         )
                         stream_ctx.mark_completed()
                         return  # Exit after successful classifier routing
@@ -866,7 +972,6 @@ class LLMOrchestrationService:
                 self._update_connection_budget(
                     request.connection_id,
                     {"streaming_total": _total_usage},
-                    request.environment,
                 )
                 return
 
@@ -888,7 +993,6 @@ class LLMOrchestrationService:
                 self._update_connection_budget(
                     request.connection_id,
                     {"streaming_total": _total_usage},
-                    request.environment,
                 )
 
                 if self.langfuse_config.langfuse_client:
@@ -1068,6 +1172,9 @@ class LLMOrchestrationService:
         try:
             # Track tokens and accumulated response in stream context
             accumulated_response = []  # Track the full response for production storage
+            # Whether any real answer content has already been sent to the client.
+            # Used to choose the guardrail-violation wording (start vs mid-answer).
+            content_streamed = False
 
             if components["guardrails_adapter"]:
                 # Use NeMo's stream_with_guardrails helper method
@@ -1107,26 +1214,25 @@ class LLMOrchestrationService:
                             stream_ctx.mark_completed()
                             return
 
-                        # Check for guardrail violations
-                        is_guardrail_error = False
-                        if isinstance(validated_chunk, str):
-                            blocked_phrases = GUARDRAILS_BLOCKED_PHRASES
-                            chunk_lower = validated_chunk.strip().lower()
-                            for phrase in blocked_phrases:
-                                if (
-                                    phrase.lower() in chunk_lower
-                                    and len(chunk_lower) <= len(phrase.lower()) + 20
-                                ):
-                                    is_guardrail_error = True
-                                    break
+                        # Check for guardrail violations. This also catches NeMo's
+                        # `enable_rails_exceptions` JSON payload
+                        is_guardrail_error = is_output_guardrail_violation(
+                            validated_chunk
+                        )
 
                         if is_guardrail_error:
                             logger.warning(
                                 f"[{request.chatId}] [{stream_ctx.stream_id}] Guardrails violation detected"
                             )
-                            yield self.format_sse(
-                                request.chatId, OUTPUT_GUARDRAIL_VIOLATION_MESSAGE
-                            )
+
+                            if content_streamed:
+                                violation_message = "\n\n" + get_localized_message(
+                                    OUTPUT_GUARDRAIL_VIOLATION_PARTIAL_MESSAGES,
+                                    detected_language,
+                                )
+                            else:
+                                violation_message = OUTPUT_GUARDRAIL_VIOLATION_MESSAGE
+                            yield self.format_sse(request.chatId, violation_message)
                             yield self.format_sse(request.chatId, "END")
 
                             usage_info = get_lm_usage_since(history_length_before)
@@ -1138,6 +1244,7 @@ class LLMOrchestrationService:
 
                         # Yield the validated chunk to client
                         yield self.format_sse(request.chatId, validated_chunk)
+                        content_streamed = True
                 except GeneratorExit:
                     stream_ctx.mark_cancelled()
                     logger.info(
@@ -1286,9 +1393,7 @@ class LLMOrchestrationService:
             log_step_timings(time_metric, request.chatId)
 
             # Update budget even on client disconnect
-            self._update_connection_budget(
-                request.connection_id, costs_metric, request.environment
-            )
+            self._update_connection_budget(request.connection_id, costs_metric)
             raise
         except Exception as stream_error:
             error_id = generate_error_id()
@@ -2309,42 +2414,129 @@ class LLMOrchestrationService:
         except Exception as e:
             logger.warning(f"Failed to log costs: {str(e)}")
 
+    def _validate_connection_before_processing(
+        self,
+        vault_uuid: Optional[str],
+        environment: str,
+        detected_language: str = "en",
+    ) -> tuple[bool, Optional[str]]:
+        """
+        Validate connection status and budget before processing a request.
+
+        Checks:
+        1. Connection status is 'active' (not deactivated by admin or budget exceed)
+        2. Used budget has not exceeded the stop budget threshold
+
+        Args:
+            vault_uuid: The vault UUID identifying the LLM connection
+            environment: The deployment environment
+            detected_language: Detected language code for localized error messages
+
+        Returns:
+            Tuple of (is_allowed, error_message):
+            - (True, None) if the connection is valid and within budget
+            - (False, error_message) if the request should be blocked
+        """
+        if not vault_uuid:
+            # No vault_uuid means we can't validate — allow through
+            # (the LLM manager will resolve it later or fail)
+            logger.debug("No vault_uuid provided for pre-request validation, skipping")
+            return (True, None)
+
+        try:
+            from src.utils.connection_id_fetcher import get_connection_id_fetcher
+
+            fetcher = get_connection_id_fetcher()
+            conn_data = fetcher.fetch_connection_budget_status_sync(vault_uuid)
+
+            if conn_data is None:
+                # Connection not found — allow through and let downstream handle it
+                logger.warning(
+                    f"Connection not found for vault_uuid={vault_uuid} "
+                    f"during pre-request validation, allowing through"
+                )
+                return (True, None)
+
+            # Check 1: Connection status must be 'active'
+            status = conn_data.get("connectionStatus", "active")
+            if status != "active":
+                logger.warning(
+                    f"[Budget Gate] Connection vault_uuid={vault_uuid} is '{status}' "
+                    f"— blocking request (environment={environment})"
+                )
+                msg = get_localized_message(
+                    CONNECTION_INACTIVE_MESSAGES, detected_language
+                )
+                return (False, msg)
+
+            # Check 2: Budget threshold
+            used_budget = float(conn_data.get("usedBudget", 0) or 0)
+            monthly_budget = float(conn_data.get("monthlyBudget", 0) or 0)
+            stop_threshold = float(conn_data.get("stopBudgetThreshold", 0) or 0)
+
+            # Only check if stop_threshold is configured (non-zero)
+            if stop_threshold > 0 and monthly_budget > 0:
+                threshold_amount = (monthly_budget / 100) * stop_threshold
+                if used_budget >= threshold_amount:
+                    logger.warning(
+                        f"[Budget Gate] Connection vault_uuid={vault_uuid} "
+                        f"budget exceeded: used={used_budget:.4f}, "
+                        f"threshold={threshold_amount:.4f} "
+                        f"({stop_threshold}% of {monthly_budget}) "
+                        f"— blocking request"
+                    )
+                    msg = get_localized_message(
+                        BUDGET_EXCEEDED_MESSAGES, detected_language
+                    )
+                    return (False, msg)
+
+            logger.debug(
+                f"[Budget Gate] Connection vault_uuid={vault_uuid} "
+                f"validated: status={status}, "
+                f"used_budget={used_budget:.4f}/{monthly_budget:.4f}"
+            )
+            return (True, None)
+
+        except Exception as e:
+            # Don't block requests on validation failures — fail open
+            logger.error(
+                f"Error during pre-request connection validation "
+                f"for vault_uuid={vault_uuid}: {e}"
+            )
+            return (True, None)
+
     def _update_connection_budget(
         self,
-        connection_id: Optional[str],
+        vault_uuid: Optional[str],
         costs_metric: Dict[str, Dict[str, Any]],
-        environment: str = "development",
     ) -> None:
         """
         Update the budget for an LLM connection based on usage costs.
 
         Args:
-            connection_id: The vault_uuid identifying the LLM connection
+            vault_uuid: The vault UUID identifying the LLM connection
             costs_metric: Dictionary of costs per component
-            environment: The deployment environment (production/testing/development)
         """
         try:
             budget_tracker = get_budget_tracker()
 
-            result = budget_tracker.update_budget_from_costs(
-                connection_id, costs_metric
-            )
+            result = budget_tracker.update_budget_from_costs(vault_uuid, costs_metric)
 
             if result.get("success"):
                 if result.get("budget_exceeded"):
                     logger.warning(
-                        f"Budget threshold exceeded for connection_id={connection_id}. "
+                        f"Budget threshold exceeded for vault_uuid={vault_uuid}. "
                         "Connection may have been deactivated."
                     )
                 else:
                     logger.debug(
-                        f"Budget updated successfully for uuid={connection_id}"
+                        f"Budget updated successfully for vault_uuid={vault_uuid}"
                     )
             else:
                 reason = result.get("reason", "unknown")
-                if reason not in ["no_connection_id", "zero_or_negative_cost"]:
+                if reason not in ["no_vault_uuid", "zero_or_negative_cost"]:
                     logger.warning(
-                        f"Failed to update budget for connection_id={connection_id}. "
+                        f"Failed to update budget for vault_uuid={vault_uuid}. "
                         f"Reason: {reason}"
                     )
 

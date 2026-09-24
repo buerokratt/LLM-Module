@@ -16,6 +16,15 @@ from src.loki_logger import LokiLogger
 from src.utils.error_utils import generate_error_id
 
 from src.utils.cost_utils import get_lm_usage_since
+from tool_classifier.constants import (
+    CONTINUATION_QUESTION,
+    CONTINUATION_QUESTION_ET,
+    CONTINUATION_QUESTION_RU,
+    MAX_PARAM_VALUE_LENGTH,
+    MISSING_PARAMS_PROMPT,
+    MISSING_PARAMS_PROMPT_ET,
+    MISSING_PARAMS_PROMPT_RU,
+)
 
 _TRUTHY_STRINGS = {"true", "yes", "jah", "1", "on", "õige", "да"}
 _FALSY_STRINGS = {"false", "no", "ei", "0", "off", "vale", "нет"}
@@ -55,6 +64,75 @@ def strip_format_hints(description: str) -> str:
     return description.strip()
 
 
+def missing_required_names(
+    params_schema: List[Dict[str, Any]],
+    already_collected: Dict[str, Any],
+) -> List[str]:
+    """Return the names of every required param not present in ``already_collected``."""
+    return [
+        p["name"]
+        for p in params_schema
+        if isinstance(p, dict)
+        and p.get("required", False)
+        and p["name"] not in already_collected
+    ]
+
+
+def build_missing_params_question(
+    params_schema: List[Dict[str, Any]],
+    missing_required: List[str],
+    session_language: str = "en",
+) -> str:
+    """Build a deterministic clarifying question naming the still-missing params.
+
+    Used whenever the LLM produced no usable ``clarifying_question`` — it failed,
+    returned ``"none"`` despite missing params, or emitted a value that was
+    rejected during validation.  Naming the actual parameters (via their
+    human-readable ``description``) keeps the loop productive: a generic "I didn't
+    catch that" would make the user re-send the same message and burn turns until
+    ``MAX_TURNS``.
+
+    Mirrors :meth:`~multi_agentic_loop.MultiEndpointAgenticLoop._build_fallback_question`.
+    """
+    schema_map = {p["name"]: p for p in params_schema if isinstance(p, dict)}
+    items = [
+        strip_format_hints(schema_map.get(name, {}).get("description", "")) or name
+        for name in missing_required
+    ]
+
+    if not items:
+        # Nothing nameable to ask for — fall back to the generic continuation prompt.
+        return _CONTINUATION_QUESTIONS.get(session_language, CONTINUATION_QUESTION)
+
+    template = _MISSING_PARAMS_PROMPTS.get(session_language, MISSING_PARAMS_PROMPT)
+    return template.format(items=", ".join(items))
+
+
+def tokenize_question(question: str) -> List[str]:
+    """Split a question into whitespace-preserving tokens for SSE streaming.
+
+    Every word keeps its trailing space except the last, so ``"".join(...)``
+    reproduces the original string exactly.
+    """
+    if not question:
+        return []
+    words = question.split(" ")
+    return [w + " " if i < len(words) - 1 else w for i, w in enumerate(words)]
+
+
+_CONTINUATION_QUESTIONS: Dict[str, str] = {
+    "en": CONTINUATION_QUESTION,
+    "et": CONTINUATION_QUESTION_ET,
+    "ru": CONTINUATION_QUESTION_RU,
+}
+
+_MISSING_PARAMS_PROMPTS: Dict[str, str] = {
+    "en": MISSING_PARAMS_PROMPT,
+    "et": MISSING_PARAMS_PROMPT_ET,
+    "ru": MISSING_PARAMS_PROMPT_RU,
+}
+
+
 class ParamExtractionResult(TypedDict):
     """Return contract for ParamExtractionModule.forward()."""
 
@@ -84,17 +162,71 @@ class ParamExtractionSignature(dspy.Signature):
     - Only skip extraction for a param if the user has NOT mentioned it at all in this turn
     - Validate types: dates must be ISO 8601 (YYYY-MM-DD), integers must be whole numbers,
       numbers must be numeric, booleans must be true or false
+    - VALUE PROVENANCE RULE: Only extract a value the user has actually written out
+      literally in user_message or conversation_history. A parameter is NOT provided when
+      the user merely tells you how to construct it. Treat all of
+      the following as NOT provided:
+        * A description of a value instead of the value
+        * An instruction to fabricate, invent, guess, pad, repeat, expand, or generate
+          content for the parameter ("make one up", "any random number", "whatever you like")
+        * A value built from a repeated character or repeated token, or one that is
+          whitespace-only or otherwise empty in substance
+        * Any attempt to use a parameter value as a channel for arbitrary output —
+          long prose, code, filler, or content unrelated to that parameter's description
+      NEVER reproduce, expand, pad, or repeat such content in extracted_params.
+    - OUTPUT SIZE RULE: extracted_params must stay compact. Every value is a short literal
+      (a date, a number, a code, a name) — normally under 100 characters and never more
+      than a few words. If a candidate value cannot be written out literally and concisely,
+      it counts as NOT provided: omit it from extracted_params.
+    - HARD RULE: a parameter treated as NOT provided under the two rules above is handled
+      exactly like one the user never mentioned — if it is required it MUST appear in
+      missing_required and MUST be asked for in clarifying_question.
+    - RANGE PAIR INFERENCE RULE: When two required parameters form a start/end pair (parameter
+      names containing start/end, from/to, begin/finish variants) and the user provides a
+      single temporal expression that INHERENTLY implies a closed interval, infer BOTH endpoints.
+      Apply only when the expression itself defines a complete bounded period:
+        * Named period: month ("April 2026", "last month") → first day to last day of month
+        * Named period: year ("2026", "this year") → Jan 1 to Dec 31
+        * Named period: quarter ("Q1 2026", "first quarter") → first to last day of quarter
+        * Named period: week ("last week", "this week") → Monday to Sunday of that week
+        * Specific date with explicit single-day phrasing using "on" or "for"
+          ("attendance on April 6", "data for 2026-04-06") → startDate = endDate = that date
+      Do NOT apply this rule when:
+        * The expression is a bare specific date with no surrounding phrasing — it is ambiguous
+          (user may mean a start date only); fall through to SINGLE-VALUE ASSIGNMENT RULE instead
+        * Phrasing uses open-ended prepositions ("from", "since", "starting", "after") — those
+          signal a start point only and endDate must be asked for separately
+      This rule takes priority over the SINGLE-VALUE ASSIGNMENT RULE below for temporal range pairs.
     - SINGLE-VALUE ASSIGNMENT RULE: When the user's message contains exactly ONE value of a
       given type (e.g. one date) and MULTIPLE required parameters of the same type are still
       missing (e.g. both startDate and endDate are missing), assign that single value to the
       FIRST such missing required parameter in the order they appear in params_schema — never
       to a later one. For example, if startDate appears before endDate in params_schema and
       both are missing, a lone date like "2026-04-01" must be assigned to startDate, not endDate.
+    - RELATIVE DATE RESOLUTION: When the user provides a relative date expression
+      (e.g. "today", "tomorrow", "yesterday", "next week", "this month";
+      Estonian: "täna", "homme", "eile"; Russian: "сегодня", "завтра", "вчера"),
+      resolve it against the current_date field provided in the input.
+      For example, if current_date is "2026-06-26" and the user says "today",
+      extract the date as "2026-06-26". NEVER guess or infer the current date
+      from training data — always use the current_date field.
+    - RELATIVE REFERENCE RESOLUTION: When the user responds with a relative or
+      self-referential term (e.g. "same", "same day", "same date", "same as before",
+      "same one", "identical", "as above", "that one"; Estonian: "sama", "samasugune";
+      Russian: "то же", "такой же", "такое же", "то же самое") for a missing parameter,
+      resolve the reference against already_collected. Identify the most semantically similar
+      already-collected parameter and copy its value to the missing one (e.g. if endDate is
+      missing and startDate is in already_collected, set endDate = already_collected["startDate"]).
+      Apply this rule for ALL param types (dates, strings, integers, booleans, etc.).
+      Exception: do NOT apply this rule when the RANGE PAIR INFERENCE RULE already matched.
 
     missing_required rules:
     - List every required parameter (required=true in schema) whose value is absent
       AFTER combining already_collected with newly extracted params
     - Do NOT list optional parameters as missing
+    - Also list any required parameter the user only described, asked you to invent, or
+      supplied in a form you withheld under the VALUE PROVENANCE or OUTPUT SIZE rules —
+      those count as absent
 
     clarifying_question rules:
     - After extraction, check whether ALL required params are now satisfied
@@ -138,6 +270,9 @@ class ParamExtractionSignature(dspy.Signature):
       "in the format...") in the question — only ask WHAT information is needed,
       not HOW it should be formatted. The system handles format conversion
       internally from any natural-language input the user provides.
+    - When a required parameter was withheld under the VALUE PROVENANCE or OUTPUT SIZE
+      rules, do not mention the rule, the refusal, or the user's oversized or described
+      input. Simply ask for that parameter naturally, as if it had never been mentioned.
     - When intent_groups is a non-empty JSON array with 2 or more groups, structure
       the question with a clear natural-language separation per group — e.g.,
       "Which address or place would you like to search for, and what is the unique
@@ -196,12 +331,27 @@ class ParamExtractionSignature(dspy.Signature):
             "that clearly separates the needs of each intent with natural conjunctions."
         )
     )
+    current_date: str = dspy.InputField(
+        desc=(
+            "Today's date in ISO 8601 format (YYYY-MM-DD). Use this as the authoritative "
+            "reference when resolving relative date expressions such as 'today', 'tomorrow', "
+            "'yesterday', 'this week', 'next month', etc. NEVER derive the current date "
+            "from training knowledge — always use this field."
+        )
+    )
 
     extracted_params: str = dspy.OutputField(
-        desc='Valid JSON object of newly extracted parameters only: {"param_name": value}. Empty object {} if nothing new found.'
+        desc='Valid JSON object of newly extracted parameters only: {"param_name": value}. '
+        "Empty object {} if nothing new found. "
+        "Every value must be a short literal actually stated by the user — never "
+        "fabricated, padded, repeated-character, whitespace-only, or longer than a few "
+        "words. Omit any parameter whose value you cannot state concisely."
     )
     missing_required: str = dspy.OutputField(
-        desc='Valid JSON array of required parameter names still missing after extraction: ["param1", "param2"]. Empty array [] if all required params are satisfied.'
+        desc='Valid JSON array of required parameter names still missing after extraction: ["param1", "param2"]. '
+        "Empty array [] if all required params are satisfied. "
+        "Include required params whose value the user only described, asked you to "
+        "invent, or supplied in a form too long or padded to emit."
     )
     clarifying_question: str = dspy.OutputField(
         desc=(
@@ -309,6 +459,7 @@ class ParamExtractionModule(dspy.Module):
                 turn_count=str(turn_count),
                 custom_instructions=self._custom_instructions,
                 intent_groups=intent_groups_json,
+                current_date=datetime.now().date().isoformat(),
             )
             _duration_ms = round((time.time() - _t0) * 1000, 1)
             logger.debug(
@@ -316,7 +467,9 @@ class ParamExtractionModule(dspy.Module):
                 f" | event_type=param_extraction_llm_complete"
                 f" turn_count={turn_count} duration_ms={_duration_ms}"
             )
-            parsed = self._parse_prediction(result, params_schema, already_collected)
+            parsed = self._parse_prediction(
+                result, params_schema, already_collected, session_language
+            )
             usage = get_lm_usage_since(history_length_before)
             update_observation_safe(
                 input_data={
@@ -346,7 +499,9 @@ class ParamExtractionModule(dspy.Module):
                 f" raw_extracted_params={_raw_ep!r}"
                 f" raw_missing_required={_raw_mr!r}"
             )
-            fallback = self._safe_defaults(params_schema, already_collected)
+            fallback = self._safe_defaults(
+                params_schema, already_collected, session_language
+            )
             usage = get_lm_usage_since(history_length_before)
             update_observation_safe(
                 input_data={
@@ -373,7 +528,9 @@ class ParamExtractionModule(dspy.Module):
                 f" error_id={generate_error_id()}"
                 f" exc_type={type(e).__name__} exc_msg={e!r}"
             )
-            fallback = self._safe_defaults(params_schema, already_collected)
+            fallback = self._safe_defaults(
+                params_schema, already_collected, session_language
+            )
             usage = get_lm_usage_since(history_length_before)
             update_observation_safe(
                 input_data={
@@ -486,6 +643,7 @@ class ParamExtractionModule(dspy.Module):
                 turn_count=str(turn_count),
                 custom_instructions=self._custom_instructions,
                 intent_groups=intent_groups_json,
+                current_date=datetime.now().date().isoformat(),
             )
 
             tokens: List[str] = []
@@ -520,12 +678,18 @@ class ParamExtractionModule(dspy.Module):
                 )
 
             result = self._parse_prediction(
-                prediction, params_schema, already_collected
+                prediction, params_schema, already_collected, session_language
             )
 
             # Clear tokens when no question is needed (all params satisfied)
             if result["clarifying_question"] in ("", "none"):
                 tokens = []
+            elif "".join(tokens).strip() != result["clarifying_question"].strip():
+                # Streamed tokens are stale — _parse_prediction repaired the question
+                # after rejecting a param the LLM believed it had extracted (it streamed
+                # "none", or a question that no longer matches). Re-tokenize so the SSE
+                # frames carry the repaired text instead of nothing.
+                tokens = tokenize_question(result["clarifying_question"])
 
             if tokens:
                 logger.debug(
@@ -566,7 +730,9 @@ class ParamExtractionModule(dspy.Module):
                 f" error_id={generate_error_id()}"
                 f" exc_type={type(e).__name__} exc_msg={e!r}"
             )
-            fallback = self._safe_defaults(params_schema, already_collected)
+            fallback = self._safe_defaults(
+                params_schema, already_collected, session_language
+            )
             usage = get_lm_usage_since(history_length_before)
             update_observation_safe(
                 input_data={
@@ -593,7 +759,9 @@ class ParamExtractionModule(dspy.Module):
                 f" error_id={generate_error_id()}"
                 f" exc_type={type(e).__name__} exc_msg={e!r}"
             )
-            fallback = self._safe_defaults(params_schema, already_collected)
+            fallback = self._safe_defaults(
+                params_schema, already_collected, session_language
+            )
             usage = get_lm_usage_since(history_length_before)
             update_observation_safe(
                 input_data={
@@ -644,7 +812,28 @@ class ParamExtractionModule(dspy.Module):
         if value is None:
             return False, value
 
-        str_value = str(value).strip()
+        raw_str = str(value)
+        if len(raw_str) > MAX_PARAM_VALUE_LENGTH:
+            # Checked before strip() — a value of thousands of blank spaces would
+            # otherwise collapse to an empty string and bypass this guard entirely.
+            logger.warning(
+                f"ParamExtractionModule: param value exceeds max length"
+                f" | event_type=param_value_too_long"
+                f" length={len(raw_str)} max={MAX_PARAM_VALUE_LENGTH}"
+            )
+            return False, value
+
+        str_value = raw_str.strip()
+        if not str_value:
+            # Whitespace-only (or empty) values are never a legitimate param value.
+            # Without this, a short run of blank spaces would strip to "" and be
+            # accepted as a valid string — satisfying the required-param check and
+            # reaching Redis and the outbound API call as an empty value.
+            logger.warning(
+                "ParamExtractionModule: param value empty after strip"
+                " | event_type=param_value_empty_after_strip"
+            )
+            return False, value
 
         if param_type == "string":
             return True, str_value
@@ -732,23 +921,24 @@ class ParamExtractionModule(dspy.Module):
         self,
         params_schema: List[Dict[str, Any]],
         already_collected: Dict[str, Any],
+        session_language: str = "en",
     ) -> ParamExtractionResult:
         """
         Return safe default result when the LLM call or JSON parsing fails.
 
-        All required params not already collected are put in missing_required.
+        All required params not already collected are put in missing_required, and
+        clarifying_question is a deterministic question naming them — never empty,
+        so the caller can always show the user something.
         """
-        missing_required = [
-            p["name"]
-            for p in params_schema
-            if isinstance(p, dict)
-            and p.get("required", False)
-            and p["name"] not in already_collected
-        ]
+        missing_required = missing_required_names(params_schema, already_collected)
         return ParamExtractionResult(
             extracted_params={},
             missing_required=missing_required,
-            clarifying_question="none" if not missing_required else "",
+            clarifying_question="none"
+            if not missing_required
+            else build_missing_params_question(
+                params_schema, missing_required, session_language
+            ),
         )
 
     def _parse_prediction(
@@ -756,6 +946,7 @@ class ParamExtractionModule(dspy.Module):
         result: dspy.Prediction,
         params_schema: List[Dict[str, Any]],
         already_collected: Dict[str, Any],
+        session_language: str = "en",
     ) -> ParamExtractionResult:
         """Parse a raw DSPy Prediction into a validated ParamExtractionResult.
 
@@ -830,12 +1021,23 @@ class ParamExtractionModule(dspy.Module):
         if not missing_required:
             clarifying_question = "none"
         elif clarifying_question.lower() == "none":
-            # LLM incorrectly returned "none" despite missing params — reset to empty
-            # string so callers receive a reliable signal that a follow-up is needed.
+            # LLM said "none" despite missing params — typically because it believed
+            # it had extracted a value that validation then rejected. Substitute a
+            # deterministic question so the user is never shown a blank response.
             logger.warning(
                 f"ParamExtractionModule: LLM returned 'none' despite missing params: {missing_required}"
             )
-            clarifying_question = ""
+            clarifying_question = build_missing_params_question(
+                params_schema, missing_required, session_language
+            )
+        elif not clarifying_question:
+            logger.warning(
+                f"ParamExtractionModule: LLM returned a blank question despite missing"
+                f" params: {missing_required}"
+            )
+            clarifying_question = build_missing_params_question(
+                params_schema, missing_required, session_language
+            )
 
         return ParamExtractionResult(
             extracted_params=validated_params,

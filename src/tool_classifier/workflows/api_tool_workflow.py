@@ -214,7 +214,10 @@ class APIToolWorkflowExecutor(BaseWorkflow):
             )
             return custom_prompt if custom_prompt else ""
         except Exception as e:
-            logger.error(f"APIToolWorkflow: failed to fetch custom instructions: {e}")
+            logger.error(
+                f"APIToolWorkflow: failed to fetch custom instructions: {e}",
+                exc_info=True,
+            )
             return ""
 
     def _build_agentic_loop(

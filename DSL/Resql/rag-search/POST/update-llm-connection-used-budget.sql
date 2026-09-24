@@ -12,4 +12,7 @@ RETURNING
     stop_budget_threshold,
     disconnect_on_budget_exceed,
     connection_status,
-    (used_budget >= stop_budget_threshold) AS budget_exceeded;
+    CASE
+        WHEN stop_budget_threshold = 0 THEN (used_budget >= monthly_budget)
+        ELSE (used_budget::DECIMAL / monthly_budget::DECIMAL) >= (stop_budget_threshold::DECIMAL / 100.0)
+    END AS budget_exceeded;
