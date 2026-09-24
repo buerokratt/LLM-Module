@@ -34,7 +34,7 @@ jobs:
       - name: Docker Build
         run: | 
            cd GUI
-           docker image build --tag $DOCKER_TAG_CUSTOM -f Dockerfile.dev .
+           docker image build --tag $DOCKER_TAG_CUSTOM -f Dockerfile .
 
       - name: Log in to GitHub container registry
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u $ --password-stdin
