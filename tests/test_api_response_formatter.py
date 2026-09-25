@@ -776,3 +776,27 @@ class TestPrependListSummary:
         result = APIResponseFormatterModule._prepend_list_summary(data)
         # Statistics should come first
         assert result.index("[COMPUTED STATISTICS") < result.index(data)
+
+
+class TestPrepareApiResponse:
+    """_prepare_api_response() must compute stats on the full list, then truncate."""
+
+    def test_item_cap_applies_with_statistics(self) -> None:
+        """Stats reflect all items while the JSON body is capped at _MAX_ITEMS."""
+        data = [{"id": i, "flag": i % 2} for i in range(600)]
+        result = APIResponseFormatterModule._prepare_api_response(data)
+
+        assert "[COMPUTED STATISTICS (full 600-item response):" in result
+        assert "[NOTE: Response truncated to 500 of 600 total items]" in result
+        body = result[result.index("[NOTE:") :].split("\n", 1)[1]
+        assert len(json.loads(body)) == 500
+
+    def test_byte_limit_includes_statistics_header(self) -> None:
+        """The final string (header + body) stays within _MAX_RESPONSE_BYTES."""
+        from src.tool_classifier.api_response_formatter import _MAX_RESPONSE_BYTES
+
+        data = [{"id": i, "text": "x" * 1000} for i in range(400)]
+        result = APIResponseFormatterModule._prepare_api_response(data)
+
+        assert result.startswith("[COMPUTED STATISTICS")
+        assert len(result.encode("utf-8")) <= _MAX_RESPONSE_BYTES

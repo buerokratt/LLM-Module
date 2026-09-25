@@ -217,10 +217,7 @@ class APIResponseFormatterModule(dspy.Module):
         collected_params = collected_params or {}
 
         try:
-            normalized = self._normalize_response(api_response)
-            normalized = self._annotate_empty(normalized)
-            normalized = self._prepend_list_summary(normalized)
-            normalized = self._truncate_if_needed(normalized)
+            normalized = self._prepare_api_response(api_response)
             response_language = _LANGUAGE_NAMES.get(detected_language, "English")
             params_context = build_params_context(collected_params)
 
@@ -358,10 +355,7 @@ class APIResponseFormatterModule(dspy.Module):
                     f"{e}"
                 )
             try:
-                normalized = self._normalize_response(api_response)
-                normalized = self._annotate_empty(normalized)
-                normalized = self._prepend_list_summary(normalized)
-                normalized = self._truncate_if_needed(normalized)
+                normalized = self._prepare_api_response(api_response)
                 response_language = _LANGUAGE_NAMES.get(detected_language, "English")
                 params_context = build_params_context(collected_params)
 
@@ -548,25 +542,58 @@ class APIResponseFormatterModule(dspy.Module):
             return "[EMPTY RESPONSE: The API returned no data for this query]"
         return api_response_str
 
-    @staticmethod
-    def _prepend_list_summary(api_response_str: str) -> str:
-        """Prepend computed aggregate statistics for list responses.
+    @classmethod
+    def _prepare_api_response(
+        cls, api_response: Union[str, Dict[str, Any], List[Any]]
+    ) -> str:
+        """Normalize, summarize and truncate an API response for the LLM.
 
-        Runs BEFORE truncation so the LLM always sees the correct totals even
-        when the raw JSON is cut short by the byte-size limit.  Without this,
-        the LLM must count items from a potentially truncated (and malformed)
-        JSON string, which produces non-deterministic results.
+        Statistics are computed from the FULL response, then truncation runs on
+        the original (still valid) JSON, and only then is the summary prepended.
+        Prepending first would break ``json.loads`` in ``_truncate_if_needed`` and
+        silently disable the ``_MAX_ITEMS`` cap.
+        """
+        normalized = cls._normalize_response(api_response)
+        normalized = cls._annotate_empty(normalized)
+        summary = cls._build_list_summary(normalized)
+        if not summary:
+            return cls._truncate_if_needed(normalized)
+        header = summary + "\n"
+        truncated = cls._truncate_if_needed(
+            normalized,
+            max_bytes=_MAX_RESPONSE_BYTES - len(header.encode("utf-8")),
+        )
+        return header + truncated
+
+    @classmethod
+    def _prepend_list_summary(cls, api_response_str: str) -> str:
+        """Prepend computed aggregate statistics for list responses."""
+        summary = cls._build_list_summary(api_response_str)
+        if not summary:
+            return api_response_str
+        return summary + "\n" + api_response_str
+
+    @staticmethod
+    def _build_list_summary(api_response_str: str) -> str:
+        """Compute aggregate statistics for a list-of-dict JSON response.
+
+        Computed from the full response BEFORE truncation so the LLM always sees
+        the correct totals even when the raw JSON is cut short.  Without this,
+        the LLM must count items from a potentially truncated JSON string, which
+        produces non-deterministic results.
+
+        Returns an empty string when the response is not a list of 2+ dicts.
         """
         try:
             parsed = json.loads(api_response_str)
         except (json.JSONDecodeError, ValueError):
-            return api_response_str
+            return ""
 
         if not isinstance(parsed, list) or len(parsed) < 2:
-            return api_response_str
+            return ""
 
         if not all(isinstance(item, dict) for item in parsed):
-            return api_response_str
+            return ""
 
         total = len(parsed)
 
@@ -593,10 +620,12 @@ class APIResponseFormatterModule(dspy.Module):
                 lines.append(f"  {field}: total={f_sum}, min={f_min}, max={f_max}")
         lines.append("]")
 
-        return "\n".join(lines) + "\n" + api_response_str
+        return "\n".join(lines)
 
     @staticmethod
-    def _truncate_if_needed(api_response_str: str) -> str:
+    def _truncate_if_needed(
+        api_response_str: str, max_bytes: int = _MAX_RESPONSE_BYTES
+    ) -> str:
         """Truncate responses that exceed the item count or byte-size limits."""
         try:
             parsed = json.loads(api_response_str)
@@ -612,10 +641,10 @@ class APIResponseFormatterModule(dspy.Module):
             )
 
         encoded = api_response_str.encode("utf-8")
-        if len(encoded) > _MAX_RESPONSE_BYTES:
+        if len(encoded) > max_bytes:
             suffix = "\n[NOTE: Response truncated due to size limit]"
             suffix_bytes = len(suffix.encode("utf-8"))
-            truncated_str = encoded[: _MAX_RESPONSE_BYTES - suffix_bytes].decode(
+            truncated_str = encoded[: max(max_bytes - suffix_bytes, 0)].decode(
                 "utf-8", errors="ignore"
             )
             logger.warning(
