@@ -306,6 +306,60 @@ class ConnectionIdFetcher:
 
         return None
 
+    def fetch_connection_budget_status_sync(
+        self, vault_uuid: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Fetch connection status and budget data by vault_uuid.
+
+        Used for pre-request validation to check if a connection is active
+        and within budget before processing user messages.
+
+        Args:
+            vault_uuid: The vault UUID identifying the connection
+
+        Returns:
+            Dictionary with connection data (connectionStatus, usedBudget,
+            monthlyBudget, stopBudgetThreshold, disconnectOnBudgetExceed, etc.)
+            or None if the connection was not found or the request failed.
+        """
+        try:
+            endpoint = f"{self.resql_base}/get-connection-budget-status"
+            response = requests.post(
+                endpoint,
+                json={"vault_uuid": vault_uuid},
+                timeout=self.timeout,
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+
+                # Handle list response from Resql
+                if isinstance(data, list) and len(data) > 0:
+                    return data[0]
+                elif isinstance(data, dict):
+                    return data
+
+                logger.warning(f"No connection found for vault_uuid={vault_uuid}")
+                return None
+            else:
+                logger.error(
+                    f"Failed to fetch connection budget status for vault_uuid={vault_uuid}. "
+                    f"Status: {response.status_code}"
+                )
+                return None
+
+        except requests.exceptions.Timeout:
+            logger.error(
+                f"Timeout fetching connection budget status for vault_uuid={vault_uuid}"
+            )
+            return None
+        except Exception as e:
+            logger.error(
+                f"Error fetching connection budget status for vault_uuid={vault_uuid}: {e}"
+            )
+            return None
+
 
 # Singleton instance for reuse across modules
 _connection_id_fetcher: Optional[ConnectionIdFetcher] = None

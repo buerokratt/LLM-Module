@@ -38,9 +38,10 @@ Layer 5: OOD              → Out-of-domain fallback
 | Component | File | Responsibility |
 |-----------|------|----------------|
 | `ContextAnalyzer` | `src/tool_classifier/context_analyzer.py` | LLM-based greeting detection, context analysis, summary generation |
-| `ContextWorkflowExecutor` | `src/tool_classifier/workflows/context_workflow.py` | Orchestrates the workflow, history fetching, streaming/non-streaming |
+| `ContextWorkflowExecutor` | `src/tool_classifier/workflows/context_workflow.py` | Orchestrates the workflow, history fetching, custom instructions, streaming/non-streaming |
 | `ToolClassifier` | `src/tool_classifier/classifier.py` | Invokes `ContextAnalyzer` during classification and routes to `ContextWorkflowExecutor` |
 | `FeatureFlags.CONTEXT_WORKFLOW_ENABLED` | `src/llm_orchestrator_config/feature_flags.py` | Guards the context workflow; if `False`, the layer is skipped in the fallback chain and the request proceeds directly to RAG |
+| `PromptConfigurationLoader` | `src/utils/prompt_config_loader.py` | Fetches and caches administrator-defined custom prompt instructions from Ruuter (5-minute TTL) |
 | `ConversationHistoryStore` | `src/utils/conversation_history_store.py` | Redis CRUD store for per-session rounds and incremental summary |
 | `conversation_summary_generator` | `src/utils/conversation_summary_generator.py` | Factory for the incremental summarizer callable injected into the store |
 | `redis_client` | `src/utils/redis_client.py` | Singleton async Redis client (db=1, TLS-capable) |
@@ -67,20 +68,22 @@ ToolClassifier.classify()
 
 ToolClassifier.route_to_workflow()
     ├─ Non-streaming → ContextWorkflowExecutor.execute_async()
+    │      ├─ _get_custom_instructions() → PromptConfigurationLoader [cached, 5-min TTL]
     │      ├─ _build_history() → ConversationHistoryStore.get_context() [Redis, with fallback]
     │      ├─ Phase 1: _detect() → context_analyzer.detect_context_with_summary_fallback()
     │      │      ├─ Step 1: detect_context() on last 10 turns
     │      │      ├─ Step 2 (if needed): use pre_computed_summary from Redis OR generate summary
     │      │      └─ Step 3 (if needed): _analyze_from_summary() on summary
     │      ├─ If greeting → return greeting OrchestrationResponse (static template)
-    │      ├─ If can_answer → _generate_response_async() → context_analyzer.generate_context_response()
+    │      ├─ If can_answer → _generate_response_async(custom_instructions=...) → context_analyzer.generate_context_response()
     │      └─ Otherwise → return None (RAG fallback)
     │
     └─ Streaming → ContextWorkflowExecutor.execute_streaming()
+           ├─ _get_custom_instructions() → PromptConfigurationLoader [cached, 5-min TTL]
            ├─ _build_history() → ConversationHistoryStore.get_context() [Redis, with fallback]
            ├─ Phase 1: _detect() → context_analyzer.detect_context_with_summary_fallback()
            ├─ If greeting → _stream_greeting() async generator (static template)
-           ├─ If can_answer → _create_history_stream() → context_analyzer.stream_context_response()
+           ├─ If can_answer → _create_history_stream(custom_instructions=...) → context_analyzer.stream_context_response()
            └─ Otherwise → return None (RAG fallback)
 ```
 
@@ -182,16 +185,43 @@ Otherwise (all steps exhausted)               → Fall back to RAG
 
 ### Non-Streaming (`_generate_response_async`)
 
-Calls `generate_context_response(query, context_snippet)` which uses `ContextResponseGenerationSignature` to produce a complete answer in a single LLM call. Output guardrails are applied before returning the `OrchestrationResponse`.
+Calls `generate_context_response(query, context_snippet, custom_instructions)` which uses `ContextResponseGenerationSignature` to produce a complete answer in a single LLM call. Output guardrails are applied before returning the `OrchestrationResponse`.
 
 ### Streaming (`_create_history_stream` → `stream_context_response`)
 
-Calls `stream_context_response(query, context_snippet)` which uses DSPy native streaming (`dspy.streamify`) with `ContextResponseGenerationSignature`. A fresh `StreamListener` is created per call to avoid stale state. Tokens are yielded in real time and passed through NeMo Guardrails before being SSE-formatted.
+Calls `stream_context_response(query, context_snippet, custom_instructions)` which uses DSPy native streaming (`dspy.streamify`) with `ContextResponseGenerationSignature`. A fresh `StreamListener` is created per call to avoid stale state. Tokens are yielded in real time and passed through NeMo Guardrails before being SSE-formatted.
 
 **Fallback chain inside `stream_context_response`:**
 1. DSPy `streamify` → yield `StreamResponse` tokens as they arrive.
 2. If no stream tokens received but the final `Prediction` has an answer, yield it in word-group chunks.
-3. If that is also empty, call `generate_context_response()` directly and yield its result in word-group chunks.
+3. If that is also empty, call `generate_context_response()` (with `custom_instructions`) directly and yield its result in word-group chunks.
+
+---
+
+## Custom Prompt Configuration
+
+`ContextWorkflowExecutor` supports administrator-defined custom instructions that override the default response behaviour (language, tone, format) for Phase 2 generation — the same mechanism used by `APIToolWorkflowExecutor`.
+
+### How It Works
+
+1. `ContextWorkflowExecutor.__init__` reads `prompt_config_loader` from the `orchestration_service` via `getattr` (returns `None` if absent — safe for unit tests and environments without Ruuter).
+2. At the start of every `execute_async` / `execute_streaming` call, `_get_custom_instructions()` fetches the current instructions:
+   - Calls `PromptConfigurationLoader.get_custom_instructions()` via `asyncio.to_thread` so the synchronous HTTP/cache call never blocks the async event loop.
+   - Returns `""` (empty string) on any failure, preserving existing behaviour.
+3. The non-empty instructions string is forwarded as `custom_instructions=` to `_generate_response_async` / `_create_history_stream`, and from there into `context_analyzer.generate_context_response` / `stream_context_response`.
+4. `ContextResponseGenerationSignature` receives `custom_instructions` as its first input field. The LLM follows them precisely when non-empty (e.g. "Always respond in English") and falls back to default behaviour when the field is empty.
+
+### Caching
+
+`PromptConfigurationLoader` maintains a thread-safe in-process cache with a **5-minute TTL**. Only one thread fetches at a time (thundering-herd prevention); others wait on a `Condition`. A stale cached value is used as a fallback if a fresh fetch fails. The cache can be force-refreshed via `POST /prompt-config/refresh`.
+
+### Graceful Degradation
+
+| Condition | Behaviour |
+|-----------|-----------|
+| `prompt_config_loader` not wired in | `_get_custom_instructions()` returns `""` immediately |
+| Ruuter unreachable / timeout | Returns stale cached value if available, otherwise `""` |
+| Any exception in `_get_custom_instructions()` | Logged as error, returns `""` — Phase 2 proceeds with default behaviour |
 
 ---
 
@@ -423,9 +453,10 @@ class ContextDetectionResult(BaseModel):
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `custom_instructions` | Input | Administrator-defined instructions (language, tone, format). Applied when non-empty; ignored otherwise. |
 | `context_snippet` | Input | Relevant excerpt from Phase 1 (or summary-derived answer) |
 | `user_query` | Input | Current user query |
-| `answer` | Output | Natural language response in the same language as the query |
+| `answer` | Output | Direct, concise response in the same language as the query (or as directed by `custom_instructions`). No follow-up offers appended. |
 
 ---
 
@@ -450,9 +481,10 @@ class ContextDetectionResult(BaseModel):
 | File | Purpose |
 |------|---------|
 | `src/tool_classifier/context_analyzer.py` | Core LLM analysis logic (detection, summary generation, response generation) |
-| `src/tool_classifier/workflows/context_workflow.py` | Workflow executor (history fetching, streaming + non-streaming) |
+| `src/tool_classifier/workflows/context_workflow.py` | Workflow executor (history fetching, custom instructions, streaming + non-streaming) |
 | `src/tool_classifier/classifier.py` | Classification layer that invokes context analysis |
 | `src/tool_classifier/greeting_constants.py` | Static greeting response templates (ET/EN) |
+| `src/utils/prompt_config_loader.py` | HTTP-backed loader for administrator custom instructions (5-min TTL cache) |
 | `src/utils/conversation_history_store.py` | Redis CRUD store for rounds and incremental summary |
 | `src/utils/conversation_summary_generator.py` | Factory for the incremental summarizer callable |
 | `src/utils/redis_client.py` | Singleton async Redis client (db=1, TLS-capable) |

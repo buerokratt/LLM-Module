@@ -137,6 +137,17 @@ Only a clear, unambiguous new query (cosine >= 0.50) should override a session."
 
 
 # ============================================================================
+# Parameter Extraction Guardrails
+# ============================================================================
+
+MAX_PARAM_VALUE_LENGTH = 500
+"""Maximum length (chars) of a single extracted parameter value.
+Values longer than this are treated as invalid (same path as a type mismatch),
+preventing oversized values from reaching Redis session storage, the external
+API call, or being re-echoed into the prompt on subsequent turns."""
+
+
+# ============================================================================
 # Agentic Loop — Continuation Threshold
 # ============================================================================
 
@@ -196,6 +207,17 @@ CONTINUATION_QUESTION_RU = (
     "Хотите ли вы продолжить и ответить ещё на несколько вопросов? (да / нет)"
 )
 """Russian version of the continuation question."""
+
+MISSING_PARAMS_PROMPT = "Please provide the following: {items}"
+"""Deterministic fallback question used when the LLM produced no usable
+clarifying_question but required params are still missing. ``{items}`` is a
+comma-separated list of the missing parameters' human-readable descriptions."""
+
+MISSING_PARAMS_PROMPT_ET = "Palun sisestage järgmine teave: {items}"
+"""Estonian version of the missing-params fallback question."""
+
+MISSING_PARAMS_PROMPT_RU = "Пожалуйста, предоставьте следующую информацию: {items}"
+"""Russian version of the missing-params fallback question."""
 
 # ============================================================================
 # API Caller Configuration

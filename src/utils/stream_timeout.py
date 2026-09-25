@@ -1,8 +1,8 @@
 """Stream timeout utilities for async streaming operations."""
 
 import asyncio
-from contextlib import asynccontextmanager
-from typing import AsyncIterator, Optional, Union
+from contextlib import asynccontextmanager, suppress
+from typing import Any, AsyncIterator, Optional, Tuple
 
 from src.llm_orchestrator_config.exceptions import StreamTimeoutError
 
@@ -12,29 +12,10 @@ from src.llm_orchestrator_config.exceptions import StreamTimeoutError
 HEARTBEAT_FRAME = ": ping\n\n"
 
 
-class _StreamExhausted:
-    """Sentinel type marking a normally-completed source iterator.
-
-    A dedicated class rather than a bare ``object()`` so that an ``isinstance``
-    check narrows the value back to ``str`` for type checkers.
-    """
-
-
-_STREAM_EXHAUSTED = _StreamExhausted()
-
-
-async def _next_or_sentinel(
-    iterator: AsyncIterator[str],
-) -> Union[str, _StreamExhausted]:
-    """Advance an async iterator, returning a sentinel instead of raising at the end.
-
-    Returning a sentinel keeps StopAsyncIteration out of the asyncio.Task that
-    wraps this call, where it would be an awkward special case.
-    """
-    try:
-        return await iterator.__anext__()
-    except StopAsyncIteration:
-        return _STREAM_EXHAUSTED
+# Queue message kinds exchanged between the pump task and the relay loop.
+_CHUNK = "chunk"
+_DONE = "done"
+_ERROR = "error"
 
 
 @asynccontextmanager
@@ -89,37 +70,62 @@ async def with_heartbeat(
     Raises:
         StreamTimeoutError: If no chunk arrives for ``idle_timeout`` seconds.
     """
-    iterator = source.__aiter__()
-    pending: Optional["asyncio.Task[Union[str, _StreamExhausted]]"] = None
+    # The source is drained by a single long-lived task rather than one task per
+    # chunk. Advancing an async generator from a different task on each pull
+    # splits any task-affine state it holds across a `yield`: anyio cancel scopes
+    # (used by the NeMo/DSPy streaming stack) raise "Attempted to exit cancel
+    # scope in a different task", and OTel context tokens fail to detach. Pinning
+    # the whole `async for` to one task keeps both paired correctly.
+    #
+    # maxsize=1 preserves backpressure - the pump stays at most one chunk ahead
+    # of the consumer instead of buffering a whole answer in memory.
+    queue: "asyncio.Queue[Tuple[str, Any]]" = asyncio.Queue(maxsize=1)
+
+    async def pump() -> None:
+        try:
+            async for chunk in source:
+                await queue.put((_CHUNK, chunk))
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:  # noqa: BLE001 — re-raised on the consumer side
+            await queue.put((_ERROR, exc))
+        else:
+            await queue.put((_DONE, None))
+
+    pump_task: Optional["asyncio.Task[None]"] = asyncio.ensure_future(pump())
 
     try:
         while True:
-            pending = asyncio.ensure_future(_next_or_sentinel(iterator))
             idle_elapsed = 0.0
 
             while True:
                 try:
-                    # Shielded so a heartbeat timeout does not cancel the pull;
-                    # the same task is awaited again on the next pass.
-                    chunk = await asyncio.wait_for(
-                        asyncio.shield(pending), heartbeat_interval
+                    # Only the queue read is timed out. The source pull is never
+                    # cancelled or restarted, so a heartbeat cannot disturb it.
+                    kind, value = await asyncio.wait_for(
+                        queue.get(), heartbeat_interval
                     )
                     break
                 except asyncio.TimeoutError:
                     idle_elapsed += heartbeat_interval
                     if idle_elapsed >= idle_timeout:
-                        pending.cancel()
                         raise StreamTimeoutError(
                             f"Stream produced no output for {idle_elapsed:.1f} "
                             f"seconds (idle limit {idle_timeout:.1f}s)"
                         ) from None
                     yield HEARTBEAT_FRAME
 
-            if isinstance(chunk, _StreamExhausted):
+            if kind == _DONE:
                 return
+            if kind == _ERROR:
+                raise value
 
-            yield chunk
+            yield value
     finally:
-        # Covers early consumer exit (client disconnect) as well as errors.
-        if pending is not None and not pending.done():
-            pending.cancel()
+        # Covers early consumer exit (client disconnect), timeout and errors.
+        # Awaiting the cancellation matters: it lets the source generator unwind
+        # inside the pump task, which is the task that entered its cancel scopes.
+        if pump_task is not None and not pump_task.done():
+            pump_task.cancel()
+            with suppress(BaseException):
+                await pump_task

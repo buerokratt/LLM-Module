@@ -684,3 +684,119 @@ class TestStreamForward:
         ]
 
         assert collected == [_FORMATTER_ERROR_MESSAGES["en"]]
+
+
+# ---------------------------------------------------------------------------
+# _prepend_list_summary
+# ---------------------------------------------------------------------------
+
+
+class TestPrependListSummary:
+    """_prepend_list_summary() should prepend aggregate statistics for list responses."""
+
+    def test_returns_input_unchanged_for_non_list(self) -> None:
+        """A non-list JSON response should be returned unchanged."""
+        result = APIResponseFormatterModule._prepend_list_summary('{"key": 1}')
+        assert result == '{"key": 1}'
+
+    def test_single_item_list_not_annotated(self) -> None:
+        """A list with fewer than 2 items should not be annotated."""
+        result = APIResponseFormatterModule._prepend_list_summary('[{"a": 1}]')
+        assert "[COMPUTED STATISTICS" not in result
+
+    def test_empty_list_not_annotated(self) -> None:
+        """An empty list should not be annotated."""
+        result = APIResponseFormatterModule._prepend_list_summary("[]")
+        assert result == "[]"
+
+    def test_numeric_fields_produce_statistics_block(self) -> None:
+        """Numeric fields should produce a statistics block with total, min, max."""
+        data = json.dumps([{"amount": 10.0}, {"amount": 20.0}])
+        result = APIResponseFormatterModule._prepend_list_summary(data)
+        assert "[COMPUTED STATISTICS (full 2-item response):" in result
+        assert "total=30.0" in result
+        assert "min=10.0" in result
+        assert "max=20.0" in result
+
+    def test_multiple_numeric_fields(self) -> None:
+        """Multiple numeric fields should each appear in the statistics block."""
+        data = json.dumps([{"x": 1.0, "y": 2.0}, {"x": 3.0, "y": 4.0}])
+        result = APIResponseFormatterModule._prepend_list_summary(data)
+        assert "[COMPUTED STATISTICS" in result
+        assert "x:" in result
+        assert "y:" in result
+
+    def test_binary_field_reports_counts(self) -> None:
+        """Binary 0/1 fields should report counts instead of raw sum."""
+        data = json.dumps([{"active": 1}, {"active": 0}, {"active": 1}])
+        result = APIResponseFormatterModule._prepend_list_summary(data)
+        assert "[COMPUTED STATISTICS" in result
+        assert "2 items with value=1" in result
+        assert "1 items with value=0" in result
+
+    def test_field_with_all_same_value_uses_total_format(self) -> None:
+        """A field with all identical values (all 1s or all 0s) uses total/min/max format."""
+        data = json.dumps([{"enabled": 1}, {"enabled": 1}])
+        result = APIResponseFormatterModule._prepend_list_summary(data)
+        # All same value → not considered binary, uses total/min/max format
+        assert "total=2.0" in result
+        assert "min=1.0" in result
+        assert "max=1.0" in result
+
+    def test_mixed_field_types(self) -> None:
+        """Mixed numeric and non-numeric fields should only report numeric ones."""
+        data = json.dumps([{"name": "Alice", "count": 5}, {"name": "Bob", "count": 10}])
+        result = APIResponseFormatterModule._prepend_list_summary(data)
+        assert "[COMPUTED STATISTICS" in result
+        assert "count:" in result
+        # 'name' should not appear in statistics
+        assert "name:" not in result
+
+    def test_invalid_json_returned_unchanged(self) -> None:
+        """Invalid JSON should be returned unchanged."""
+        invalid = "not json"
+        result = APIResponseFormatterModule._prepend_list_summary(invalid)
+        assert result == invalid
+
+    def test_malformed_json_returned_unchanged(self) -> None:
+        """Malformed JSON should be returned unchanged."""
+        malformed = '{"key": '
+        result = APIResponseFormatterModule._prepend_list_summary(malformed)
+        assert result == malformed
+
+    def test_non_dict_list_not_annotated(self) -> None:
+        """A list of non-dict items should not be annotated."""
+        data = json.dumps([1, 2, 3])
+        result = APIResponseFormatterModule._prepend_list_summary(data)
+        assert "[COMPUTED STATISTICS" not in result
+
+    def test_statistics_prepended_before_original_response(self) -> None:
+        """The statistics block should be prepended before the original JSON."""
+        data = json.dumps([{"val": 1}, {"val": 2}])
+        result = APIResponseFormatterModule._prepend_list_summary(data)
+        # Statistics should come first
+        assert result.index("[COMPUTED STATISTICS") < result.index(data)
+
+
+class TestPrepareApiResponse:
+    """_prepare_api_response() must compute stats on the full list, then truncate."""
+
+    def test_item_cap_applies_with_statistics(self) -> None:
+        """Stats reflect all items while the JSON body is capped at _MAX_ITEMS."""
+        data = [{"id": i, "flag": i % 2} for i in range(600)]
+        result = APIResponseFormatterModule._prepare_api_response(data)
+
+        assert "[COMPUTED STATISTICS (full 600-item response):" in result
+        assert "[NOTE: Response truncated to 500 of 600 total items]" in result
+        body = result[result.index("[NOTE:") :].split("\n", 1)[1]
+        assert len(json.loads(body)) == 500
+
+    def test_byte_limit_includes_statistics_header(self) -> None:
+        """The final string (header + body) stays within _MAX_RESPONSE_BYTES."""
+        from src.tool_classifier.api_response_formatter import _MAX_RESPONSE_BYTES
+
+        data = [{"id": i, "text": "x" * 1000} for i in range(400)]
+        result = APIResponseFormatterModule._prepare_api_response(data)
+
+        assert result.startswith("[COMPUTED STATISTICS")
+        assert len(result.encode("utf-8")) <= _MAX_RESPONSE_BYTES

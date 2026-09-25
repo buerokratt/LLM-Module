@@ -675,7 +675,6 @@ class TestClassifyMultiIntentFeatureFlag:
         ):
             result = await classifier.classify(
                 query="public holidays AND weather",
-                conversation_history=[],
                 language="en",
                 request=_make_request("public holidays AND weather"),
             )
@@ -742,7 +741,6 @@ class TestClassifyMultiIntentFeatureFlag:
         ):
             result = await classifier.classify(
                 query="public holidays AND weather",
-                conversation_history=[],
                 language="en",
                 request=_make_request("public holidays AND weather"),
             )
