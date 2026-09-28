@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Generator
+from datetime import date
 from unittest.mock import MagicMock, patch
 
 import dspy
@@ -743,6 +744,21 @@ class TestCustomInstructions:
         module = ParamExtractionModule()
         assert module._custom_instructions == ""
 
+    def test_current_date_passed_to_predictor(self) -> None:
+        """forward() must pass today's date as a valid ISO string to the predictor."""
+        schema = self._make_schema()
+        module = ParamExtractionModule()
+
+        mock_result = _make_mock_result({"city": "Tallinn"}, [], "none")
+        with patch.object(
+            module, "extractor", return_value=mock_result
+        ) as mock_extractor:
+            module.forward(user_message="today", params_schema=schema)
+
+        call_kwargs = mock_extractor.call_args.kwargs
+        # Raises ValueError if the value is missing or malformed
+        date.fromisoformat(call_kwargs["current_date"])
+
 
 # ---------------------------------------------------------------------------
 # strip_format_hints helper
@@ -1057,3 +1073,21 @@ class TestStreamForward:
 
         assert captured_kwargs.get("session_language") == "et"
         assert tokens == ["Millist linna soovite?"]
+
+    @pytest.mark.asyncio
+    async def test_stream_forward_passes_current_date_to_predictor(self) -> None:
+        """current_date must be forwarded as a valid ISO date to the streaming predictor."""
+        schema = _make_schema(("city", "string", True, "City name"))
+        module = ParamExtractionModule()
+
+        prediction = self._make_prediction({"city": "Tallinn"}, [], "none")
+        captured_kwargs: dict = {}
+        stream_predictor = self._make_stream_predictor([], prediction, captured_kwargs)
+
+        with patch.object(
+            module, "_get_stream_predictor", return_value=stream_predictor
+        ):
+            await module.stream_forward(user_message="today", params_schema=schema)
+
+        # Raises ValueError if the value is missing or malformed
+        date.fromisoformat(captured_kwargs["current_date"])
