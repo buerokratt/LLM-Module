@@ -77,49 +77,12 @@
     "closeIcon": "Sulge menüü ikoon"
   },
   "menu": {
-    "userManagement": "Kasutajate haldus",
     "testLLM": "Testi mudelit",
     "testProductionLLM": "Testi toodangu mudelit",
     "llmConnections": {
       "_self": "Mudelite ühendused",
       "overview": "Ülevaade",
       "promptConfigurations": "Viiba Seaded"
-    }
-  },
-  "userManagement": {
-    "title": "Kasutajate haldus",
-    "addUserButton": " Lisa kasutaja",
-    "addUser": {
-      "addUserModalTitle": "Lisa uus kasutaja",
-      "editUserModalTitle": "Redigeeri kasutajat",
-      "deleteUserModalTitle": "Oled kindel?",
-      "deleteUserModalDesc": "Kinnita, et soovid kirje kustutada",
-      "name": "Ees- ja perekonnanimi",
-      "namePlaceholder": "Sisesta nimi",
-      "role": "Roll",
-      "rolePlaceholder": "-Vali-",
-      "personalId": "Isikukood",
-      "personalIdPlaceholder": "Sisesta isikukood",
-      "title": "Ametinimetus",
-      "titlePlaceholder": "Sisesta ametinimetus",
-      "email": "E-post",
-      "emailPlaceholder": "Sisesta e-post",
-      "nameRequired": "Nimi on kohustuslik",
-      "roleRequired": "Roll on kohustuslik",
-      "idCodeRequired": "Isikukood on kohustuslik",
-      "titleRequired": "Ametinimetus on kohustuslik",
-      "emailRequired": "E-posti aadress on kohustuslik",
-      "invalidIdCode": "Vigane isikukood",
-      "invalidEmail": "Vigane e-posti aadress",
-      "userExists": "Kasutaja on juba olemas"
-    },
-    "table": {
-      "fullName": "Täisnimi",
-      "personalId": "Isikukood",
-      "role": "Roll",
-      "email": "E-post",
-      "actions": "Tegevused",
-      "title": "Ametinimetus"
     }
   },
 
@@ -131,10 +94,7 @@
     "success": {
       "title": "Edu",
       "updateSuccess": "Uuendamine õnnestus",
-      "copied": "Kopeeritud",
-      "userDeleted": "Kasutaja kustutatud",
-      "newUserAdded": "Uus kasutaja lisatud",
-      "userUpdated": "Kasutaja uuendatud"
+      "copied": "Kopeeritud"
     },
     "error": {
       "title": "Viga"

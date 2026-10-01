@@ -23,9 +23,6 @@ data-mapper:
 TIM:
   enabled: true
 
-Authentication-Layer:
-  enabled: true
-
 CronManager:
   enabled: true
 
