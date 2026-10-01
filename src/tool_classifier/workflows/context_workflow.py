@@ -1,5 +1,6 @@
 """Context workflow executor - Layer 2: Conversation history and greetings."""
 
+import asyncio
 from typing import Any, AsyncIterator, Dict, Optional, cast
 import time
 import dspy
@@ -21,8 +22,10 @@ from src.utils.observation_utils import (
     update_observation_safe,
 )
 from src.llm_orchestrator_config.llm_ochestrator_constants import (
-    GUARDRAILS_BLOCKED_PHRASES,
+    is_output_guardrail_violation,
     OUTPUT_GUARDRAIL_VIOLATION_MESSAGE,
+    OUTPUT_GUARDRAIL_VIOLATION_PARTIAL_MESSAGES,
+    get_localized_message,
 )
 
 # Initialize Loki logger
@@ -72,6 +75,11 @@ class ContextWorkflowExecutor(BaseWorkflow):
         self.orchestration_service = orchestration_service
         self.conversation_history_store = conversation_history_store
         self.context_analyzer = ContextAnalyzer(llm_manager)
+        self._prompt_config_loader = (
+            getattr(orchestration_service, "prompt_config_loader", None)
+            if orchestration_service is not None
+            else None
+        )
         logger.info("Context workflow executor initialized")
 
     async def _build_history(
@@ -135,6 +143,28 @@ class ContextWorkflowExecutor(BaseWorkflow):
         ]
         return request_history, None
 
+    async def _get_custom_instructions(self) -> str:
+        """Fetch custom prompt instructions from the loader, or return empty string.
+
+        Mirrors APIToolWorkflowExecutor._get_custom_instructions. The
+        PromptConfigurationLoader has a 5-minute TTL cache, so this is cheap.
+        Runs the synchronous requests call in a thread pool via asyncio.to_thread
+        so a cache miss or slow Ruuter response never blocks the event loop.
+        """
+        if self._prompt_config_loader is None:
+            return ""
+        try:
+            custom_prompt = await asyncio.to_thread(
+                self._prompt_config_loader.get_custom_instructions
+            )
+            return custom_prompt if custom_prompt else ""
+        except Exception as e:
+            logger.error(
+                f"ContextWorkflow: failed to fetch custom instructions: {e}",
+                exc_info=True,
+            )
+            return ""
+
     @observe(name="context_workflow_detect", as_type="generation")
     async def _detect(
         self,
@@ -193,13 +223,13 @@ class ContextWorkflowExecutor(BaseWorkflow):
 
     @staticmethod
     def _is_guardrail_violation(chunk: str) -> bool:
-        """Return True if the chunk matches a known guardrail blocked phrase."""
-        chunk_lower = chunk.strip().lower()
-        return any(
-            phrase.lower() in chunk_lower
-            and len(chunk_lower) <= len(phrase.lower()) + 20
-            for phrase in GUARDRAILS_BLOCKED_PHRASES
-        )
+        """Return True if the chunk indicates an output guardrail block.
+
+        Covers both bot refusal phrases and NeMo's `enable_rails_exceptions`
+        JSON payload (guardrails_violation / "Blocked by self check output
+        rails") emitted as a content chunk mid-stream.
+        """
+        return is_output_guardrail_violation(chunk)
 
     @observe(name="context_workflow_generate_response", as_type="generation")
     async def _generate_response_async(
@@ -208,12 +238,15 @@ class ContextWorkflowExecutor(BaseWorkflow):
         context_snippet: str,
         time_metric: Dict[str, float],
         costs_metric: Dict[str, Dict[str, Any]],
+        custom_instructions: str = "",
     ) -> Optional[OrchestrationResponse]:
         """Non-streaming: Generate response + apply output guardrails."""
         try:
             start = time.time()
             answer, cost = await self.context_analyzer.generate_context_response(
-                query=request.message, context_snippet=context_snippet
+                query=request.message,
+                context_snippet=context_snippet,
+                custom_instructions=custom_instructions,
             )
             time_metric["context.generation"] = time.time() - start
             costs_metric["context_response"] = cost
@@ -277,10 +310,13 @@ class ContextWorkflowExecutor(BaseWorkflow):
         guardrails_adapter: NeMoRailsAdapter,
         costs_metric: Dict[str, Dict[str, Any]],
         request: OrchestrationRequest,
+        custom_instructions: str = "",
     ) -> AsyncIterator[str]:
         """Async generator: stream history answer through NeMo Guardrails."""
         bot_generator = self.context_analyzer.stream_context_response(
-            query=query, context_snippet=context_snippet
+            query=query,
+            context_snippet=context_snippet,
+            custom_instructions=custom_instructions,
         )
         orchestration_service = self.orchestration_service
         if orchestration_service is None:
@@ -300,11 +336,20 @@ class ContextWorkflowExecutor(BaseWorkflow):
                     logger.warning(
                         f"[{chat_id}] Guardrails violation in context streaming"
                     )
-                    yield orchestration_service.format_sse(
-                        chat_id, OUTPUT_GUARDRAIL_VIOLATION_MESSAGE
-                    )
+                    # If part of the answer already streamed, use the "rest of the
+                    # response" wording on a new line so it doesn't concatenate with
+                    # the partial answer; otherwise use the standard message.
+                    if accumulated_response:
+                        detected_language = getattr(request, "_detected_language", "en")
+                        violation_message = "\n\n" + get_localized_message(
+                            OUTPUT_GUARDRAIL_VIOLATION_PARTIAL_MESSAGES,
+                            detected_language,
+                        )
+                    else:
+                        violation_message = OUTPUT_GUARDRAIL_VIOLATION_MESSAGE
+                    yield orchestration_service.format_sse(chat_id, violation_message)
                     await orchestration_service.store_streaming_inference(
-                        request, OUTPUT_GUARDRAIL_VIOLATION_MESSAGE
+                        request, violation_message
                     )
                     yield orchestration_service.format_sse(chat_id, "END")
                     costs_metric["context_response"] = get_lm_usage_since(
@@ -356,6 +401,7 @@ class ContextWorkflowExecutor(BaseWorkflow):
         request: OrchestrationRequest,
         context_snippet: str,
         costs_metric: Dict[str, Dict[str, Any]],
+        custom_instructions: str = "",
     ) -> Optional[AsyncIterator[str]]:
         """Set up guardrails adapter and return the history streaming generator."""
         if not self.orchestration_service:
@@ -399,6 +445,7 @@ class ContextWorkflowExecutor(BaseWorkflow):
             guardrails_adapter=guardrails_adapter,
             costs_metric=costs_metric,
             request=request,
+            custom_instructions=custom_instructions,
         )
 
     @observe(name="context_workflow_execute_async", as_type="span")
@@ -425,6 +472,7 @@ class ContextWorkflowExecutor(BaseWorkflow):
         if time_metric is None:
             time_metric = {}
 
+        custom_instructions = await self._get_custom_instructions()
         language = detect_language(request.message)
         history, pre_computed_summary = await self._build_history(request)
 
@@ -498,7 +546,11 @@ class ContextWorkflowExecutor(BaseWorkflow):
                 metadata={"costs": costs_metric},
             )
             return await self._generate_response_async(
-                request, detection_result.context_snippet, time_metric, costs_metric
+                request,
+                detection_result.context_snippet,
+                time_metric,
+                costs_metric,
+                custom_instructions=custom_instructions,
             )
 
         logger.warning(
@@ -541,6 +593,7 @@ class ContextWorkflowExecutor(BaseWorkflow):
         if time_metric is None:
             time_metric = {}
 
+        custom_instructions = await self._get_custom_instructions()
         language = detect_language(request.message)
         history, pre_computed_summary = await self._build_history(request)
 
@@ -596,7 +649,10 @@ class ContextWorkflowExecutor(BaseWorkflow):
                 metadata={"costs": costs_metric},
             )
             return await self._create_history_stream(
-                request, detection_result.context_snippet, costs_metric
+                request,
+                detection_result.context_snippet,
+                costs_metric,
+                custom_instructions=custom_instructions,
             )
 
         logger.warning(

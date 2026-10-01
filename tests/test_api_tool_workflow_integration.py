@@ -226,7 +226,6 @@ class TestClassifyAndRouteToAPITool:
         ):
             result = await classifier.classify(
                 query="public holidays in Estonia",
-                conversation_history=[],
                 language="en",
                 request=_make_request("public holidays in Estonia"),
             )
@@ -256,7 +255,6 @@ class TestClassifyAndRouteToAPITool:
         ):
             result = await classifier.classify(
                 query="something completely unrelated to any API",
-                conversation_history=[],
                 language="en",
             )
 
@@ -664,7 +662,6 @@ class TestFallbackChainRegression:
         ):
             result = await classifier.classify(
                 query="public holidays",
-                conversation_history=[],
                 language="en",
                 request=_make_request("public holidays"),
             )
@@ -687,7 +684,6 @@ class TestFallbackChainRegression:
         ):
             result = await classifier.classify(
                 query="public holidays",
-                conversation_history=[],
                 language="en",
             )
 
@@ -761,7 +757,6 @@ class TestFallbackChainRegression:
         ):
             result = await classifier.classify(
                 query="What is the weather in Tallinn?",
-                conversation_history=[],
                 language="en",
                 request=_make_request("What is the weather in Tallinn?"),
             )
@@ -791,7 +786,6 @@ class TestFallbackChainRegression:
         ):
             result = await classifier.classify(
                 query="something not matching any endpoint",
-                conversation_history=[],
                 language="en",
                 request=_make_request("something not matching any endpoint"),
             )
