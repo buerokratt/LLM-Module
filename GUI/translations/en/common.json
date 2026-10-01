@@ -77,49 +77,12 @@
     "closeIcon": "Close menu icon"
   },
   "menu": {
-    "userManagement": "User management",
     "testLLM": "Test LLM",
     "testProductionLLM": "Test Production LLM",
     "llmConnections": {
       "_self": "LLM connections",
       "overview": "Overview",
       "promptConfigurations": "Prompt Configurations"
-    }
-  },
-  "userManagement": {
-    "title": "User management",
-    "addUserButton": " Add a user",
-    "addUser": {
-      "addUserModalTitle": "Add a new user",
-      "editUserModalTitle": "Edit user",
-      "deleteUserModalTitle": "Are you sure?",
-      "deleteUserModalDesc": "Confirm that you are wish to delete the following record",
-      "name": "First and last name",
-      "namePlaceholder": "Enter name",
-      "role": "Role",
-      "rolePlaceholder": "-Select-",
-      "personalId": "Personal ID",
-      "personalIdPlaceholder": "Enter personal ID",
-      "title": "Title",
-      "titlePlaceholder": "Enter title",
-      "email": "E-mail",
-      "emailPlaceholder": "Enter email",
-      "nameRequired": "Name is required",
-      "roleRequired": "Role is required",
-      "idCodeRequired": "Personal ID is required",
-      "titleRequired": "Title is required",
-      "emailRequired": "Email is required",
-      "invalidIdCode": "Invalid personal ID",
-      "invalidEmail": "Invalid e-mail",
-      "userExists": "User already exists"
-    },
-    "table": {
-      "fullName": "Full name",
-      "personalId": "Personal ID",
-      "role": "Role",
-      "email": "E-mail",
-      "actions": "Actions",
-      "title": "Title"
     }
   },
 
@@ -131,10 +94,7 @@
     "success": {
       "title": "Success",
       "updateSuccess": "Updated successfully",
-      "copied": "Copied",
-      "userDeleted": "User deleted",
-      "newUserAdded": "New user added",
-      "userUpdated": "User updated"
+      "copied": "Copied"
     },
     "error": {
       "title": "Error"

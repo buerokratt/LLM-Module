@@ -23,6 +23,14 @@ OUTPUT_GUARDRAIL_VIOLATION_MESSAGES = {
     "en": "I apologize, but I'm unable to provide a response as it may violate our usage policies.",
 }
 
+# Shown when the output guardrail blocks a response that has ALREADY started
+# streaming (violation detected mid-answer, after the first chunk).
+OUTPUT_GUARDRAIL_VIOLATION_PARTIAL_MESSAGES = {
+    "et": "Vabandust, kuid ma ei saa ülejäänud vastust genereerida, kuna see võib rikkuda meie kasutustingimusi.",
+    "ru": "Извините, но я не могу сгенерировать оставшуюся часть ответа, так как это может нарушить нашу политику использования.",
+    "en": "I apologize, but I'm unable to generate the rest of the response as it may violate our usage policies.",
+}
+
 # Query validation messages - single generic message for all rejection types
 # (empty queries, special characters only, too short, repetitive characters)
 QUERY_VALIDATION_FAILED_MESSAGES = {
@@ -36,6 +44,9 @@ OUT_OF_SCOPE_MESSAGE = OUT_OF_SCOPE_MESSAGES["en"]
 TECHNICAL_ISSUE_MESSAGE = TECHNICAL_ISSUE_MESSAGES["en"]
 INPUT_GUARDRAIL_VIOLATION_MESSAGE = INPUT_GUARDRAIL_VIOLATION_MESSAGES["en"]
 OUTPUT_GUARDRAIL_VIOLATION_MESSAGE = OUTPUT_GUARDRAIL_VIOLATION_MESSAGES["en"]
+OUTPUT_GUARDRAIL_VIOLATION_PARTIAL_MESSAGE = (
+    OUTPUT_GUARDRAIL_VIOLATION_PARTIAL_MESSAGES["en"]
+)
 
 UNKNOWN_SOURCE = "Unknown source"
 
@@ -45,6 +56,45 @@ GUARDRAILS_BLOCKED_PHRASES = [
     "i cannot help with that",
     "this is against policy",
 ]
+
+# Markers emitted by NeMo Guardrails when `enable_rails_exceptions: true` and an
+# output rail blocks a chunk mid-stream. NeMo yields this as a *content chunk*
+# (not an exception), e.g.:
+#   {"error": {"message": "Blocked by self check output rails.",
+#              "type": "guardrails_violation", "code": "content_blocked"}}
+GUARDRAILS_EXCEPTION_MARKERS = [
+    "guardrails_violation",
+    "content_blocked",
+    "blocked by self check",
+]
+
+
+def is_output_guardrail_violation(chunk: str) -> bool:
+    """Return True if a streamed chunk indicates an output guardrail block.
+
+    Handles two cases:
+    1. Bot refusal phrases (short refusals like "I cannot respond to that").
+    2. NeMo's `enable_rails_exceptions` JSON payload emitted as a content chunk
+       (e.g. "Blocked by self check output rails." / guardrails_violation), which
+       can be arbitrarily long and is therefore missed by the phrase/length check.
+    """
+    if not isinstance(chunk, str):
+        return False
+
+    chunk_lower = chunk.strip().lower()
+    if not chunk_lower:
+        return False
+
+    # Case 2: NeMo exception payload — check first, no length gate.
+    if any(marker in chunk_lower for marker in GUARDRAILS_EXCEPTION_MARKERS):
+        return True
+
+    # Case 1: short bot refusal phrases.
+    return any(
+        phrase.lower() in chunk_lower and len(chunk_lower) <= len(phrase.lower()) + 20
+        for phrase in GUARDRAILS_BLOCKED_PHRASES
+    )
+
 
 # Streaming configuration
 STREAMING_ALLOWED_ENVS = {"production", "testing"}
@@ -111,6 +161,22 @@ VALIDATION_REQUEST_TOO_LARGE = "Your request is too large. Please reduce the mes
 VALIDATION_REQUIRED_FIELDS_MISSING = "Required information is missing from your request. Please ensure all required fields are provided."
 
 VALIDATION_GENERIC_ERROR = "I apologize, but I couldn't process your request. Please check your input and try again."
+
+# Connection status / budget enforcement messages
+CONNECTION_INACTIVE_MESSAGES = {
+    "et": "Vabandust, kuid teenus ei ole praegu saadaval. Palun võtke ühendust administraatoriga.",
+    "ru": "Извините, но сервис в настоящее время недоступен. Пожалуйста, обратитесь к администратору.",
+    "en": "I apologize, but the service is currently unavailable. Please contact your administrator.",
+}
+
+BUDGET_EXCEEDED_MESSAGES = {
+    "et": "Vabandust, kuid teenuse eelarve on ületatud. Palun võtke ühendust administraatoriga.",
+    "ru": "Извините, но бюджет сервиса превышен. Пожалуйста, обратитесь к администратору.",
+    "en": "I apologize, but the service budget has been exceeded. Please contact your administrator.",
+}
+
+CONNECTION_INACTIVE_MESSAGE = CONNECTION_INACTIVE_MESSAGES["en"]
+BUDGET_EXCEEDED_MESSAGE = BUDGET_EXCEEDED_MESSAGES["en"]
 
 
 # Helper function to get localized messages

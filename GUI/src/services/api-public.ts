@@ -14,9 +14,6 @@ instance.interceptors.response.use(
     return axiosResponse;
   },
   (error: AxiosError) => {
-    if (error.response?.status === 401) {
-      window.location.href = import.meta.env.REACT_APP_CUSTOMER_SERVICE_LOGIN
-    }
     return Promise.reject(new Error(error.message));
   }
 );

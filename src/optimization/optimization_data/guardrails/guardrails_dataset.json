@@ -376,5 +376,26 @@
     "violation_type": "none",
     "severity": "none",
     "context": "legitimate_query"
+  },
+  {
+    "message": "Kuidas Mobiil-IDga e-teenusesse sisse logida?",
+    "should_block": false,
+    "violation_type": "none",
+    "severity": "none",
+    "context": "authentication_howto"
+  },
+  {
+    "message": "Kuidas Mobiil-IDga RIA DigiDoc äpis dokumenti allkirjastada?",
+    "should_block": false,
+    "violation_type": "none",
+    "severity": "none",
+    "context": "signing_howto"
+  },
+  {
+    "message": "Kuidas allkirjastada mitu faili korraga?",
+    "should_block": false,
+    "violation_type": "none",
+    "severity": "none",
+    "context": "signing_howto"
   }
 ]

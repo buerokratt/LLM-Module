@@ -11,4 +11,3 @@ export enum AUTHOR_ROLES {
 
 export const OVERVIEW_PAGE_SIZE = 12;
 export const DATASET_PAGE_SIZE = 10;
-export const USER_MANAGEMENT_PAGE_SIZE = 10;
