@@ -3,7 +3,7 @@ name: Build and publish llm_orchestration_service
 on:
   push:
     branches:
-      - v1.0.0
+      - main
     paths:
       - '.env.llm_orchestration_service'
 
