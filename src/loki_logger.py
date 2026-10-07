@@ -12,14 +12,42 @@ Two copies exist for environments where `src` is not a Python package:
 If you change the logger logic here, apply the same change to both copies.
 """
 
+import configparser
 import json
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 from threading import Thread
 from queue import Full, Queue
+from typing import Optional
 
 import requests
+
+
+def _read_loki_url_from_constants() -> Optional[str]:
+    """Read LOKI_URL from the [DSL] section of the nearest constants.ini.
+
+    Searches upward from this file so every copy of the logger finds the
+    project-root constants.ini wherever it is mounted (e.g. /app/constants.ini).
+    Returns None when no file or key is found.
+    """
+    for directory in Path(__file__).resolve().parents:
+        ini_path = directory / "constants.ini"
+        if ini_path.is_file():
+            parser = configparser.ConfigParser(interpolation=None, strict=False)
+            parser.optionxform = str  # type: ignore[assignment,method-assign]
+            try:
+                parser.read(ini_path, encoding="utf-8")
+            except configparser.Error:
+                # Not our INI format (e.g. CronManager's own /app/constants.ini
+                # has no section header) - never let logging break the caller.
+                return None
+            return parser.get("DSL", "LOKI_URL", fallback="").strip() or None
+    return None
+
+
+_CONFIGURED_LOKI_URL = _read_loki_url_from_constants()
 
 
 class LokiLogger:
@@ -28,27 +56,34 @@ class LokiLogger:
     _instances: dict[str, "LokiLogger"] = {}
 
     def __new__(
-        cls, loki_url: str = "http://loki:3100", service_name: str = "default"
+        cls, loki_url: Optional[str] = None, service_name: str = "default"
     ) -> "LokiLogger":
-        key = f"{loki_url}:{service_name}"
+        key = f"{loki_url or _CONFIGURED_LOKI_URL}:{service_name}"
         if key not in cls._instances:
             cls._instances[key] = super().__new__(cls)
         return cls._instances[key]
 
     def __init__(
-        self, loki_url: str = "http://loki:3100", service_name: str = "default"
+        self, loki_url: Optional[str] = None, service_name: str = "default"
     ) -> None:
         """
         Initialize LokiLogger
 
         Args:
-            loki_url: URL for Loki service (default: container URL in bykstack network)
+            loki_url: URL for Loki service (default: LOKI_URL from constants.ini).
+                If neither is available, logs go to the console only.
             service_name: Name of the service for labeling logs
         """
         if hasattr(self, "_initialized"):
             return
         self._initialized = True
-        self.loki_url = loki_url
+        self.loki_url = loki_url or _CONFIGURED_LOKI_URL
+        if not self.loki_url:
+            print(  # noqa: T201
+                f"LokiLogger[{service_name}]: LOKI_URL not found in constants.ini; "
+                "logging to console only",
+                file=sys.stderr,
+            )
         self.service_name = service_name
         self.session = requests.Session()
         # Set default timeout for all requests
@@ -126,6 +161,9 @@ class LokiLogger:
         # log lines mixed in with the actual output.
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"[{timestamp}] {level: <8} | {message}", file=sys.stderr)  # noqa: T201
+
+        if not self.loki_url:
+            return
 
         # Queue for async Loki sending (non-blocking, drops log if queue is full)
         try:

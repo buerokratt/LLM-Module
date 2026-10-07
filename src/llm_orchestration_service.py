@@ -43,6 +43,7 @@ from src.llm_orchestrator_config.llm_ochestrator_constants import (
     RUUTER_PROMPT_CONFIG_ENDPOINT,
     PROMPT_CONFIG_CACHE_TTL,
     QDRANT_URL,
+    LANGFUSE_URL,
     CONNECTION_INACTIVE_MESSAGES,
     BUDGET_EXCEEDED_MESSAGES,
 )
@@ -125,7 +126,7 @@ class LangfuseConfig:
                     self.langfuse_client = Langfuse(
                         public_key=langfuse_secrets.get("public_key"),
                         secret_key=langfuse_secrets.get("secret_key"),
-                        host=langfuse_secrets.get("host", "http://langfuse-web:3000"),
+                        host=langfuse_secrets.get("host") or LANGFUSE_URL,
                     )
                     logger.info("Langfuse client initialized successfully")
                 else:

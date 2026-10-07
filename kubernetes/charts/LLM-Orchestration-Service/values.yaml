@@ -100,6 +100,8 @@ constants:
   RAG_SEARCH_RUUTER_PUBLIC_INTERNAL_SERVICE: "http://ruuter:8086/services"
   RUUTER_COMMON_SERVICE_BASE_URL: "http://ruuter-test:8086/common-services"
   QDRANT_URL: "http://qdrant:6333"
+  LOKI_URL: "http://loki:3100"
+  LANGFUSE_URL: "http://langfuse-web:3000"
 
 # Vault Agent sidecar configuration
 # WHY: LLM Orchestration needs read access to encrypted LLM API keys

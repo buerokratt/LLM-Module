@@ -233,6 +233,7 @@ RAG_SEARCH_RESQL = get_constant("RAG_SEARCH_RESQL")
 RAG_SEARCH_RUUTER_PUBLIC = get_constant("RAG_SEARCH_RUUTER_PUBLIC")
 RAG_SEARCH_RUUTER_PRIVATE = get_constant("RAG_SEARCH_RUUTER_PRIVATE")
 QDRANT_URL = get_constant("QDRANT_URL")
+LANGFUSE_URL = get_constant("LANGFUSE_URL")  # used when the Vault secret has no host
 
 # Custom Prompt Configuration
 RUUTER_PROMPT_CONFIG_ENDPOINT = (
