@@ -1,3 +1,37 @@
+import configparser
+from pathlib import Path
+
+CONSTANTS_INI_PATH = Path(__file__).resolve().parents[2] / "constants.ini"
+"""Shared endpoint configuration (also used by Ruuter), at the project root."""
+
+
+def _load_constants_ini() -> dict[str, str]:
+    # interpolation=None: treat '%' literally; optionxform=str: keep key case;
+    # strict=False: a duplicated key takes the last value instead of failing.
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    parser.optionxform = str  # type: ignore[assignment,method-assign]
+    if not parser.read(CONSTANTS_INI_PATH, encoding="utf-8"):
+        raise RuntimeError(f"Configuration file not found: {CONSTANTS_INI_PATH}")
+    if not parser.has_section("DSL"):
+        raise RuntimeError(f"Missing [DSL] section in {CONSTANTS_INI_PATH}")
+    return dict(parser.items("DSL"))
+
+
+_CONSTANTS = _load_constants_ini()
+
+
+def get_constant(name: str) -> str:
+    """Return a required value from the [DSL] section of constants.ini.
+
+    Raises:
+        RuntimeError: If the key is missing or empty.
+    """
+    value = _CONSTANTS.get(name, "").strip()
+    if not value:
+        raise RuntimeError(f"Required key '{name}' is not set in {CONSTANTS_INI_PATH}")
+    return value
+
+
 # Multilingual message dictionaries
 OUT_OF_SCOPE_MESSAGES = {
     "et": "Vabandust, kuid mul pole piisavalt konteksti, et teie küsimusele vastata. Palun püüdke ümber sõnastada või lisage rohkem üksikasju.",
@@ -194,13 +228,14 @@ def get_localized_message(message_dict: dict, language_code: str = "et") -> str:
     return message_dict.get(language_code, message_dict.get("et", ""))
 
 
-# Service endpoints
-RAG_SEARCH_RESQL = "http://resql:8082/rag-search"
-RAG_SEARCH_RUUTER_PUBLIC = "http://ruuter-public:8086/rag-search"
-RAG_SEARCH_RUUTER_PRIVATE = "http://ruuter-private:8088/rag-search"
+# Service endpoints (configured in constants.ini)
+RAG_SEARCH_RESQL = get_constant("RAG_SEARCH_RESQL")
+RAG_SEARCH_RUUTER_PUBLIC = get_constant("RAG_SEARCH_RUUTER_PUBLIC")
+RAG_SEARCH_RUUTER_PRIVATE = get_constant("RAG_SEARCH_RUUTER_PRIVATE")
+QDRANT_URL = get_constant("QDRANT_URL")
 
 # Custom Prompt Configuration
 RUUTER_PROMPT_CONFIG_ENDPOINT = (
-    "http://ruuter-public:8086/rag-search/llm-connections/prompts/get-prompt"
+    f"{RAG_SEARCH_RUUTER_PUBLIC}/llm-connections/prompts/get-prompt"
 )
 PROMPT_CONFIG_CACHE_TTL = 300  # 5 minutes cache

@@ -88,6 +88,19 @@ env:
   CONTEXT_WORKFLOW_ENABLED: "true"
   MULTI_INTENT_ENABLED: "true"
 
+# Service endpoint URLs, rendered into constants.ini ([DSL] section) and mounted
+# at /app/constants.ini. Defaults match the service names of the charts in this
+# repo; override per cluster if your service names differ.
+# Note: Ruuter URLs here include the /rag-search suffix (unlike the Ruuter charts'
+# own constants.ini).
+constants:
+  RAG_SEARCH_RUUTER_PUBLIC: "http://ruuter-public:8086/rag-search"
+  RAG_SEARCH_RUUTER_PRIVATE: "http://ruuter-private:8088/rag-search"
+  RAG_SEARCH_RESQL: "http://resql:8082/rag-search"
+  RAG_SEARCH_RUUTER_PUBLIC_INTERNAL_SERVICE: "http://ruuter:8086/services"
+  RUUTER_COMMON_SERVICE_BASE_URL: "http://ruuter-test:8086/common-services"
+  QDRANT_URL: "http://qdrant:6333"
+
 # Vault Agent sidecar configuration
 # WHY: LLM Orchestration needs read access to encrypted LLM API keys
 # Security: Agent enforces policy - read-only access to LLM secrets

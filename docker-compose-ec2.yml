@@ -637,6 +637,7 @@ services:
       - REDIS_AUTH=${REDIS_AUTH}
       - REDIS_SESSION_DB=${REDIS_SESSION_DB}
     volumes:
+      - ./constants.ini:/app/constants.ini:ro  # service endpoint URLs
       - ./src/llm_config_module/config:/app/src/llm_config_module/config:ro
       - ./src/optimization/optimized_modules:/app/src/optimization/optimized_modules
       - llm_orchestration_logs:/app/logs

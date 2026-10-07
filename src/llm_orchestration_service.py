@@ -42,6 +42,7 @@ from src.llm_orchestrator_config.llm_ochestrator_constants import (
     PRODUCTION_DEPLOYMENT_ENVIRONMENT,
     RUUTER_PROMPT_CONFIG_ENDPOINT,
     PROMPT_CONFIG_CACHE_TTL,
+    QDRANT_URL,
     CONNECTION_INACTIVE_MESSAGES,
     BUDGET_EXCEEDED_MESSAGES,
 )
@@ -280,7 +281,7 @@ class LLMOrchestrationService:
         self.shared_bm25_search as None — the ContextualRetriever will then
         fall back to building the index on the first query (graceful degradation).
         """
-        qdrant_url = os.getenv("QDRANT_URL", "http://qdrant:6333")
+        qdrant_url = QDRANT_URL
         logger.info("Pre-warming shared BM25 index at startup...")
         prewarm_start = time.time()
         try:
@@ -2747,8 +2748,7 @@ class LLMOrchestrationService:
         logger.info("Initializing contextual retriever")
 
         try:
-            # Initialize with Qdrant URL - use environment variable or default
-            qdrant_url = os.getenv("QDRANT_URL", "http://qdrant:6333")
+            qdrant_url = QDRANT_URL
 
             contextual_retriever = ContextualRetriever(
                 qdrant_url=qdrant_url,

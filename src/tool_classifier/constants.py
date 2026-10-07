@@ -1,15 +1,11 @@
 """Constants and configuration for tool classifier module."""
 
+from llm_orchestrator_config.llm_ochestrator_constants import get_constant
+
 
 # ============================================================================
 # Qdrant Vector Database Configuration
 # ============================================================================
-
-QDRANT_HOST = "qdrant"
-"""Qdrant server hostname."""
-
-QDRANT_PORT = 6333
-"""Qdrant server port."""
 
 QDRANT_TIMEOUT = 10.0
 """Qdrant HTTP client timeout in seconds."""
@@ -34,18 +30,11 @@ Lowered from 0.4 to handle broader queries."""
 # Ruuter Service Configuration
 # ============================================================================
 
-RUUTER_BASE_URL = "http://ruuter-private:8086"
-"""Base URL for Ruuter private service endpoints."""
+RUUTER_SERVICE_BASE_URL = get_constant("RAG_SEARCH_RUUTER_PUBLIC_INTERNAL_SERVICE")
+"""Base URL for Ruuter service endpoints (active services), from constants.ini."""
 
-RUUTER_SERVICE_BASE_URL = "http://ruuter:8086/services"
-"""Base URL for Ruuter service endpoints (active services)."""
-
-RUUTER_COMMON_SERVICE_BASE_URL = "http://ruuter-test:8086/common-services"
-"""Base URL for Ruuter common service endpoints.
-This is a placeholder test URL — replace with the real URL when available."""
-
-RAG_SEARCH_RUUTER_PUBLIC = "http://ruuter-public:8086/rag-search"
-"""Public Ruuter endpoint for RAG search service discovery."""
+RUUTER_COMMON_SERVICE_BASE_URL = get_constant("RUUTER_COMMON_SERVICE_BASE_URL")
+"""Base URL for Ruuter common service endpoints, from constants.ini."""
 
 SERVICE_CALL_TIMEOUT = 10
 """Timeout in seconds for external service calls via Ruuter."""

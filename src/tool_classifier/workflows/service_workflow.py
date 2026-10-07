@@ -23,13 +23,14 @@ from models.request_models import (
     TestOrchestrationResponse,
 )
 from tool_classifier.base_workflow import BaseWorkflow
+from llm_orchestrator_config.llm_ochestrator_constants import (
+    QDRANT_URL,
+    RAG_SEARCH_RUUTER_PUBLIC,
+)
 from tool_classifier.constants import (
     MAX_SERVICES_FOR_LLM_CONTEXT,
     QDRANT_COLLECTION,
-    QDRANT_HOST,
-    QDRANT_PORT,
     QDRANT_TIMEOUT,
-    RAG_SEARCH_RUUTER_PUBLIC,
     RUUTER_COMMON_SERVICE_BASE_URL,
     RUUTER_SERVICE_BASE_URL,
     SEMANTIC_SEARCH_THRESHOLD,
@@ -173,9 +174,8 @@ class ServiceWorkflowExecutor(BaseWorkflow):
 
             query_embedding = embeddings[0]
 
-            qdrant_url = f"http://{QDRANT_HOST}:{QDRANT_PORT}"
             async with httpx.AsyncClient(
-                base_url=qdrant_url, timeout=QDRANT_TIMEOUT
+                base_url=QDRANT_URL, timeout=QDRANT_TIMEOUT
             ) as client:
                 try:
                     collection_info = await client.get(
