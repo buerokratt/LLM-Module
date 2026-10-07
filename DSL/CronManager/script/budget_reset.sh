@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # DEFINING ENDPOINTS
+source /app/scripts/load_constants.sh
 
-BUDGET_RESET_ENDPOINT=http://ruuter-public:8086/rag-search/llm-connections/cost/reset
+BUDGET_RESET_ENDPOINT="${RAG_SEARCH_RUUTER_PUBLIC}/llm-connections/cost/reset"
 
 payload=$(cat <<EOF
 {}

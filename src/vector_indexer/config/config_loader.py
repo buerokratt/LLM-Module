@@ -6,6 +6,7 @@ from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field, field_validator, model_validator
 from loki_logger import LokiLogger
 
+from src.constants_loader import get_constant
 from vector_indexer.constants import (
     DocumentConstants,
     ValidationConstants,
@@ -72,16 +73,16 @@ class ProcessingConfig(BaseModel):
 class QdrantConfig(BaseModel):
     """Qdrant database configuration."""
 
-    qdrant_url: str = "http://qdrant:6333"
+    qdrant_url: str = get_constant("QDRANT_URL")
     collection_name: str = "chunks"
 
 
 class VectorIndexerConfig(BaseModel):
     """Configuration model for vector indexer."""
 
-    # API Configuration
-    api_base_url: str = "http://llm-orchestration-service:8100"
-    qdrant_url: str = "http://qdrant:6333"
+    # API Configuration (defaults from constants.ini)
+    api_base_url: str = get_constant("RAG_SEARCH_LLM_SERVICE")
+    qdrant_url: str = get_constant("QDRANT_URL")
     api_timeout: int = 300
 
     # Processing Configuration
@@ -211,9 +212,14 @@ class ConfigLoader:
         # Flatten nested configuration
         flattened_config: Dict[str, Any] = {}
 
-        # API config
+        # API config. Endpoints come from constants.ini unless the YAML
+        # explicitly overrides them, so omitted/null keys fall back to the
+        # model defaults rather than failing validation with None.
         api_config = indexer_config.get("api", {})
-        flattened_config["api_base_url"] = api_config.get("base_url")
+        if api_config.get("base_url"):
+            flattened_config["api_base_url"] = api_config["base_url"]
+        if api_config.get("qdrant_url"):
+            flattened_config["qdrant_url"] = api_config["qdrant_url"]
         flattened_config["api_timeout"] = api_config.get("timeout", 300)
 
         # Processing config

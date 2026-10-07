@@ -1,36 +1,8 @@
-import configparser
-from pathlib import Path
-
-CONSTANTS_INI_PATH = Path(__file__).resolve().parents[2] / "constants.ini"
-"""Shared endpoint configuration (also used by Ruuter), at the project root."""
-
-
-def _load_constants_ini() -> dict[str, str]:
-    # interpolation=None: treat '%' literally; optionxform=str: keep key case;
-    # strict=False: a duplicated key takes the last value instead of failing.
-    parser = configparser.ConfigParser(interpolation=None, strict=False)
-    parser.optionxform = str  # type: ignore[assignment,method-assign]
-    if not parser.read(CONSTANTS_INI_PATH, encoding="utf-8"):
-        raise RuntimeError(f"Configuration file not found: {CONSTANTS_INI_PATH}")
-    if not parser.has_section("DSL"):
-        raise RuntimeError(f"Missing [DSL] section in {CONSTANTS_INI_PATH}")
-    return dict(parser.items("DSL"))
-
-
-_CONSTANTS = _load_constants_ini()
-
-
-def get_constant(name: str) -> str:
-    """Return a required value from the [DSL] section of constants.ini.
-
-    Raises:
-        RuntimeError: If the key is missing or empty.
-    """
-    value = _CONSTANTS.get(name, "").strip()
-    if not value:
-        raise RuntimeError(f"Required key '{name}' is not set in {CONSTANTS_INI_PATH}")
-    return value
-
+# Endpoint configuration lives in constants.ini (shared with Ruuter).
+# The loader is a standalone module so the cron-manager container, which has
+# none of this package's dependencies, can mount and reuse the same code.
+# Re-exported here for backwards compatibility with existing imports.
+from src.constants_loader import CONSTANTS_INI_PATH, get_constant  # noqa: F401
 
 # Multilingual message dictionaries
 OUT_OF_SCOPE_MESSAGES = {

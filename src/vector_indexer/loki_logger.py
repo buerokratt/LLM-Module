@@ -6,6 +6,7 @@ Sends logs directly to Loki API for centralized logging
 
 import configparser
 import json
+import os
 import sys
 import time
 from datetime import datetime
@@ -17,24 +18,34 @@ from typing import Optional
 import requests
 
 
-def _read_loki_url_from_constants() -> Optional[str]:
-    """Read LOKI_URL from the [DSL] section of the nearest constants.ini.
+def _candidate_constants_paths() -> list[Path]:
+    """constants.ini locations, in the same order as src/constants_loader.py."""
+    candidates: list[Path] = []
+    explicit = os.environ.get("RAG_SEARCH_CONSTANTS")  # exported by load_constants.sh
+    if explicit:
+        candidates.append(Path(explicit))
+    candidates.append(Path("/app/config/constants.ini"))  # cron-manager mount
+    # llm-orchestration (/app/constants.ini) and local dev: search upward
+    candidates.extend(d / "constants.ini" for d in Path(__file__).resolve().parents)
+    return candidates
 
-    Searches upward from this file so every copy of the logger finds the
-    project-root constants.ini wherever it is mounted (e.g. /app/constants.ini).
-    Returns None when no file or key is found.
+
+def _read_loki_url_from_constants() -> Optional[str]:
+    """Read LOKI_URL from the [DSL] section of constants.ini.
+
+    Files without a [DSL] section (e.g. the cron-manager image's own baked
+    /app/constants.ini) are skipped. Returns None when no file or key is found.
     """
-    for directory in Path(__file__).resolve().parents:
-        ini_path = directory / "constants.ini"
-        if ini_path.is_file():
-            parser = configparser.ConfigParser(interpolation=None, strict=False)
-            parser.optionxform = str  # type: ignore[assignment,method-assign]
-            try:
-                parser.read(ini_path, encoding="utf-8")
-            except configparser.Error:
-                # Not our INI format (e.g. CronManager's own /app/constants.ini
-                # has no section header) - never let logging break the caller.
-                return None
+    for ini_path in _candidate_constants_paths():
+        if not ini_path.is_file():
+            continue
+        parser = configparser.ConfigParser(interpolation=None, strict=False)
+        parser.optionxform = str  # type: ignore[assignment,method-assign]
+        try:
+            parser.read(ini_path, encoding="utf-8")
+        except configparser.Error:
+            continue  # not our INI format - never let logging break the caller
+        if parser.has_section("DSL"):
             return parser.get("DSL", "LOKI_URL", fallback="").strip() or None
     return None
 

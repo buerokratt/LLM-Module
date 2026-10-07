@@ -46,6 +46,10 @@ echo "[PACKAGES] All packages installed successfully"
 
 export PYTHONPATH="/app:/app/src:/app/src/vector_indexer:$PYTHONPATH"
 
+# Service endpoint URLs; also exports RAG_SEARCH_CONSTANTS so the Python
+# process below resolves the same constants.ini.
+source /app/scripts/load_constants.sh
+
 [ ! -f "$PYTHON_SCRIPT" ] && { echo "[ERROR] Python script not found"; exit 1; }
 
 echo "[FOUND] Python script at: $PYTHON_SCRIPT"

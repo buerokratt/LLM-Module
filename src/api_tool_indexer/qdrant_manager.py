@@ -40,22 +40,19 @@ class ApiToolQdrantManager:
 
     def __init__(
         self,
-        host: str = ApiToolIndexerConstants.DEFAULT_QDRANT_HOST,
-        port: int = ApiToolIndexerConstants.DEFAULT_QDRANT_PORT,
+        url: str = ApiToolIndexerConstants.DEFAULT_QDRANT_URL,
         collection_name: str = ApiToolIndexerConstants.COLLECTION_NAME,
     ) -> None:
-        self.host = host
-        self.port = port
+        self.url = url
         self.collection_name = collection_name
         self.client: Optional[QdrantClient] = None
 
     def connect(self) -> None:
         """Connect to Qdrant."""
         try:
-            logger.info(f"Connecting to Qdrant at {self.host}:{self.port}")
+            logger.info(f"Connecting to Qdrant at {self.url}")
             self.client = QdrantClient(
-                host=self.host,
-                port=self.port,
+                url=self.url,
                 timeout=30,
                 prefer_grpc=False,
                 api_key=None,

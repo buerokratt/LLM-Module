@@ -1,6 +1,6 @@
 """Constants and configuration for tool classifier module."""
 
-from llm_orchestrator_config.llm_ochestrator_constants import get_constant
+from src.constants_loader import get_constant
 
 
 # ============================================================================
