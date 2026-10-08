@@ -625,8 +625,9 @@ Query: "What is VAT?"
 # (project root, shared with Ruuter). Missing keys fail at startup; no defaults in code.
 RUUTER_SERVICE_BASE_URL = get_constant("RAG_SEARCH_RUUTER_PUBLIC_INTERNAL_SERVICE")
 RUUTER_COMMON_SERVICE_BASE_URL = get_constant("RUUTER_COMMON_SERVICE_BASE_URL")
-RAG_SEARCH_RUUTER_PUBLIC = get_constant("RAG_SEARCH_RUUTER_PUBLIC")  # llm_ochestrator_constants.py
-QDRANT_URL = get_constant("QDRANT_URL")  # llm_ochestrator_constants.py
+# defined in llm_ochestrator_constants.py:
+RAG_SEARCH_RUUTER_PUBLIC = get_constant("RAG_SEARCH_RUUTER_PUBLIC")
+QDRANT_URL = get_constant("QDRANT_URL")
 
 # Service call timeouts
 SERVICE_CALL_TIMEOUT = 10  # seconds for external service calls

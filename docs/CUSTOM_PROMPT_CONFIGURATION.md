@@ -268,7 +268,8 @@ All consumers read the same prompt from the shared `PromptConfigurationLoader`
 
 ### **Constants** (`src/llm_orchestrator_config/llm_ochestrator_constants.py`)
 ```python
-RAG_SEARCH_RUUTER_PUBLIC = get_constant("RAG_SEARCH_RUUTER_PUBLIC")  # from constants.ini
+# from constants.ini
+RAG_SEARCH_RUUTER_PUBLIC = get_constant("RAG_SEARCH_RUUTER_PUBLIC")
 RUUTER_PROMPT_CONFIG_ENDPOINT = (
     f"{RAG_SEARCH_RUUTER_PUBLIC}/llm-connections/prompts/get-prompt"
 )
