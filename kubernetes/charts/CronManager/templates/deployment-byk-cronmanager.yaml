@@ -13,6 +13,8 @@ spec:
   template:
     metadata:
       annotations:
+        # Restart pods when constants.ini changes (subPath mounts are not live-updated)
+        checksum/constants: {{ include (print $.Template.BasePath "/configmap-cronmanager-config.yaml") . | sha256sum }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -44,6 +46,8 @@ spec:
             mountPath: /app/src/api_tool_indexer
           - name: src-utils
             mountPath: /app/src/utils
+          - name: constants-loader
+            mountPath: /app/constants-loader
           command:
             - sh
             - -c
@@ -65,6 +69,8 @@ spec:
                 cp -r /tmp/rag/src/intent_data_enrichment/* /app/src/intent_data_enrichment/ &&
                 cp -r /tmp/rag/src/api_tool_indexer/* /app/src/api_tool_indexer/ &&
                 cp /tmp/rag/src/utils/decrypt_vault_secrets.py /app/src/utils/ &&
+                # Optional until the cloned branch ships it (older scripts don't need it)
+                { [ ! -f /tmp/rag/src/constants_loader.py ] || cp /tmp/rag/src/constants_loader.py /app/constants-loader/constants_loader.py; } &&
                 cp /tmp/rag/src/__init__.py /app/src/__init__.py &&
                 cp /tmp/rag/grafana-configs/loki_logger.py /app/src/vector_indexer/loki_logger.py &&
                 
@@ -138,6 +144,15 @@ spec:
               mountPath: /app/src/utils
             - name: datasets
               mountPath: /app/datasets
+            # Endpoint URLs (constants.ini) and its stdlib-only Python loader
+            - name: config-volume
+              mountPath: /app/config/constants.ini
+              subPath: constants.ini
+              readOnly: true
+            - name: constants-loader
+              mountPath: /app/src/constants_loader.py
+              subPath: constants_loader.py
+              readOnly: true
          
       volumes:
         - name: dsl
@@ -155,6 +170,8 @@ spec:
         - name: datasets
           emptyDir: {}
         - name: src-utils
+          emptyDir: {}
+        - name: constants-loader
           emptyDir: {}
         - name: cronmanager-data
           persistentVolumeClaim:

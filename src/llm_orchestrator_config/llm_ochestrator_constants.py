@@ -1,3 +1,9 @@
+# Endpoint configuration lives in constants.ini (shared with Ruuter).
+# The loader is a standalone module so the cron-manager container, which has
+# none of this package's dependencies, can mount and reuse the same code.
+# Re-exported here for backwards compatibility with existing imports.
+from src.constants_loader import CONSTANTS_INI_PATH, get_constant  # noqa: F401
+
 # Multilingual message dictionaries
 OUT_OF_SCOPE_MESSAGES = {
     "et": "Vabandust, kuid mul pole piisavalt konteksti, et teie küsimusele vastata. Palun püüdke ümber sõnastada või lisage rohkem üksikasju.",
@@ -194,13 +200,15 @@ def get_localized_message(message_dict: dict, language_code: str = "et") -> str:
     return message_dict.get(language_code, message_dict.get("et", ""))
 
 
-# Service endpoints
-RAG_SEARCH_RESQL = "http://resql:8082/rag-search"
-RAG_SEARCH_RUUTER_PUBLIC = "http://ruuter-public:8086/rag-search"
-RAG_SEARCH_RUUTER_PRIVATE = "http://ruuter-private:8088/rag-search"
+# Service endpoints (configured in constants.ini)
+RAG_SEARCH_RESQL = get_constant("RAG_SEARCH_RESQL")
+RAG_SEARCH_RUUTER_PUBLIC = get_constant("RAG_SEARCH_RUUTER_PUBLIC")
+RAG_SEARCH_RUUTER_PRIVATE = get_constant("RAG_SEARCH_RUUTER_PRIVATE")
+QDRANT_URL = get_constant("QDRANT_URL")
+LANGFUSE_URL = get_constant("LANGFUSE_URL")  # used when the Vault secret has no host
 
 # Custom Prompt Configuration
 RUUTER_PROMPT_CONFIG_ENDPOINT = (
-    "http://ruuter-public:8086/rag-search/llm-connections/prompts/get-prompt"
+    f"{RAG_SEARCH_RUUTER_PUBLIC}/llm-connections/prompts/get-prompt"
 )
 PROMPT_CONFIG_CACHE_TTL = 300  # 5 minutes cache

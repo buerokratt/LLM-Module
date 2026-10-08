@@ -172,11 +172,13 @@ services:
     volumes:
       - ./DSL/CronManager/DSL:/DSL
       - ./DSL/CronManager/script:/app/scripts
+      - ./constants.ini:/app/config/constants.ini:ro  # service endpoint URLs (NOT /app/constants.ini - that one is baked into the image)
       - ./src/vector_indexer:/app/src/vector_indexer
       - ./src/tool_classifier:/app/src/tool_classifier
       - ./src/intent_data_enrichment:/app/src/intent_data_enrichment
       - ./src/api_tool_indexer:/app/src/api_tool_indexer
       - ./src/__init__.py:/app/src/__init__.py:ro
+      - ./src/constants_loader.py:/app/src/constants_loader.py:ro  # reads /app/config/constants.ini
       - ./src/loki_logger.py:/app/src/loki_logger.py:ro
       - ./src/utils/decrypt_vault_secrets.py:/app/src/utils/decrypt_vault_secrets.py:ro  # Decryption utility (read-only)
       - cron_data:/app/data
@@ -187,7 +189,9 @@ services:
     environment:
       - server.port=9010
       - PYTHONPATH=/app:/app/src:/app/src/vector_indexer:/app/src/intent_data_enrichment:/app/src/api_tool_indexer
-      - vaultAgentUrl=http://vault-agent-cron:8203
+      # NOTE: the vault scripts read VAULT_AGENT_URL from constants.ini, not from
+      # here - CronManager execs job scripts with an empty environment, so nothing
+      # set in this block ever reaches them.
     ports:
       - 9010:8080
     depends_on:
@@ -584,6 +588,7 @@ services:
       - REDIS_AUTH=${REDIS_AUTH}
       - REDIS_SESSION_DB=${REDIS_SESSION_DB}
     volumes:
+      - ./constants.ini:/app/constants.ini:ro  # service endpoint URLs
       - ./src/llm_config_module/config:/app/src/llm_config_module/config:ro
       - ./src/optimization/optimized_modules:/app/src/optimization/optimized_modules
       - llm_orchestration_logs:/app/logs

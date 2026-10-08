@@ -34,6 +34,16 @@ constants:
   RAG_MODULE_TIM: "http://tim:8085"
   RAG_MODULE_DATAMAPPER: "http://data-mapper:3000"
 
+# Endpoint URLs for cron job scripts, rendered into constants.ini ([DSL]) and
+# mounted at /app/config/constants.ini. Container env vars cannot be used:
+# CronManager runs job scripts with an empty environment.
+dslConstants:
+  RAG_SEARCH_RUUTER_PUBLIC: "http://ruuter-public:8086/rag-search"
+  RAG_SEARCH_LLM_SERVICE: "http://llm-orchestration-service:8100"
+  QDRANT_URL: "http://qdrant:6333"
+  LOKI_URL: "http://loki:3100"
+  VAULT_AGENT_URL: "http://localhost:8203"  # vault agent sidecar in this pod
+
 resources:
   requests:
     memory: "512Mi"

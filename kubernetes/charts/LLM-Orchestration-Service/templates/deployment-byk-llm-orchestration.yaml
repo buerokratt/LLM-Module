@@ -16,6 +16,9 @@ spec:
       labels:
         app: "{{ .Values.release_name }}"
         component: llm-orchestration
+      annotations:
+        # Restart pods when constants.ini changes (subPath mounts are not live-updated)
+        checksum/constants: {{ include (print $.Template.BasePath "/configmap-llm-orchestration-constants.yaml") . | sha256sum }}
     spec:
       {{- if .Values.initContainer.enabled }}
       initContainers:
@@ -132,6 +135,11 @@ spec:
           {{- end }}
           
           volumeMounts:
+            # Service endpoint URLs (constants.ini)
+            - name: constants-ini
+              mountPath: /app/constants.ini
+              subPath: constants.ini
+              readOnly: true
             # Runtime-generated config volume
             {{- if .Values.volumes.config.enabled }}
             - name: config-volume
@@ -162,6 +170,10 @@ spec:
               cpu: "{{ .Values.resources.limits.cpu }}"
       
       volumes:
+        # Service endpoint URLs (constants.ini)
+        - name: constants-ini
+          configMap:
+            name: "{{ .Values.release_name }}-constants"
         # Runtime-generated config volume (PVC)
         {{- if .Values.volumes.config.enabled }}
         - name: config-volume

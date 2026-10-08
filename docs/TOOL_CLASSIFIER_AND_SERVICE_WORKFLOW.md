@@ -99,7 +99,7 @@ Calls Ruuter public endpoint to fetch available services:
 
 ```python
 GET {RAG_SEARCH_RUUTER_PUBLIC}/services/get-services
-# Default: http://ruuter-public:8086/rag-search/services/get-services
+# RAG_SEARCH_RUUTER_PUBLIC comes from constants.ini, e.g. http://ruuter-public:8086/rag-search
 ```
 
 **Response Structure:**
@@ -621,10 +621,13 @@ Query: "What is VAT?"
 ## Configuration Constants
 
 ```python
-# Ruuter service configuration
-RUUTER_BASE_URL = "http://ruuter-private:8086"
-RUUTER_SERVICE_BASE_URL = "http://ruuter-public:8086/services"
-RAG_SEARCH_RUUTER_PUBLIC = "http://ruuter-public:8086/rag-search"
+# Ruuter service configuration — read from the [DSL] section of constants.ini
+# (project root, shared with Ruuter). Missing keys fail at startup; no defaults in code.
+RUUTER_SERVICE_BASE_URL = get_constant("RAG_SEARCH_RUUTER_PUBLIC_INTERNAL_SERVICE")
+RUUTER_COMMON_SERVICE_BASE_URL = get_constant("RUUTER_COMMON_SERVICE_BASE_URL")
+# defined in llm_ochestrator_constants.py:
+RAG_SEARCH_RUUTER_PUBLIC = get_constant("RAG_SEARCH_RUUTER_PUBLIC")
+QDRANT_URL = get_constant("QDRANT_URL")
 
 # Service call timeouts
 SERVICE_CALL_TIMEOUT = 10  # seconds for external service calls
