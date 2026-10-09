@@ -1,5 +1,14 @@
 #!/bin/bash
 
+# PREVENT OVERLAPPING RUNS
+# Non-blocking flock: if another run already holds the lock, skip this invocation instead of queuing.
+LOCKFILE="/app/data/agency_data_resync.lock"
+exec 200>"$LOCKFILE"
+if ! flock -n 200; then
+    echo "An existing agency_data_resync run is already in progress - skipping this invocation."
+    exit 0
+fi
+
 # DEFINING ENDPOINTS
 source /app/scripts/load_constants.sh
 

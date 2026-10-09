@@ -18,10 +18,19 @@ GREETINGS_EN: Dict[str, str] = {
     "casual": "Hey! What can I do for you?",
 }
 
+# Russian greeting responses
+GREETINGS_RU: Dict[str, str] = {
+    "hello": "Здравствуйте! Чем я могу вам помочь?",
+    "goodbye": "До свидания! Хорошего дня!",
+    "thanks": "Пожалуйста! Если есть ещё вопросы, спрашивайте.",
+    "casual": "Привет! Что я могу для вас сделать?",
+}
+
 # Language-specific greeting mappings
 GREETINGS_BY_LANGUAGE: Dict[str, Dict[str, str]] = {
     "et": GREETINGS_ET,
     "en": GREETINGS_EN,
+    "ru": GREETINGS_RU,
 }
 
 

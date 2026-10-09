@@ -20,6 +20,7 @@ from src.llm_orchestration_service import (
     LLMOrchestrationService,
     _HISTORY_EXCLUDED_MESSAGES,
 )
+from src.orchestration.rag_pipeline import RagPipeline
 from src.llm_orchestrator_config.llm_ochestrator_constants import (
     INPUT_GUARDRAIL_VIOLATION_MESSAGE,
     OUT_OF_SCOPE_MESSAGE,
@@ -48,6 +49,11 @@ def _make_service() -> LLMOrchestrationService:
     """Return a bare LLMOrchestrationService instance with __init__ bypassed."""
     svc: LLMOrchestrationService = object.__new__(LLMOrchestrationService)
     svc.conversation_history_store = None  # default off
+    # The service is now a façade that delegates to collaborators built in
+    # __init__. Since __init__ is bypassed here, wire up the one collaborator
+    # these tests reach through (_stream_rag_pipeline -> RagPipeline.stream).
+    # RagPipeline construction is pure — it only stores the façade reference.
+    svc._rag_pipeline = RagPipeline(svc)
     return svc
 
 
@@ -960,7 +966,7 @@ class TestRagWorkflowUsesRedisHistory:
         svc.conversation_history_store = AsyncMock()
 
         with patch(
-            "src.llm_orchestration_service.get_conversation_history",
+            "src.orchestration.rag_pipeline.get_conversation_history",
             new_callable=AsyncMock,
             return_value=([], None),
         ) as mock_get_history:
@@ -1012,7 +1018,7 @@ class TestRagWorkflowUsesRedisHistory:
         svc.conversation_history_store = None
 
         with patch(
-            "src.llm_orchestration_service.get_conversation_history",
+            "src.orchestration.rag_pipeline.get_conversation_history",
             new_callable=AsyncMock,
             return_value=([], None),
         ) as mock_get_history:
@@ -1083,7 +1089,7 @@ class TestRefineUserPromptSummary:
         llm_manager.use_task_local.return_value.__exit__ = MagicMock(return_value=False)
 
         with patch(
-            "src.llm_orchestration_service.PromptRefinerAgent",
+            "src.orchestration.prompt_refinement.PromptRefinerAgent",
             return_value=_FakeRefiner(),
         ):
             svc._refine_user_prompt(
@@ -1121,7 +1127,7 @@ class TestRefineUserPromptSummary:
         llm_manager = _make_llm_manager()
 
         with patch(
-            "src.llm_orchestration_service.PromptRefinerAgent",
+            "src.orchestration.prompt_refinement.PromptRefinerAgent",
             return_value=_FakeRefiner(),
         ):
             svc._refine_user_prompt(

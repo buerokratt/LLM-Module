@@ -2,11 +2,12 @@
 
 import argparse
 import asyncio
+import fcntl
 import shutil
 import sys
 from pathlib import Path
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, IO
 from loki_logger import LokiLogger
 import hashlib
 
@@ -25,6 +26,38 @@ from vector_indexer.dataset_download import download_and_extract_dataset
 
 # Initialize Loki logger
 logger = LokiLogger(service_name="main-indexer")
+
+# Same container/venv as agency_data_resync.sh's lock (cron_data volume).
+INDEXER_LOCK_DIR = Path("/app/data/locks")
+
+
+def _acquire_indexer_lock(signed_url: Optional[str]) -> Optional[IO]:
+    """Acquire a non-blocking, per-dataset lock so the same signed URL is
+    never indexed by two concurrent runs (e.g. an overlapping manual trigger
+    of the vector_indexer CronManager job).
+
+    Returns the open lock file handle — keep it referenced for the process's
+    lifetime, since closing it releases the lock — or None if another run
+    already holds it.
+    """
+    INDEXER_LOCK_DIR.mkdir(parents=True, exist_ok=True)
+    lock_key = hashlib.sha256((signed_url or "no-signed-url").encode()).hexdigest()
+    lock_path = INDEXER_LOCK_DIR / f"{lock_key}.lock"
+    lock_file = open(lock_path, "w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock_file.close()
+        logger.warning(
+            f"Indexer lock busy for signed_url={signed_url!r} (lock_key={lock_key}, "
+            f"file={lock_path}) — another run holds it."
+        )
+        return None
+    logger.info(
+        f"Indexer lock acquired for signed_url={signed_url!r} (lock_key={lock_key}, "
+        f"file={lock_path})"
+    )
+    return lock_file
 
 
 class VectorIndexer:
@@ -666,6 +699,10 @@ async def main() -> int:
     # LokiLogger handles all logging (console + Loki service)
     # No additional configuration needed
 
+    lock_file = _acquire_indexer_lock(args.signed_url)
+    if lock_file is None:
+        return 3
+
     indexer = None
     try:
         # Initialize vector indexer with signed URL
@@ -709,6 +746,8 @@ async def main() -> int:
                 await indexer.cleanup()
             except Exception as e:
                 logger.error(f"Error during cleanup: {e}")
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
+        lock_file.close()
 
 
 if __name__ == "__main__":

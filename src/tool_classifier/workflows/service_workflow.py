@@ -266,7 +266,7 @@ class ServiceWorkflowExecutor(BaseWorkflow):
             logger.error(f"[{chat_id}] Service discovery failed: {e}", exc_info=True)
             return None
 
-    @observe(name="service_intent_detection_orchestration", as_type="generation")
+    @observe(name="service_intent_detection_orchestration", as_type="chain")
     async def _detect_service_intent(
         self,
         user_query: str,
@@ -329,6 +329,13 @@ class ServiceWorkflowExecutor(BaseWorkflow):
                 )
 
             usage_info = get_lm_usage_since(history_length_before)
+            # NOTE: this is a "chain" span wrapping the child "generation" span
+            # (service_intent_detection_llm), which already attaches this same
+            # usage/cost. Do NOT pass usage under the "usage" key here — that
+            # would make update_observation_safe() call update_current_generation()
+            # a second time with the identical cost, double-counting it in
+            # Langfuse (chain costs auto-aggregate from children already).
+            # Reported here as "usage_summary" for visibility only.
             update_observation_safe(
                 input_data={
                     "chat_id": chat_id,
@@ -345,7 +352,7 @@ class ServiceWorkflowExecutor(BaseWorkflow):
                     if intent_result
                     else 0.0,
                 },
-                metadata={"usage": usage_info},
+                metadata={"usage_summary": usage_info},
             )
 
             return intent_result, usage_info
@@ -359,7 +366,7 @@ class ServiceWorkflowExecutor(BaseWorkflow):
                     "services_count": len(services),
                 },
                 output_data={"matched_service_id": None, "error": str(e)},
-                metadata={"usage": {}},
+                metadata={"usage_summary": {}},
             )
             return None, {}
 

@@ -1,7 +1,7 @@
 declaration:
   call: declare
   version: 0.1
-  description: "Resync new data from KB"
+  description: "Resync new data from CKB"
   method: post
   accepts: json
   returns: json
@@ -124,7 +124,24 @@ execute_cron_manager:
       signedUrl: ${signed_s3_url}
       clientDataHash: ${ckb_data_hash}
   result: res
+  next: check_cron_manager_response
+  on_error: handle_cron_manager_error
+
+check_cron_manager_response:
+  switch:
+    - condition: ${res.response.statusCodeValue == null || res.response.statusCodeValue >= 400}
+      next: handle_cron_manager_error
   next: assign_success_response
+
+handle_cron_manager_error:
+  log: "ERROR: Failed to trigger vector indexer via CronManager - status ${res.response.statusCodeValue}, body: ${JSON.stringify(res.response.body)}"
+  assign:
+    format_res: {
+      message: "Data hash updated but vector indexer trigger failed - reindexing did not start",
+      operationSuccessful: false,
+      error: "CRON_MANAGER_TRIGGER_FAILED"
+    }
+  next: return_bad_request
 
 assign_success_response:
   assign:
