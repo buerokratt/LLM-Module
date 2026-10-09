@@ -6,20 +6,24 @@
 set -e  # Exit on any error
 
 # Configuration
+source /app/scripts/load_constants.sh
+
 # Resolve Vault Agent URL:
-# 1. Use vaultAgentUrl env var if set (from container env or CronManager request)
-# 2. Auto-detect Kubernetes via KUBERNETES_SERVICE_HOST (injected by kubelet, cannot be disabled)
-# 3. Auto-detect Kubernetes via service account token (mounted by default in every pod)
-# 4. Fallback to Docker Compose hostname
+# 1. vaultAgentUrl, if passed as a CronManager request parameter (allowedEnvs).
+# 2. VAULT_AGENT_URL from constants.ini — vault-agent-cron:8203 under compose,
+#    localhost:8203 in k8s where the agent is a sidecar in this same pod.
+# Container environment variables are NOT an option here: CronManager execs job
+# scripts with an explicit empty envp, so nothing from `environment:` arrives.
 if [ -n "$vaultAgentUrl" ]; then
     VAULT_ADDR="$vaultAgentUrl"
-elif [ -n "$KUBERNETES_SERVICE_HOST" ] || [ -f "/var/run/secrets/kubernetes.io/serviceaccount/token" ]; then
-    VAULT_ADDR="http://localhost:8203"
+elif [ -n "$VAULT_AGENT_URL" ]; then
+    VAULT_ADDR="$VAULT_AGENT_URL"
 else
-    VAULT_ADDR="http://vault-agent-cron:8203"
+    echo "[ERROR] VAULT_AGENT_URL is not set in $RAG_SEARCH_CONSTANTS and no vaultAgentUrl parameter was given"
+    exit 1
 fi
 
-echo "DEBUG: VAULT_ADDR=$VAULT_ADDR vaultAgentUrl=$vaultAgentUrl KUBERNETES_SERVICE_HOST=$KUBERNETES_SERVICE_HOST"
+echo "DEBUG: VAULT_ADDR=$VAULT_ADDR (source: ${vaultAgentUrl:+request parameter}${vaultAgentUrl:-$RAG_SEARCH_CONSTANTS})"
 
 # Decryption Configuration
 PRIVATE_KEY_CACHE=""

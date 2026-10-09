@@ -5,11 +5,11 @@ metadata:
   labels:
     app: "{{ .Values.release_name }}"
 data:
+  # Mounted at /app/config/constants.ini (NOT /app/constants.ini, which is baked
+  # into the cron-manager image). Read by DSL/CronManager/script/load_constants.sh,
+  # src/constants_loader.py and the Loki logger.
   constants.ini: |
-  
-    RAG_MODULE_RUUTER_PRIVATE={{ .Values.constants.RAG_MODULE_RUUTER_PRIVATE }}
-    RAG_MODULE_RUUTER_PUBLIC={{ .Values.constants.RAG_MODULE_RUUTER_PUBLIC }}
-    RAG_MODULE_RESQL={{ .Values.constants.RAG_MODULE_RESQL }}
-    RAG_MODULE_TIM={{ .Values.constants.RAG_MODULE_TIM }}
-    RAG_MODULE_DATAMAPPER={{ .Values.constants.RAG_MODULE_DATAMAPPER }}
-   
+    [DSL]
+    {{- range $key, $value := .Values.dslConstants }}
+    {{ $key }}={{ $value }}
+    {{- end }}

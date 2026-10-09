@@ -44,6 +44,10 @@ echo "[PACKAGES] All packages installed successfully"
 # Set Python path
 export PYTHONPATH="/app:/app/src:/app/src/intent_data_enrichment:$PYTHONPATH"
 
+# Service endpoint URLs; also exports RAG_SEARCH_CONSTANTS so the Python
+# process below resolves the same constants.ini.
+source /app/scripts/load_constants.sh
+
 # Verify Python script exists
 [ ! -f "$PYTHON_SCRIPT" ] && { echo "[ERROR] Python script not found at $PYTHON_SCRIPT"; exit 1; }
 
