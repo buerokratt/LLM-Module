@@ -139,8 +139,8 @@ class PromptConfigurationLoader:
         # Step 3: Update cache and notify waiters (lock re-acquired)
         with self._cache_condition:
             try:
-                if prompt_text:
-                    # Success - update cache
+                if prompt_text is not None:
+                    # Success - update cache (prompt_text may be an empty string)
                     self._cached_prompt = prompt_text
                     self._cache_timestamp = time.time()
                     self._last_error = None

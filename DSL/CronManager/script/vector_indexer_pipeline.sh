@@ -82,6 +82,9 @@ elif [ $PYTHON_EXIT_CODE -eq 2 ]; then
 elif [ $PYTHON_EXIT_CODE -eq 130 ]; then
     echo "[INTERRUPTED] Vector indexer was interrupted by user"
     exit 130
+elif [ $PYTHON_EXIT_CODE -eq 3 ]; then
+    echo "[SKIPPED] Existing indexer run for this dataset was already in progress"
+    exit 0
 else
     echo "[ERROR] Vector indexer failed with exit code: $PYTHON_EXIT_CODE"
     exit $PYTHON_EXIT_CODE

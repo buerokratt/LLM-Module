@@ -165,7 +165,7 @@ class ContextWorkflowExecutor(BaseWorkflow):
             )
             return ""
 
-    @observe(name="context_workflow_detect", as_type="generation")
+    @observe(name="context_workflow_detect", as_type="chain")
     async def _detect(
         self,
         message: str,
@@ -198,6 +198,7 @@ class ContextWorkflowExecutor(BaseWorkflow):
             )
             time_metric["context.detection"] = time.time() - start
             costs_metric["context_detection"] = cost
+
             update_observation_safe(
                 input_data={"query": message, "history_length": len(history)},
                 output_data={
@@ -206,14 +207,14 @@ class ContextWorkflowExecutor(BaseWorkflow):
                     if result
                     else None,
                 },
-                metadata={"usage": cost},
+                metadata={"usage_summary": cost},
             )
             return result
         except Exception as e:
             logger.error(f"Phase 1 detection failed: {e}", exc_info=True)
             update_observation_safe(
                 output_data={"error": str(e)},
-                metadata={"usage": {}},
+                metadata={"usage_summary": {}},
             )
             return None
 
@@ -231,7 +232,7 @@ class ContextWorkflowExecutor(BaseWorkflow):
         """
         return is_output_guardrail_violation(chunk)
 
-    @observe(name="context_workflow_generate_response", as_type="generation")
+    @observe(name="context_workflow_generate_response", as_type="chain")
     async def _generate_response_async(
         self,
         request: OrchestrationRequest,

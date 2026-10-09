@@ -51,6 +51,13 @@ class SearchConstants:
     DEFAULT_SCORE_THRESHOLD = 0.4  # Lowered from 0.5 for better semantic diversity
     DEFAULT_BATCH_SIZE = 1
 
+    # Relevance gating
+    DEFAULT_REQUIRE_SEMANTIC_CORROBORATION = True
+    """Discard BM25-only result sets when semantic search found nothing above
+    score_threshold. BM25 has no relevance floor - it returns top-N by keyword
+    score however weak the match - so without this a contentless query returns
+    lexical noise instead of an out-of-scope response."""
+
     # Rank fusion
     DEFAULT_RRF_K = 35  # Lowered from 60 for better score differentiation
     CONTENT_PREVIEW_LENGTH = 150

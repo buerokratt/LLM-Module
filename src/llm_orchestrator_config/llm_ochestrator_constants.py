@@ -45,6 +45,74 @@ QUERY_VALIDATION_FAILED_MESSAGES = {
     "ru": "Пожалуйста, введите корректный вопрос или сообщение, чтобы я мог вам помочь.",
 }
 
+# ---------------------------------------------------------------------------
+# Service workflow messages (Layer 1)
+#
+# Usage: import the dictionary alongside get_localized_message, then look it up
+# with the language detected for the request. That language is stamped once per
+# request onto the "_detected_language" attribute (see process_orchestration_request
+# in llm_orchestration_service.py) and read back with getattr, defaulting to "en".
+# Unknown language codes fall back to Estonian - see get_localized_message below.
+#
+# Any new message dictionary added here MUST also be registered in
+# _HISTORY_EXCLUDED_MESSAGES (llm_orchestration_service.py) or the failed
+# exchange will be persisted to Redis and replayed to the prompt refiner on
+# the user's next turn.
+# ---------------------------------------------------------------------------
+
+# No service in the catalogue matches the user's request.
+SERVICE_NOT_FOUND_MESSAGES = {
+    "et": "Ma ei leidnud teie päringule vastavat teenust. Palun sõnastage küsimus ümber või küsige mõne muu teema kohta.",
+    "ru": "Я не нашёл службы, соответствующей вашему запросу. Пожалуйста, переформулируйте вопрос или спросите о другой теме.",
+    "en": "I couldn't find a service that matches your request. Please try rephrasing, or ask about a different topic.",
+}
+
+# A matching service exists but its current_state is not 'active'.
+SERVICE_VALIDATION_FAILED_MESSAGES = {
+    "et": "See teenus ei ole hetkel saadaval. Palun proovige hiljem uuesti.",
+    "ru": "Эта услуга сейчас недоступна. Пожалуйста, попробуйте позже.",
+    "en": "This service is currently unavailable. Please try again later.",
+}
+
+# The service call exceeded its timeout budget.
+SERVICE_TIMEOUT_ERROR_MESSAGES = {
+    "et": "Teenuse vastus võtab oodatust kauem aega. Palun proovige hetke pärast uuesti.",
+    "ru": "Служба отвечает дольше обычного. Пожалуйста, попробуйте через мгновение.",
+    "en": "The service is taking longer than expected to respond. Please try again in a moment.",
+}
+
+# The service was reached but returned an error response.
+SERVICE_EXECUTION_ERROR_MESSAGES = {
+    "et": "Teie päringu täitmisel läks midagi valesti. Palun proovige uuesti.",
+    "ru": "При выполнении вашего запроса произошла ошибка. Пожалуйста, попробуйте ещё раз.",
+    "en": "Something went wrong while completing your request. Please try again.",
+}
+
+# The LLM could not extract the entities/slots the service requires.
+ENTITY_EXTRACTION_FAILED_MESSAGES = {
+    "et": "Vajan jätkamiseks veidi rohkem teavet. Kas saaksite täpsustada, mida soovite?",
+    "ru": "Мне нужно немного больше информации, чтобы продолжить. Уточните, пожалуйста, что вам нужно.",
+    "en": "I need a little more detail to continue. Could you tell me more about what you need?",
+}
+
+# ---------------------------------------------------------------------------
+# Context workflow messages (Layer 3)
+# ---------------------------------------------------------------------------
+
+# The query refers back to the conversation, but no clear answer can be derived.
+INSUFFICIENT_CONTEXT_MESSAGES = {
+    "et": "Ma ei ole kindel, millele te viitate. Kas saaksite küsimuse täpsemalt ümber sõnastada?",
+    "ru": "Я не уверен, о чём именно вы спрашиваете. Не могли бы вы переформулировать вопрос подробнее?",
+    "en": "I'm not sure what you're referring to. Could you rephrase your question with more detail?",
+}
+
+# The query refers back to the conversation, but there is no history at all.
+NO_CONTEXT_AVAILABLE_MESSAGES = {
+    "et": "Me ei ole veel midagi arutanud. Kas saaksite esitada oma küsimuse tervikuna?",
+    "ru": "Мы ещё ничего не обсуждали. Не могли бы вы задать вопрос полностью?",
+    "en": "We haven't discussed anything yet. Could you ask your question in full?",
+}
+
 # Legacy constants for backward compatibility (English defaults)
 OUT_OF_SCOPE_MESSAGE = OUT_OF_SCOPE_MESSAGES["en"]
 TECHNICAL_ISSUE_MESSAGE = TECHNICAL_ISSUE_MESSAGES["en"]

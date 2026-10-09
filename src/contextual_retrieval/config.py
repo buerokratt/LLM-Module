@@ -129,6 +129,13 @@ class SearchConfig(BaseModel):
         default=SearchConstants.DEFAULT_SCORE_THRESHOLD,
         description="Minimum score threshold",
     )
+    require_semantic_corroboration: bool = Field(
+        default=SearchConstants.DEFAULT_REQUIRE_SEMANTIC_CORROBORATION,
+        description=(
+            "Treat retrieval as empty when semantic search returns nothing above "
+            "score_threshold but BM25 returns matches"
+        ),
+    )
 
 
 class BM25Config(BaseModel):
@@ -273,6 +280,10 @@ class ConfigLoader:
                 ),
                 score_threshold=search_config_data.get(
                     "score_threshold", SearchConstants.DEFAULT_SCORE_THRESHOLD
+                ),
+                require_semantic_corroboration=search_config_data.get(
+                    "require_semantic_corroboration",
+                    SearchConstants.DEFAULT_REQUIRE_SEMANTIC_CORROBORATION,
                 ),
             )
 
