@@ -8,7 +8,14 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit && eslint \"./src/**/*.{js,ts,tsx}\"",
-    "prettier": "prettier --write \"{,!(node_modules)/**/}*.{ts,tsx,js,json,css,less,scss}\""
+    "prettier": "prettier --write \"{,!(node_modules)/**/}*.{ts,tsx,js,json,css,less,scss}\"",
+    "test": "playwright test",
+    "test:ui": "playwright test --ui",
+    "test:headed": "playwright test --headed",
+    "test:debug": "playwright test --debug",
+    "test:chrome": "playwright test --project=chromium",
+    "test:chrome:headed": "playwright test --project=chromium --headed",
+    "test:chrome:debug": "playwright test --project=chromium --debug"
   },
   "dependencies": {
     "@buerokratt-ria/header": "^0.1.52",
@@ -73,6 +80,7 @@
     "zustand": "^4.4.4"
   },
   "devDependencies": {
+    "@playwright/test": "^1.56.1",
     "@types/howler": "^2.2.11",
     "@types/lodash": "^4.14.191",
     "@types/lodash.debounce": "^4.0.7",
