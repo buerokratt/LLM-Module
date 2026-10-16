@@ -196,6 +196,8 @@ app = FastAPI(
 
 from src.widget_bot_bridge import router as widget_bot_router
 app.include_router(widget_bot_router)
+from src.knowledge_refresh import router as knowledge_refresh_router
+app.include_router(knowledge_refresh_router)
 
 @app.middleware("http")
 async def enforce_non_generating_mode(request: Request, call_next):
