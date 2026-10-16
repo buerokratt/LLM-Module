@@ -44,3 +44,20 @@ def test_real_nemo_embeddings_without_downloads(monkeypatch):
     configure(config)
     rails = LLMRails(config, llm=FakeListLLM(responses=["Hello!"]))
     assert rails.default_embedding_model == "all-MiniLM-L6-v2"
+
+
+@pytest.mark.skipif(not os.getenv('GUARDRAILS_EMBEDDING_PATH'), reason='image artifact required')
+def test_real_nemo_adapter_initializes_in_background_thread(monkeypatch):
+    import asyncio
+    from unittest.mock import Mock
+    from llm_orchestrator_config import llm_manager
+    from src.guardrails.nemo_rails_adapter import NeMoRailsAdapter
+    from fastembed.common.model_management import ModelManagement
+    def forbidden(*args, **kwargs):
+        raise AssertionError('runtime model download attempted')
+    monkeypatch.setattr(ModelManagement, 'download_files_from_huggingface', forbidden)
+    monkeypatch.setattr(ModelManagement, 'retrieve_model_gcs', forbidden)
+    monkeypatch.setattr(llm_manager, 'LLMManager', Mock(return_value=Mock()))
+    adapter = NeMoRailsAdapter(environment='testing', connection_id='offline-fixture')
+    asyncio.run(asyncio.to_thread(adapter._ensure_initialized))
+    assert adapter._initialized and adapter._rails is not None
