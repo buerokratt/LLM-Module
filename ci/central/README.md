@@ -29,3 +29,5 @@ CI starts real NeMo embeddings as UID1000 with networking disabled and both mode
 download methods forbidden, plus missing/corrupt-artifact negatives. Existing241
 application regressions run offline. Generation remains opt-in through
 `LLM_GENERATION_ENABLED`; provider-backed acceptance is an operator test.
+
+Run-2 acceptance fixes: Create UID1000-owned /app/logs and prove the real EmbeddingManager can write there in an isolated non-root build smoke. Existing offline guardrails and241 regressions retained.
