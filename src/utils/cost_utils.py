@@ -1,11 +1,17 @@
 """Cost calculation utilities for LLM usage tracking."""
 
-from typing import Dict, Any, List, Tuple
+import sys
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, List, Optional, Protocol, Tuple
 from src.loki_logger import LokiLogger
 import dspy
 
 # Initialize Loki logger for cost tracking
 logger = LokiLogger(service_name="cost-utils")
+
+
+class RequestUsageTracker(Protocol):
+    def get_total_tokens(self) -> Dict[str, Dict[str, Any]]: ...
 
 
 def _to_float(value: str | int | float | bytes | bytearray | None) -> float:
@@ -16,6 +22,140 @@ def _to_float(value: str | int | float | bytes | bytearray | None) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+@contextmanager
+def track_request_usage() -> Iterator[RequestUsageTracker]:
+    """Track DSPy usage for one request and tolerate cross-context stream close."""
+    usage_context = dspy.track_usage()
+    tracker = usage_context.__enter__()
+
+    try:
+        yield tracker
+    except BaseException as request_error:
+        try:
+            suppress_error = usage_context.__exit__(*sys.exc_info())
+        except ValueError as close_error:
+            if "different Context" not in str(close_error):
+                raise
+            logger.debug("DSPy usage context closed from a different context")
+            raise request_error.with_traceback(
+                request_error.__traceback__
+            ) from close_error
+        if not suppress_error:
+            raise
+    else:
+        try:
+            usage_context.__exit__(None, None, None)
+        except ValueError as close_error:
+            if "different Context" not in str(close_error):
+                raise
+            logger.debug("DSPy usage context closed from a different context")
+
+
+def _token_count(value: int | float | str | bytes | bytearray | None) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _price_model_usage(model_name: str, usage: Dict[str, Any]) -> float:
+    prompt_tokens = _token_count(usage.get("prompt_tokens", usage.get("input_tokens")))
+    completion_tokens = _token_count(
+        usage.get("completion_tokens", usage.get("output_tokens"))
+    )
+    if prompt_tokens == 0 and completion_tokens == 0:
+        return 0.0
+
+    try:
+        from litellm.cost_calculator import cost_per_token
+
+        input_cost, output_cost = cost_per_token(
+            model=model_name,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+        return _to_float(input_cost) + _to_float(output_cost)
+    except Exception as e:
+        logger.debug(f"Cost lookup failed for model '{model_name}': {e}")
+        return 0.0
+
+
+def _is_configured_deployment(model_name: str, deployment_name: str) -> bool:
+    return model_name == deployment_name or model_name.endswith(f"/{deployment_name}")
+
+
+def get_request_usage_summary(
+    usage_tracker: RequestUsageTracker, model_info: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """Summarize request tracker usage and price each model independently."""
+    summary: Dict[str, Any] = {
+        "total_cost": 0.0,
+        "total_prompt_tokens": 0,
+        "total_completion_tokens": 0,
+        "total_tokens": 0,
+        "total_calls": 0,
+        "models": {},
+    }
+
+    try:
+        usage_by_model = usage_tracker.get_total_tokens()
+        usage_entries = getattr(usage_tracker, "usage_data", {})
+        model_info = model_info or {}
+        deployment_name = model_info.get("deployment_name")
+        fallback_model = model_info.get("model")
+
+        for model_name, usage in usage_by_model.items():
+            if not isinstance(usage, dict):
+                continue
+
+            prompt_tokens = _token_count(
+                usage.get("prompt_tokens", usage.get("input_tokens"))
+            )
+            completion_tokens = _token_count(
+                usage.get("completion_tokens", usage.get("output_tokens"))
+            )
+            total_tokens = _token_count(usage.get("total_tokens"))
+            if total_tokens == 0:
+                total_tokens = prompt_tokens + completion_tokens
+
+            calls = len(usage_entries.get(model_name, []))
+            if calls == 0 and (prompt_tokens or completion_tokens):
+                calls = 1
+
+            total_cost = _price_model_usage(model_name, usage)
+            if (
+                total_cost == 0.0
+                and isinstance(deployment_name, str)
+                and deployment_name
+                and isinstance(fallback_model, str)
+                and fallback_model
+                and _is_configured_deployment(model_name, deployment_name)
+            ):
+                total_cost = _price_model_usage(fallback_model, usage)
+
+            if total_tokens > 0 and total_cost == 0.0:
+                logger.warning(
+                    f"Unable to price {total_tokens} tokens for model '{model_name}'"
+                )
+
+            summary["models"][model_name] = {
+                "total_cost": total_cost,
+                "total_prompt_tokens": prompt_tokens,
+                "total_completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+                "num_calls": calls,
+            }
+            summary["total_cost"] += total_cost
+            summary["total_prompt_tokens"] += prompt_tokens
+            summary["total_completion_tokens"] += completion_tokens
+            summary["total_tokens"] += total_tokens
+            summary["total_calls"] += calls
+    except Exception as e:
+        logger.error(f"Error summarizing request usage: {e}")
+
+    return summary
 
 
 def _extract_cost_with_fallback(

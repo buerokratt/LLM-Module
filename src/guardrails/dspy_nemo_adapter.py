@@ -6,6 +6,7 @@ Follows both NeMo's official custom LLM provider pattern and DSPy's native archi
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Union, cast, Iterator, AsyncIterator
 import asyncio
+import contextvars
 import dspy
 from src.loki_logger import LokiLogger
 from langfuse import observe
@@ -351,8 +352,9 @@ class DSPyNeMoLLM(LLM):
                 # Pass exception to async consumer
                 loop.call_soon_threadsafe(queue.put_nowait, e)
 
-        # Start producer in thread pool
-        loop.run_in_executor(None, producer)
+        # Preserve request-local DSPy usage tracking in the producer thread.
+        context = contextvars.copy_context()
+        loop.run_in_executor(None, context.run, producer)
 
         # Async consumer - yield tokens as they arrive
         try:
