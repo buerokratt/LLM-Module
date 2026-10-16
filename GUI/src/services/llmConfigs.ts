@@ -1,4 +1,4 @@
-import apiDev from './api-dev';
+import apiDev from './api';
 
 export interface PlatformOption {
   id: number;

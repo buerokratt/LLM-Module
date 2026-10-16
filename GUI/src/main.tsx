@@ -1,3 +1,6 @@
+import { coordinateAuthenticatedRequests } from './services/authenticatedAdapter';
+import headerApi from '@buerokratt-ria/header/src/services/api';
+import headerPrivateApi from '@buerokratt-ria/header/src/services/api-dev';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
@@ -61,3 +64,6 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
     </QueryClientProvider>
   </React.StrictMode>
 );
+
+coordinateAuthenticatedRequests(headerApi);
+coordinateAuthenticatedRequests(headerPrivateApi);

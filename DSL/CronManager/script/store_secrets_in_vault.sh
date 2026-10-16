@@ -5,6 +5,10 @@
 
 set -e  # Exit on any error
 
+source "$(dirname "${BASH_SOURCE[0]}")/central_vault_paths.sh"
+central_vault_configure || { echo "Invalid Central Vault path configuration" >&2; exit 1; }
+
+
 # Configuration
 source /app/scripts/load_constants.sh
 
@@ -23,17 +27,17 @@ else
     exit 1
 fi
 
-echo "DEBUG: VAULT_ADDR=$VAULT_ADDR (source: ${vaultAgentUrl:+request parameter}${vaultAgentUrl:-$RAG_SEARCH_CONSTANTS})"
+
 
 # Decryption Configuration
 PRIVATE_KEY_CACHE=""
-PRIVATE_KEY_PATH="secret/encryption/private_key"
+PRIVATE_KEY_PATH="$VAULT_KV_MOUNT/$VAULT_PATH_PREFIX/encryption/private_key"
 
 # Python decryption script path
-DECRYPT_SCRIPT="/app/src/utils/decrypt_vault_secrets.py"
+DECRYPT_SCRIPT="${VAULT_DECRYPT_SCRIPT:-/app/src/utils/decrypt_vault_secrets.py}"
 
 # Virtual environment setup
-VENV_PATH="/app/python_virtual_env"
+VENV_PATH="${VAULT_PYTHON_VENV:-/app/python_virtual_env}"
 UV_BIN="/root/.local/bin/uv"
 
 # Logging function (writes to stderr to avoid command substitution capture)
@@ -51,10 +55,11 @@ fetch_private_key() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Fetching private key from Vault..." >&2
     
     # Convert path for KV v2 API
-    local api_path=$(echo "$PRIVATE_KEY_PATH" | sed 's|^secret/|secret/data/|')
+    local api_path
+    api_path=$(central_vault_api_path "$PRIVATE_KEY_PATH" data) || return 1
     
     # Fetch private key from Vault
-    local response=$(curl -s --max-time 10 -w "HTTPSTATUS:%{http_code}" \
+    local response=$(curl -s --connect-timeout 5 --max-time 10 -w "HTTPSTATUS:%{http_code}" \
         -X GET \
         "$VAULT_ADDR/v1/$api_path")
     
@@ -63,7 +68,7 @@ fetch_private_key() {
     
     if [[ "$http_code" -ne 200 ]]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Failed to fetch private key from Vault (HTTP $http_code)" >&2
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Response: $body" >&2
+
         return 1
     fi
     
@@ -103,7 +108,7 @@ decrypt_rsa_oaep() {
     local decrypted_value
     local python_stderr
     python_stderr=$(mktemp)
-    decrypted_value=$("$VENV_PATH/bin/python3" "$DECRYPT_SCRIPT" "$encrypted_base64" "$PRIVATE_KEY_CACHE" 2>"$python_stderr")
+    decrypted_value=$(printf '%s' "$PRIVATE_KEY_CACHE" | "$VENV_PATH/bin/python3" "$DECRYPT_SCRIPT" "$encrypted_base64" --private-key-stdin 2>"$python_stderr")
     local exit_code=$?
     
     # Show Python errors if any
@@ -114,7 +119,7 @@ decrypt_rsa_oaep() {
     
     if [ $exit_code -ne 0 ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Python decryption failed with exit code: $exit_code" >&2
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Output: $decrypted_value" >&2
+
         return 1
     fi
     
@@ -129,59 +134,9 @@ decrypt_rsa_oaep() {
 
 # Setup Python environment and install dependencies
 setup_python_environment() {
-    # Check if already setup
-    if [ -f "$VENV_PATH/.setup_complete" ]; then
-        return 0
-    fi
-    
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Setting up Python environment..."
-    
-    # Install uv if not found
-    if [ ! -f "$UV_BIN" ]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Installing uv package manager..."
-        curl -LsSf https://astral.sh/uv/install.sh | sh || {
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Failed to install uv" >&2
-            return 1
-        }
-    fi
-    
-    # Activate virtual environment
-    if [ ! -d "$VENV_PATH" ]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Virtual environment not found at $VENV_PATH" >&2
-        return 1
-    fi
-    
-    source "$VENV_PATH/bin/activate" || {
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Failed to activate virtual environment" >&2
-        return 1
-    }
-    
-    # Install cryptography library for RSA-OAEP decryption
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Installing cryptography library..."
-    "$UV_BIN" pip install --python "$VENV_PATH/bin/python3" "cryptography>=46.0.3" 2>&1 || {
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Failed to install cryptography" >&2
-        return 1
-    }
-    
-    # Install loguru for structured logging
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Installing loguru library..."
-    "$UV_BIN" pip install --python "$VENV_PATH/bin/python3" "loguru>=0.7.3" 2>&1 || {
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Failed to install loguru" >&2
-        return 1
-    }
-
-    # Install requests, required by LokiLogger which decrypt_vault_secrets.py imports
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Installing requests library..."
-    "$UV_BIN" pip install --python "$VENV_PATH/bin/python3" "requests>=2.32" 2>&1 || {
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Failed to install requests" >&2
-        return 1
-    }
-
-    # Mark setup as complete
-    touch "$VENV_PATH/.setup_complete"
-    
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python environment setup complete"
-    return 0
+    # Dependencies are pinned into the image at build time. No startup downloads.
+    [ -x "$VENV_PATH/bin/python3" ] || return 1
+    "$VENV_PATH/bin/python3" -c 'import cryptography, loguru, requests' >/dev/null 2>&1
 }
 
 log "=== Starting Vault Secrets Storage ==="
@@ -193,7 +148,7 @@ log "  deploymentEnvironment: $deploymentEnvironment"
 log "  Vault Address: $VAULT_ADDR"
 
 # Validate required vaultUuid parameter
-if [ -z "$vaultUuid" ]; then
+if ! [[ "$vaultUuid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
     log "ERROR: vaultUuid is required but not provided"
     exit 1
 fi
@@ -212,7 +167,7 @@ export PYTHONPATH="/app:/app/src:/app/src/vector_indexer:$PYTHONPATH"
 
 # Function to determine platform name
 get_platform_name() {
-    case "$llmPlatform" in
+    case "${1:-$llmPlatform}" in
         "aws") echo "aws_bedrock" ;;
         "azure") echo "azure_openai" ;;
         *) 
@@ -231,15 +186,19 @@ get_model_name() {
 # Function to build vault path (uses vaultUuid as stable path terminal)
 build_vault_path() {
     local secret_type=$1  # "llm" or "embeddings"
-    local platform=$(get_platform_name)
+    local selected_platform="$llmPlatform"
+    [[ "$secret_type" != embeddings ]] || selected_platform="$embeddingPlatform"
+    local platform
+    platform=$(get_platform_name "$selected_platform") || return 1
     
     # UUID-based path: no environment in path, swap is DB-only
-    echo "secret/$secret_type/connections/$platform/$vaultUuid"
+    central_vault_connection_path "$secret_type" "$platform" "$vaultUuid"
 }
 
 # Function to store LLM secrets
 store_llm_secrets() {
-    local vault_path=$(build_vault_path "llm")
+    local vault_path
+    vault_path=$(build_vault_path "llm") || return 1
     log "Storing LLM secrets at path: $vault_path"
     
     case "$llmPlatform" in
@@ -254,7 +213,8 @@ store_llm_secrets() {
 
 # Function to store embedding secrets
 store_embedding_secrets() {
-    local vault_path=$(build_vault_path "embeddings")
+    local vault_path
+    vault_path=$(build_vault_path "embeddings") || return 1
     log "Storing embedding secrets at path: $vault_path"
     
     case "$embeddingPlatform" in
@@ -275,16 +235,19 @@ store_aws_llm_secrets() {
     local vault_path=$1
     local model=$(get_model_name)
     
+    [[ -n "${awsRegion:-$VAULT_AWS_REGION}" ]] || { log "AWS region is required"; return 1; }
     log "Storing AWS LLM secrets..."
     
     # Decrypt sensitive fields
-    local decrypted_access_key=$(decrypt_rsa_oaep "$accessKey")
+    local decrypted_access_key
+    decrypted_access_key=$(decrypt_rsa_oaep "$accessKey") || return 1
     if [ $? -ne 0 ] || [ -z "$decrypted_access_key" ]; then
         log "ERROR: Failed to decrypt access key"
         exit 1
     fi
     
-    local decrypted_secret_key=$(decrypt_rsa_oaep "$secretKey")
+    local decrypted_secret_key
+    decrypted_secret_key=$(decrypt_rsa_oaep "$secretKey") || return 1
     if [ $? -ne 0 ] || [ -z "$decrypted_secret_key" ]; then
         log "ERROR: Failed to decrypt secret key"
         exit 1
@@ -295,11 +258,13 @@ store_aws_llm_secrets() {
         --arg conn_id "$vaultUuid" \
         --arg access_key "$decrypted_access_key" \
         --arg secret_key "$decrypted_secret_key" \
+        --arg region "${awsRegion:-$VAULT_AWS_REGION}" \
         --arg model "$model" \
         '{data: {
             connection_id: $conn_id,
-            access_key: $access_key,
-            secret_key: $secret_key,
+            access_key_id: $access_key,
+            secret_access_key: $secret_key,
+            region: $region,
             model: $model,
             tags: "aws,bedrock,\($model)"
         }}')
@@ -307,12 +272,13 @@ store_aws_llm_secrets() {
     log "Storing secrets at path: $vault_path"
     
     # Convert path for KV v2 API (secret/path -> secret/data/path)
-    local api_path=$(echo "$vault_path" | sed 's|^secret/|secret/data/|')
+    local api_path
+    api_path=$(central_vault_api_path "$vault_path" data) || return 1
     log "API URL: $VAULT_ADDR/v1/$api_path"
     
     # Execute HTTP API call
     # No X-Vault-Token header needed - vault agent proxy auto-injects it
-    local response=$(curl -s --max-time 10 -w "HTTPSTATUS:%{http_code}" \
+    local response=$(curl -s --connect-timeout 5 --max-time 10 -w "HTTPSTATUS:%{http_code}" \
         -X POST \
         -H "Content-Type: application/json" \
         -d "$json_payload" \
@@ -325,7 +291,7 @@ store_aws_llm_secrets() {
         log "AWS LLM secrets stored successfully (HTTP $http_code)"
     else
         log "ERROR: Failed to store AWS LLM secrets (HTTP $http_code)"
-        log "Response: $body"
+
         # Clear sensitive variables before exit
         unset decrypted_access_key decrypted_secret_key json_payload
         exit 1
@@ -343,7 +309,8 @@ store_azure_llm_secrets() {
     log "Storing Azure LLM secrets..."
     
     # Decrypt sensitive fields
-    local decrypted_api_key=$(decrypt_rsa_oaep "$apiKey")
+    local decrypted_api_key
+    decrypted_api_key=$(decrypt_rsa_oaep "$apiKey") || return 1
     if [ $? -ne 0 ] || [ -z "$decrypted_api_key" ]; then
         log "ERROR: Failed to decrypt API key"
         exit 1
@@ -369,12 +336,13 @@ store_azure_llm_secrets() {
     log "Storing secrets at path: $vault_path"
     
     # Convert path for KV v2 API (secret/path -> secret/data/path)
-    local api_path=$(echo "$vault_path" | sed 's|^secret/|secret/data/|')
+    local api_path
+    api_path=$(central_vault_api_path "$vault_path" data) || return 1
     log "API URL: $VAULT_ADDR/v1/$api_path"
     
     # Execute HTTP API call
     # No X-Vault-Token header needed - vault agent proxy auto-injects it
-    local response=$(curl -s --max-time 10 -w "HTTPSTATUS:%{http_code}" \
+    local response=$(curl -s --connect-timeout 5 --max-time 10 -w "HTTPSTATUS:%{http_code}" \
         -X POST \
         -H "Content-Type: application/json" \
         -d "$json_payload" \
@@ -387,7 +355,7 @@ store_azure_llm_secrets() {
         log "Azure LLM secrets stored successfully (HTTP $http_code)"
     else
         log "ERROR: Failed to store Azure LLM secrets (HTTP $http_code)"
-        log "Response: $body"
+
         # Clear sensitive variables before exit
         unset decrypted_api_key json_payload
         exit 1
@@ -401,16 +369,19 @@ store_azure_llm_secrets() {
 store_aws_embedding_secrets() {
     local vault_path=$1
     
+    [[ -n "${embeddingAwsRegion:-$VAULT_EMBEDDING_AWS_REGION}" ]] || { log "Embedding AWS region is required"; return 1; }
     log "Storing AWS embedding secrets..."
     
     # Decrypt sensitive fields
-    local decrypted_embedding_access_key=$(decrypt_rsa_oaep "$embeddingAccessKey")
+    local decrypted_embedding_access_key
+    decrypted_embedding_access_key=$(decrypt_rsa_oaep "$embeddingAccessKey") || return 1
     if [ $? -ne 0 ] || [ -z "$decrypted_embedding_access_key" ]; then
         log "ERROR: Failed to decrypt embedding access key"
         exit 1
     fi
     
-    local decrypted_embedding_secret_key=$(decrypt_rsa_oaep "$embeddingSecretKey")
+    local decrypted_embedding_secret_key
+    decrypted_embedding_secret_key=$(decrypt_rsa_oaep "$embeddingSecretKey") || return 1
     if [ $? -ne 0 ] || [ -z "$decrypted_embedding_secret_key" ]; then
         log "ERROR: Failed to decrypt embedding secret key"
         exit 1
@@ -421,11 +392,13 @@ store_aws_embedding_secrets() {
         --arg conn_id "$vaultUuid" \
         --arg access_key "$decrypted_embedding_access_key" \
         --arg secret_key "$decrypted_embedding_secret_key" \
+        --arg region "${embeddingAwsRegion:-$VAULT_EMBEDDING_AWS_REGION}" \
         --arg model "$embeddingModel" \
         '{data: {
             connection_id: $conn_id,
-            access_key: $access_key,
-            secret_key: $secret_key,
+            access_key_id: $access_key,
+            secret_access_key: $secret_key,
+            region: $region,
             model: $model,
             tags: "aws,bedrock,embedding,\($model)"
         }}')
@@ -433,12 +406,13 @@ store_aws_embedding_secrets() {
     log "Storing secrets at path: $vault_path"
     
     # Convert path for KV v2 API (secret/path -> secret/data/path)
-    local api_path=$(echo "$vault_path" | sed 's|^secret/|secret/data/|')
+    local api_path
+    api_path=$(central_vault_api_path "$vault_path" data) || return 1
     log "API URL: $VAULT_ADDR/v1/$api_path"
     
     # Execute HTTP API call
     # No X-Vault-Token header needed - vault agent proxy auto-injects it
-    local response=$(curl -s --max-time 10 -w "HTTPSTATUS:%{http_code}" \
+    local response=$(curl -s --connect-timeout 5 --max-time 10 -w "HTTPSTATUS:%{http_code}" \
         -X POST \
         -H "Content-Type: application/json" \
         -d "$json_payload" \
@@ -451,7 +425,7 @@ store_aws_embedding_secrets() {
         log "AWS embedding secrets stored successfully (HTTP $http_code)"
     else
         log "ERROR: Failed to store AWS embedding secrets (HTTP $http_code)"
-        log "Response: $body"
+
         # Clear sensitive variables before exit
         unset decrypted_embedding_access_key decrypted_embedding_secret_key json_payload
         exit 1
@@ -468,7 +442,8 @@ store_azure_embedding_secrets() {
     log "Storing Azure embedding secrets..."
     
     # Decrypt sensitive fields
-    local decrypted_embedding_api_key=$(decrypt_rsa_oaep "$embeddingAzureApiKey")
+    local decrypted_embedding_api_key
+    decrypted_embedding_api_key=$(decrypt_rsa_oaep "$embeddingAzureApiKey") || return 1
     if [ $? -ne 0 ] || [ -z "$decrypted_embedding_api_key" ]; then
         log "ERROR: Failed to decrypt embedding API key"
         exit 1
@@ -494,12 +469,13 @@ store_azure_embedding_secrets() {
     log "Storing secrets at path: $vault_path"
     
     # Convert path for KV v2 API (secret/path -> secret/data/path)
-    local api_path=$(echo "$vault_path" | sed 's|^secret/|secret/data/|')
+    local api_path
+    api_path=$(central_vault_api_path "$vault_path" data) || return 1
     log "API URL: $VAULT_ADDR/v1/$api_path"
     
     # Execute HTTP API call
     # No X-Vault-Token header needed - vault agent proxy auto-injects it
-    local response=$(curl -s --max-time 10 -w "HTTPSTATUS:%{http_code}" \
+    local response=$(curl -s --connect-timeout 5 --max-time 10 -w "HTTPSTATUS:%{http_code}" \
         -X POST \
         -H "Content-Type: application/json" \
         -d "$json_payload" \
@@ -512,7 +488,7 @@ store_azure_embedding_secrets() {
         log "Azure embedding secrets stored successfully (HTTP $http_code)"
     else
         log "ERROR: Failed to store Azure embedding secrets (HTTP $http_code)"
-        log "Response: $body"
+
         # Clear sensitive variables before exit
         unset decrypted_embedding_api_key json_payload
         exit 1

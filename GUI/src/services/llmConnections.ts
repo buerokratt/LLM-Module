@@ -1,4 +1,4 @@
-import apiDev from './api-dev';
+import apiDev from './api';
 import { llmConnectionsEndpoints, vaultEndpoints } from 'utils/endpoints';
 import { removeCommasFromNumber } from 'utils/commonUtils';
 import { maskSensitiveKey } from 'utils/llmConnectionsUtils';
@@ -30,10 +30,12 @@ export interface LLMConnection {
   // AWS Bedrock credentials
   secretKey?: string;
   accessKey?: string;
+  awsRegion?: string;
   // Embedding model credentials
   embeddingModelApiKey?: string;
   // Embedding AWS Bedrock credentials
   embeddingAccessKey?: string;
+  embeddingAwsRegion?: string;
   embeddingSecretKey?: string;
   // Embedding Azure credentials
   embeddingDeploymentName?: string;
@@ -115,10 +117,12 @@ export interface LLMConnectionFormData {
   // AWS Bedrock credentials
   secretKey?: string;
   accessKey?: string;
+  awsRegion?: string;
   // Embedding model credentials
   embeddingModelApiKey?: string;
   // Embedding AWS Bedrock credentials
   embeddingAccessKey?: string;
+  embeddingAwsRegion?: string;
   embeddingSecretKey?: string;
   // Embedding Azure credentials
   embeddingDeploymentName?: string;
@@ -150,6 +154,11 @@ async function createVaultSecret(vaultUuid: string, connectionData: LLMConnectio
     embeddingModel: connectionData.embeddingModel,
     embeddingPlatform: connectionData.embeddingModelPlatform,
     deploymentEnvironment: connectionData.deploymentEnvironment.toLowerCase(),
+    awsRegion: connectionData.awsRegion || '',
+    embeddingAwsRegion: connectionData.embeddingAwsRegion || '',
+    deploymentName: '', targetUrl: '', apiKey: '', secretKey: '', accessKey: '',
+    embeddingAccessKey: '', embeddingSecretKey: '',
+    embeddingDeploymentName: '', embeddingTargetUri: '', embeddingAzureApiKey: '',
     // AWS credentials (encrypted)
     ...(connectionData.llmPlatform === 'aws' && {
       secretKey: encryptedCredentials.secretKey || '',
@@ -263,7 +272,6 @@ export async function createLLMConnection(connectionData: LLMConnectionFormData)
   });
 
   const connection = data?.response;
-  console.log('Created LLM Connection:', connection);
 
   // After successful database creation, store secrets in vault
   if (connection && connection.id && connection.vaultUuid) {

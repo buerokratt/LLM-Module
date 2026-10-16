@@ -74,12 +74,16 @@ from src.orchestration.constants import (  # noqa: F401
 logger = LokiLogger(service_name="llm-orchestration-service")
 
 
+from src.runtime_mode import generation_enabled
+
+
 class LangfuseConfig:
     """Configuration for Langfuse integration."""
 
     def __init__(self) -> None:
         self.langfuse_client: Optional[Langfuse] = None
-        self._initialize_langfuse()
+        if generation_enabled():
+            self._initialize_langfuse()
 
     def _initialize_langfuse(self) -> None:
         """Initialize Langfuse client with Vault secrets."""
@@ -125,20 +129,21 @@ class LLMOrchestrationService:
             timeout_seconds=10,
         )
 
-        try:
-            custom_instructions = self.prompt_config_loader.get_custom_instructions()
-            if custom_instructions:
-                logger.info(
-                    f"Custom prompt configuration loaded at startup "
-                    f"({len(custom_instructions)} chars)"
+        if generation_enabled():
+            try:
+                custom_instructions = self.prompt_config_loader.get_custom_instructions()
+                if custom_instructions:
+                    logger.info(
+                        f"Custom prompt configuration loaded at startup "
+                        f"({len(custom_instructions)} chars)"
+                    )
+                else:
+                    logger.info("ℹNo custom prompt configuration found - using defaults")
+            except Exception as e:
+                logger.warning(
+                    f"Failed to load custom prompts at startup: {e}. "
+                    f"Service will continue with default behavior."
                 )
-            else:
-                logger.info("ℹNo custom prompt configuration found - using defaults")
-        except Exception as e:
-            logger.warning(
-                f"Failed to load custom prompts at startup: {e}. "
-                f"Service will continue with default behavior."
-            )
 
         # Initialize tool classifier (lazy initialization - will be created when first needed)
         # This allows components to be initialized per-request with proper context
@@ -183,7 +188,7 @@ class LLMOrchestrationService:
 
         # Initialize shared guardrails adapters at startup (production and testing)
         self.shared_guardrails_adapters = (
-            self._initialize_shared_guardrails_at_startup()
+            self._initialize_shared_guardrails_at_startup() if generation_enabled() else {}
         )
 
         # Log feature flag configuration

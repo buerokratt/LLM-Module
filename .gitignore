@@ -23,3 +23,11 @@ vault/keys/*.pem.old
 .github/instructions/snyk_rules.instructions.md
 # Dynamically created Ruuter health endpoint for tests
 DSL/Ruuter.private/rag-search/GET/health.yml
+# Private operator state and generated CI artifacts
+/.central-build/
+/.central-release/
+/installation-state/
+/operator-bindings.json
+/published-images.json
+/rit-byrokratt.yaml
+*.kubeconfig

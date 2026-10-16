@@ -31,6 +31,7 @@ export type LLMConnectionFormData = {
   deploymentEnvironment: string;
   // AWS Bedrock credentials
   accessKey?: string;
+  awsRegion?: string;
   secretKey?: string;
   // Azure credentials
   deploymentName?: string;
@@ -40,6 +41,7 @@ export type LLMConnectionFormData = {
   embeddingModelApiKey?: string;
   // Embedding AWS Bedrock credentials
   embeddingAccessKey?: string;
+  embeddingAwsRegion?: string;
   embeddingSecretKey?: string;
   // Embedding Azure credentials
   embeddingDeploymentName?: string;
@@ -85,6 +87,7 @@ const LLMConnectionForm: React.FC<LLMConnectionFormProps> = ({
       deploymentEnvironment: '',
       // AWS Bedrock credentials
       accessKey: '',
+      awsRegion: '',
       secretKey: '',
       // Azure credentials
       deploymentName: '',
@@ -94,6 +97,7 @@ const LLMConnectionForm: React.FC<LLMConnectionFormProps> = ({
       embeddingModelApiKey: '',
       // Embedding AWS Bedrock credentials
       embeddingAccessKey: '',
+      embeddingAwsRegion: '',
       embeddingSecretKey: '',
       // Embedding Azure credentials
       embeddingDeploymentName: '',
@@ -194,7 +198,8 @@ const embeddingModelOptions = toOptions(embeddingModelsData);
       case 'aws':
         return (
           <>
-            <div className="form-row">
+            <div className="llm-connection-form__field"><p className="form-label">AWS region</p><Controller name="awsRegion" control={control} rules={{required: 'AWS region is required'}} render={({field}) => <FormInput {...field} label="AWS region" placeholder="e.g. us-east-1" error={errors.awsRegion?.message} readOnly={readOnly} />} /></div>
+              <div className="form-row">
               <p className='form-label'>{t('llmConnectionForm.aws.accessKey.label') || 'Access Key'}</p>
               <p className='form-description'>{t('llmConnectionForm.aws.accessKey.description') || 'AWS Access Key for Bedrock service'}</p>
               <Controller
@@ -346,7 +351,8 @@ const embeddingModelOptions = toOptions(embeddingModelsData);
       case 'aws':
         return (
           <>
-            <div className="form-row">
+            <div className="llm-connection-form__field"><p className="form-label">Embedding AWS region</p><Controller name="embeddingAwsRegion" control={control} rules={{required: 'Embedding AWS region is required'}} render={({field}) => <FormInput {...field} label="Embedding AWS region" placeholder="e.g. us-east-1" error={errors.embeddingAwsRegion?.message} readOnly={readOnly} />} /></div>
+              <div className="form-row">
               <p className='form-label'>{t('llmConnectionForm.aws.embeddingAccessKey.label') || 'Embedding Access Key'}</p>
               <p className='form-description'>{t('llmConnectionForm.aws.embeddingAccessKey.description') || 'AWS Access Key for Bedrock embedding service'}</p>
               <Controller

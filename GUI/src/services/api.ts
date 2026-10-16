@@ -1,7 +1,8 @@
+import { coordinateAuthenticatedRequests } from './authenticatedAdapter';
 import axios, { AxiosError } from 'axios';
 
 const instance = axios.create({
-  baseURL: import.meta.env.BASE_URL,
+  baseURL: import.meta.env.REACT_APP_LLM_API_URL,
   headers: {
     Accept: 'application/json',
     'Content-Type': 'application/json',
@@ -45,3 +46,5 @@ instance.interceptors.request.use(
 
 export default instance;
 export { notificationApiDev };
+
+coordinateAuthenticatedRequests(instance);

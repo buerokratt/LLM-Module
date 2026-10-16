@@ -1,4 +1,4 @@
-import apiDev from './api-dev';
+import apiDev from './api';
 import { inferenceEndpoints } from 'utils/endpoints';
 
 export interface InferenceRequest {

@@ -1,4 +1,4 @@
-import apiDev from './api-dev';
+import apiDev from './api';
 import { promptConfigurationEndpoints } from 'utils/endpoints';
 
 export interface PromptConfiguration {

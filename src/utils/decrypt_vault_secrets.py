@@ -126,7 +126,9 @@ def main() -> NoReturn:
         sys.exit(1)
 
     encrypted_value = sys.argv[1]
-    private_key_pem = sys.argv[2]
+    private_key_pem = sys.stdin.read(65537) if sys.argv[2] == "--private-key-stdin" else sys.argv[2]
+    if len(private_key_pem) > 65536:
+        sys.exit(1)
 
     logger.debug(f"Received encrypted value of length: {len(encrypted_value)}")
     logger.debug("Private key PEM received")

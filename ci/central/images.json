@@ -1,0 +1,15 @@
+{
+  "llm-gui": {
+    "dockerfile": "ci/central/llm-gui.Dockerfile",
+    "context": "."
+  },
+  "llmNotification": {
+    "dockerfile": "ci/central/llmNotification.Dockerfile",
+    "context": "."
+  },
+  "llm": {
+    "dockerfile": "ci/central/llm.Dockerfile",
+    "context": ".",
+    "testTarget": "test"
+  }
+}

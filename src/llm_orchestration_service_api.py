@@ -6,6 +6,8 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Dict
 
+from src.runtime_mode import generation_enabled
+
 from fastapi import FastAPI, HTTPException, status, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -111,8 +113,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Wire an incremental summarizer if the LLM manager singleton is available.
         summarizer = None
         try:
-            summarizer = create_incremental_summarizer(LLMManager())
-            logger.info("Incremental conversation summarizer initialized")
+            if generation_enabled():
+                summarizer = create_incremental_summarizer(LLMManager())
+                logger.info("Incremental conversation summarizer initialized")
+            else:
+                logger.info("Conversation history enabled; model summarization disabled")
         except Exception as e:
             logger.warning(
                 f"Could not create incremental summarizer, continuing without it: {e}"
@@ -171,6 +176,18 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def enforce_non_generating_mode(request: Request, call_next):
+    if not generation_enabled() and request.url.path not in ("/health", "/docs", "/openapi.json", "/redoc"):
+        if request.url.path == "/orchestrate/stream":
+            async def disabled_stream():
+                yield 'data: {"payload":{"content":"Model generation is disabled in this test environment."}}\n\n'
+                yield 'data: {"payload":{"content":"END"}}\n\n'
+            return StreamingResponse(disabled_stream(), media_type="text/event-stream")
+        return JSONResponse(status_code=503, content={"detail": "Model generation is disabled in this test environment.", "generationEnabled": False})
+    return await call_next(request)
 
 
 # Custom exception handlers for user-friendly error messages
@@ -309,7 +326,7 @@ async def clear_connection_cache() -> dict[str, str]:
 
 
 @app.get("/health")
-async def health_check(request: Request) -> dict[str, str]:
+async def health_check(request: Request) -> dict[str, Any]:
     """Health check endpoint."""
     service_status = (
         "initialized"
@@ -319,6 +336,8 @@ async def health_check(request: Request) -> dict[str, str]:
     )
     redis_status = await check_redis_health()
     return {
+        "generation_enabled": generation_enabled(),
+        "guardrails_loaded": bool(getattr(request.app.state.orchestration_service, "shared_guardrails_adapters", {})),
         "status": "healthy",
         "service": "llm-orchestration-service",
         "orchestration_service": service_status,

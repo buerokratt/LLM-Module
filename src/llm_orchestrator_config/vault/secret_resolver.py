@@ -1,5 +1,7 @@
 """Secret resolver with TTL cache and background refresh for LLM Config Module."""
 
+from llm_orchestrator_config.vault.central_paths import settings, logical_path
+
 import threading
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Union, List
@@ -129,11 +131,11 @@ class SecretResolver:
             logger.error(
                 f"Malformed secret at {vault_path} for provider {provider} - the "
                 f"stored value does not match {get_secret_model(provider).__name__} "
-                f"and must be rewritten: {e}"
+                f"and must be rewritten: {type(e).__name__}"
             )
             return None
         except Exception as e:
-            logger.error(f"Error resolving secret for {vault_path}: {e}")
+            logger.error(f"Error resolving secret for {vault_path}: {type(e).__name__}")
             return self._get_fallback(vault_path)
 
     def list_available_models(self, provider: str, environment: str) -> list[str]:
@@ -158,7 +160,7 @@ class SecretResolver:
                 return []
 
         except Exception as e:
-            logger.error(f"Error listing models for {provider}: {e}")
+            logger.error(f"Error listing models for {provider}: {type(e).__name__}")
             return []
 
     def refresh_secret(self, vault_path: str) -> bool:
@@ -171,6 +173,8 @@ class SecretResolver:
             True if refresh successful
         """
         try:
+            prefix, _ = settings()
+            vault_path = logical_path(vault_path, prefix)
             secret_data = self.vault_client.get_secret(vault_path)
             if not secret_data:
                 logger.debug(f"Secret not found during refresh: {vault_path}")
@@ -178,7 +182,7 @@ class SecretResolver:
 
             # Determine provider from path
             path_parts = vault_path.split("/")
-            if len(path_parts) >= 4:
+            if len(path_parts) == 4 and path_parts[0] in ("llm", "embeddings") and path_parts[1] == "connections":
                 provider = path_parts[2]  # llm/connections/PROVIDER/...
                 secret_model = get_secret_model(provider)
                 validated_secret = secret_model(**secret_data)
@@ -191,7 +195,7 @@ class SecretResolver:
                 return True
 
         except Exception as e:
-            logger.error(f"Error refreshing secret {vault_path}: {e}")
+            logger.error(f"Error refreshing secret {vault_path}: {type(e).__name__}")
 
         return False
 
@@ -373,11 +377,11 @@ class SecretResolver:
             logger.error(
                 f"Malformed embedding secret at {vault_path} for provider {provider} - "
                 f"the stored value does not match "
-                f"{get_secret_model(provider).__name__} and must be rewritten: {e}"
+                f"{get_secret_model(provider).__name__} and must be rewritten: {type(e).__name__}"
             )
             return None
         except Exception as e:
-            logger.error(f"Error resolving embedding secret for {vault_path}: {e}")
+            logger.error(f"Error resolving embedding secret for {vault_path}: {type(e).__name__}")
             return self._get_fallback(vault_path)
 
     def list_available_embedding_models(
@@ -406,7 +410,7 @@ class SecretResolver:
                 return []
 
         except Exception as e:
-            logger.error(f"Error listing embedding models for {provider}: {e}")
+            logger.error(f"Error listing embedding models for {provider}: {type(e).__name__}")
             return []
 
     def _build_embedding_vault_path(

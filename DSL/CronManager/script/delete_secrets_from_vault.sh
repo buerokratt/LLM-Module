@@ -5,6 +5,10 @@
 
 set -e  # Exit on any error
 
+source "$(dirname "${BASH_SOURCE[0]}")/central_vault_paths.sh"
+central_vault_configure || { echo "Invalid Central Vault path configuration" >&2; exit 1; }
+
+
 # Configuration
 source /app/scripts/load_constants.sh
 
@@ -40,7 +44,7 @@ log "  embeddingPlatform: $embeddingPlatform"
 log "  Vault Address: $VAULT_ADDR"
 
 # Validate required vaultUuid parameter
-if [ -z "$vaultUuid" ]; then
+if ! [[ "$vaultUuid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
     log "ERROR: vaultUuid is required but not provided"
     exit 1
 fi
@@ -73,7 +77,7 @@ build_vault_path() {
     local platform_name=$2
     
     # UUID-based path: no environment in path, swap is DB-only
-    echo "secret/$secret_type/connections/$platform_name/$vaultUuid"
+    central_vault_connection_path "$secret_type" "$platform_name" "$vaultUuid"
 }
 
 # Function to delete vault secret (both data and metadata)
@@ -84,8 +88,10 @@ delete_vault_secret() {
     log "Deleting $secret_description at path: $vault_path"
     
     # Convert path for KV v2 API (secret/path -> secret/data/path and secret/metadata/path)
-    local data_path=$(echo "$vault_path" | sed 's|^secret/|secret/data/|')
-    local metadata_path=$(echo "$vault_path" | sed 's|^secret/|secret/metadata/|')
+    local data_path
+    data_path=$(central_vault_api_path "$vault_path" data) || return 1
+    local metadata_path
+    metadata_path=$(central_vault_api_path "$vault_path" metadata) || return 1
     
     log "Data API URL: $VAULT_ADDR/v1/$data_path"
     log "Metadata API URL: $VAULT_ADDR/v1/$metadata_path"
@@ -95,7 +101,7 @@ delete_vault_secret() {
     # Delete secret data
     log "Deleting secret data..."
     # No X-Vault-Token header needed - vault agent proxy auto-injects it
-    local data_response=$(curl -s -w "HTTPSTATUS:%{http_code}" \
+    local data_response=$(curl -s --connect-timeout 5 --max-time 10 -w "HTTPSTATUS:%{http_code}" \
         -X DELETE \
         "$VAULT_ADDR/v1/$data_path")
     
@@ -106,14 +112,14 @@ delete_vault_secret() {
         log "Secret data deleted successfully (HTTP $data_http_code)"
     else
         log "WARNING: Failed to delete secret data (HTTP $data_http_code)"
-        log "Data response: $data_body"
+
         success=false
     fi
     
     # Delete secret metadata
     log "Deleting secret metadata..."
     # No X-Vault-Token header needed - vault agent proxy auto-injects it
-    local metadata_response=$(curl -s -w "HTTPSTATUS:%{http_code}" \
+    local metadata_response=$(curl -s --connect-timeout 5 --max-time 10 -w "HTTPSTATUS:%{http_code}" \
         -X DELETE \
         "$VAULT_ADDR/v1/$metadata_path")
     
@@ -124,7 +130,7 @@ delete_vault_secret() {
         log "Secret metadata deleted successfully (HTTP $metadata_http_code)"
     else
         log "WARNING: Failed to delete secret metadata (HTTP $metadata_http_code)"
-        log "Metadata response: $metadata_body"
+
         success=false
     fi
     
@@ -134,7 +140,7 @@ delete_vault_secret() {
         log "WARNING: $secret_description deletion completed with some failures"
     fi
     
-    return 0  # Continue even if some deletions fail
+    [[ "$success" == true ]]  # A failed data/metadata delete must fail the job.
 }
 
 # Function to delete LLM secrets
@@ -144,8 +150,10 @@ delete_llm_secrets() {
         return 0
     fi
     
-    local platform_name=$(get_platform_name "$llmPlatform")
-    local vault_path=$(build_vault_path "llm" "$platform_name")
+    local platform_name
+    platform_name=$(get_platform_name "$llmPlatform") || return 1
+    local vault_path
+    vault_path=$(build_vault_path "llm" "$platform_name") || return 1
     
     delete_vault_secret "$vault_path" "LLM secrets"
 }
@@ -157,8 +165,10 @@ delete_embedding_secrets() {
         return 0
     fi
     
-    local platform_name=$(get_platform_name "$embeddingPlatform")
-    local vault_path=$(build_vault_path "embeddings" "$platform_name")
+    local platform_name
+    platform_name=$(get_platform_name "$embeddingPlatform") || return 1
+    local vault_path
+    vault_path=$(build_vault_path "embeddings" "$platform_name") || return 1
     
     delete_vault_secret "$vault_path" "Embedding secrets"
 }

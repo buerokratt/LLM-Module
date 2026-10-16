@@ -5,6 +5,14 @@
  * to encrypt sensitive LLM credentials before storing them in HashiCorp Vault.
  */
 
+const runtime = (window as unknown as { centralVault?: { prefix: string; mount: string } }).centralVault;
+const vaultPrefix = runtime?.prefix || import.meta.env.REACT_APP_VAULT_PATH_PREFIX as string;
+const vaultMount = (runtime?.mount || import.meta.env.REACT_APP_VAULT_KV_MOUNT || 'secret') as string;
+const validSegment = /^[A-Za-z0-9_-]+$/;
+if (!vaultPrefix || !vaultPrefix.split('/').every(segment => validSegment.test(segment)) || !validSegment.test(vaultMount)) {
+    throw new Error('Invalid Central Vault GUI path configuration');
+}
+
 // Cache for the public key
 let publicKey: CryptoKey | null = null;
 
@@ -21,7 +29,7 @@ async function fetchPublicKey() {
         // Use Vite proxy to access vault-agent-gui
         // Proxy configured in vite.config.ts: /vault-agent-gui -> http://vault-agent-gui:8202
         const response = await fetch(
-            '/vault-agent-gui/v1/secret/data/encryption/public_key',
+            `/vault-agent-gui/v1/${vaultMount}/data/${vaultPrefix}/encryption/public_key`,
             {
                 method: 'GET',
                 headers: {

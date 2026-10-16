@@ -37,6 +37,12 @@ fi
 # Note: configparser does not strip end-of-line comments, so values in
 # constants.ini must not carry trailing `# ...` text.
 # shellcheck disable=SC1090
-. <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$RAG_SEARCH_CONSTANTS")
+while IFS='=' read -r config_key config_value || [[ -n "$config_key" ]]; do
+    config_key="${config_key//[[:space:]]/}"
+    config_value="${config_value#"${config_value%%[![:space:]]*}"}"
+    config_value="${config_value%"${config_value##*[![:space:]]}"}"
+    [[ "$config_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    printf -v "$config_key" '%s' "$config_value"
+done < "$RAG_SEARCH_CONSTANTS"
 
 export RAG_SEARCH_CONSTANTS
