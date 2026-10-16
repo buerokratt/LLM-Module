@@ -180,6 +180,9 @@ app = FastAPI(
 )
 
 
+from src.widget_bot_bridge import router as widget_bot_router
+app.include_router(widget_bot_router)
+
 @app.middleware("http")
 async def enforce_non_generating_mode(request: Request, call_next):
     if not generation_enabled() and request.url.path not in ("/health", "/docs", "/openapi.json", "/redoc"):
