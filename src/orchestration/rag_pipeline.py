@@ -428,8 +428,6 @@ class RagPipeline:
             record_streaming_usage()
             service.log_costs(costs_metric)
             log_step_timings(time_metric, chat_id)
-
-            service._update_connection_budget(request.connection_id, costs_metric)
             raise
         except Exception as stream_error:
             error_id = generate_error_id()

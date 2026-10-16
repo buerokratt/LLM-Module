@@ -1,10 +1,10 @@
 """LLM Orchestration Service - Business logic for LLM orchestration."""
 
-from typing import Optional, List, Dict, Union, Any, AsyncIterator
+from contextlib import aclosing
+from typing import Optional, List, Dict, Union, Any, AsyncGenerator, AsyncIterator
 import time
 from src.loki_logger import LokiLogger
 from langfuse import Langfuse, observe
-import dspy
 
 from llm_orchestrator_config.llm_manager import LLMManager
 from models.request_models import (
@@ -29,7 +29,12 @@ from src.llm_orchestrator_config.llm_ochestrator_constants import (
 )
 from src.utils.error_utils import generate_error_id, log_error_with_context
 from src.utils.stream_manager import stream_manager, StreamContext
-from src.utils.cost_utils import calculate_total_costs, get_lm_usage_since
+from src.utils.cost_utils import (
+    RequestUsageTracker,
+    calculate_total_costs,
+    get_request_usage_summary,
+    track_request_usage,
+)
 
 from src.utils.time_tracker import log_step_timings
 from src.utils.prompt_config_loader import PromptConfigurationLoader
@@ -317,6 +322,30 @@ class LLMOrchestrationService:
     async def process_orchestration_request(
         self, request: OrchestrationRequest
     ) -> Union[OrchestrationResponse, TestOrchestrationResponse]:
+        """Process a request and account for its complete LLM usage once."""
+        costs_metric: Dict[str, Dict[str, Any]] = {}
+        request_usage_context: Dict[str, Any] = {}
+
+        with track_request_usage() as usage_tracker:
+            try:
+                return await self._process_orchestration_request(
+                    request, costs_metric, request_usage_context
+                )
+            finally:
+                self._record_request_usage(
+                    request,
+                    usage_tracker,
+                    costs_metric,
+                    request_usage_context,
+                    streaming=False,
+                )
+
+    async def _process_orchestration_request(
+        self,
+        request: OrchestrationRequest,
+        costs_metric: Dict[str, Dict[str, Any]],
+        request_usage_context: Dict[str, Any],
+    ) -> Union[OrchestrationResponse, TestOrchestrationResponse]:
         """
         Process an orchestration request with guardrails and return response.
 
@@ -337,7 +366,6 @@ class LLMOrchestrationService:
         Raises:
             Exception: For any processing errors
         """
-        costs_metric: Dict[str, Dict[str, Any]] = {}
         time_metric: Dict[str, float] = {}
 
         try:
@@ -383,6 +411,7 @@ class LLMOrchestrationService:
             # Initialize all service components (only for valid queries, with timing)
             start_time = time.time()
             components = self._initialize_service_components(request)
+            request_usage_context["model_info"] = self._get_cost_model_info(components)
             time_metric["initialization"] = time.time() - start_time
 
             if components["guardrails_adapter"]:
@@ -474,9 +503,6 @@ class LLMOrchestrationService:
             self.log_costs(costs_metric)
             log_step_timings(time_metric, request.chatId)
 
-            # Update budget for the LLM connection
-            self._update_connection_budget(request.connection_id, costs_metric)
-
             if self.langfuse_config.langfuse_client:
                 langfuse = self.langfuse_config.langfuse_client
                 total_costs = calculate_total_costs(costs_metric)
@@ -523,14 +549,39 @@ class LLMOrchestrationService:
             self.log_costs(costs_metric)
             log_step_timings(time_metric, request.chatId)
 
-            # Update budget even on error
-            self._update_connection_budget(request.connection_id, costs_metric)
-
             return self._create_error_response(request)
 
     async def stream_orchestration_response(
         self, request: OrchestrationRequest
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[str, None]:
+        """Stream a response and account for its complete LLM usage once."""
+        costs_metric: Dict[str, Dict[str, Any]] = {}
+        request_usage_context: Dict[str, Any] = {}
+
+        with track_request_usage() as usage_tracker:
+            try:
+                async with aclosing(
+                    self._stream_orchestration_response(
+                        request, costs_metric, request_usage_context
+                    )
+                ) as response_stream:
+                    async for chunk in response_stream:
+                        yield chunk
+            finally:
+                self._record_request_usage(
+                    request,
+                    usage_tracker,
+                    costs_metric,
+                    request_usage_context,
+                    streaming=True,
+                )
+
+    async def _stream_orchestration_response(
+        self,
+        request: OrchestrationRequest,
+        costs_metric: Dict[str, Dict[str, Any]],
+        request_usage_context: Dict[str, Any],
+    ) -> AsyncGenerator[str, None]:
         """
         Stream orchestration response with validation-first guardrails.
 
@@ -564,16 +615,7 @@ class LLMOrchestrationService:
             - Technical error: TECHNICAL_ISSUE_MESSAGE
         """
 
-        # Track costs after streaming completes
-        costs_metric: Dict[str, Dict[str, Any]] = {}
         time_metric: Dict[str, float] = {}
-
-        # Capture DSPy history baseline before any LLM calls.
-        # Used at the end of the request to compute the total cost delta,
-        _lm = dspy.settings.lm
-        initial_history_length = (
-            len(_lm.history) if _lm and hasattr(_lm, "history") else 0
-        )
 
         # STEP 0 + 0.15: Language detection, then post-violation "why?" check
         detected_language, block = self._preamble.run_early(
@@ -628,6 +670,9 @@ class LLMOrchestrationService:
                 # Initialize all service components (with timing)
                 start_time = time.time()
                 components = self._initialize_service_components(request)
+                request_usage_context["model_info"] = self._get_cost_model_info(
+                    components
+                )
                 time_metric["initialization"] = time.time() - start_time
 
                 # This implements fail-fast principle - block malicious/policy-violating inputs
@@ -766,12 +811,6 @@ class LLMOrchestrationService:
                         self.log_costs(costs_metric)
                         log_step_timings(time_metric, request.chatId)
 
-                        # Budget update: use full DSPy history delta
-                        _total_usage = get_lm_usage_since(initial_history_length)
-                        self._update_connection_budget(
-                            request.connection_id,
-                            {"streaming_total": _total_usage},
-                        )
                         stream_ctx.mark_completed()
                         return  # Exit after successful classifier routing
 
@@ -806,14 +845,6 @@ class LLMOrchestrationService:
                 ):
                     yield sse_chunk
 
-                # Pipeline completed successfully.
-                # Budget update: use full DSPy history delta (covers guardrails,
-                # refiner, and streaming generation across this request).
-                _total_usage = get_lm_usage_since(initial_history_length)
-                self._update_connection_budget(
-                    request.connection_id,
-                    {"streaming_total": _total_usage},
-                )
                 return
 
             except Exception as e:
@@ -828,13 +859,6 @@ class LLMOrchestrationService:
 
                 self.log_costs(costs_metric)
                 log_step_timings(time_metric, request.chatId)
-
-                # Budget update on outer exception using full DSPy history delta.
-                _total_usage = get_lm_usage_since(initial_history_length)
-                self._update_connection_budget(
-                    request.connection_id,
-                    {"streaming_total": _total_usage},
-                )
 
                 if self.langfuse_config.langfuse_client:
                     langfuse = self.langfuse_config.langfuse_client
@@ -1108,6 +1132,70 @@ class LLMOrchestrationService:
     ) -> None:
         """Update the budget for an LLM connection. See cost_budget for details."""
         update_connection_budget(vault_uuid, costs_metric)
+
+    @staticmethod
+    def _get_cost_model_info(components: Dict[str, Any]) -> Dict[str, Any]:
+        llm_manager = components.get("llm_manager")
+        if llm_manager is None:
+            return {}
+
+        try:
+            return llm_manager.get_provider_info()
+        except Exception as e:
+            logger.debug(f"Failed to read configured model for cost pricing: {e}")
+            return {}
+
+    def _record_request_usage(
+        self,
+        request: OrchestrationRequest,
+        usage_tracker: RequestUsageTracker,
+        costs_metric: Dict[str, Dict[str, Any]],
+        request_usage_context: Dict[str, Any],
+        *,
+        streaming: bool,
+    ) -> None:
+        summary = get_request_usage_summary(
+            usage_tracker, request_usage_context.get("model_info")
+        )
+        logger.info(
+            f"[{request.chatId}] Request LLM usage: ${summary['total_cost']:.6f} "
+            f"({summary['total_calls']} calls, {summary['total_tokens']} tokens); "
+            f"per_model={summary['models']}"
+        )
+
+        try:
+            self._update_connection_budget(
+                request.connection_id,
+                {"request_total": {"total_cost": summary["total_cost"]}},
+            )
+        except Exception as e:
+            logger.error(f"Failed to update request cost budget: {e}", exc_info=True)
+
+        langfuse = getattr(
+            getattr(self, "langfuse_config", None), "langfuse_client", None
+        )
+        if langfuse:
+            try:
+                langfuse.update_current_generation(
+                    metadata={
+                        "request_usage": summary,
+                        "request_total_cost": summary["total_cost"],
+                        "request_model_breakdown": summary["models"],
+                        "chat_id": request.chatId,
+                        "author_id": request.authorId,
+                        "environment": request.environment,
+                        "streaming": streaming,
+                        "total_calls": calculate_total_costs(costs_metric).get(
+                            "total_calls", 0
+                        ),
+                        "cost_breakdown": costs_metric,
+                    }
+                )
+                langfuse.flush()
+            except Exception as e:
+                logger.error(
+                    f"Request usage Langfuse update failed: {e}", exc_info=True
+                )
 
     def _initialize_llm_manager(
         self, environment: str, connection_id: Optional[str]
