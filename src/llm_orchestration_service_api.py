@@ -356,6 +356,7 @@ async def health_check(request: Request) -> dict[str, Any]:
     redis_status = await check_redis_health()
     return {
         "generation_enabled": generation_enabled(),
+        "general_knowledge_enabled": os.getenv("ALLOW_GENERAL_KNOWLEDGE", "false") == "true" and generation_enabled(),
         "guardrails_embedding_loaded": getattr(request.app.state, "guardrails_embedding_loaded", False),
         "guardrails_loaded": bool(getattr(request.app.state.orchestration_service, "shared_guardrails_adapters", {})),
         "guardrails_environments": sorted(getattr(request.app.state.orchestration_service, "shared_guardrails_adapters", {})),

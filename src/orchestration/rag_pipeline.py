@@ -85,6 +85,9 @@ def _format_references_block(doc_references: List[Any], *, as_links: bool) -> st
     return REFERENCES_SECTION_HEADER + body
 
 
+from src.response_generator.general_knowledge import GeneralKnowledgeAgent, enabled as general_knowledge_enabled
+
+
 class RagPipeline:
     """Runs the RAG flow in both streaming and blocking modes."""
 
@@ -176,7 +179,8 @@ class RagPipeline:
             stream_ctx.mark_completed()
             return
 
-        if len(relevant_chunks) == 0:
+        general_mode = not relevant_chunks and general_knowledge_enabled(request.environment)
+        if len(relevant_chunks) == 0 and not general_mode:
             logger.info(f"[{chat_id}] [{stream_id}] No relevant chunks - out of scope")
             yield service.format_sse(chat_id, out_of_scope_message())
             yield service.format_sse(chat_id, "END")
@@ -195,14 +199,22 @@ class RagPipeline:
         )
 
         start_time = time.time()
-        is_out_of_scope = await components["response_generator"].check_scope_quick(
+        is_out_of_scope = False if general_mode else await components["response_generator"].check_scope_quick(
             question=refined_output.original_question,
             chunks=relevant_chunks,
             max_blocks=ResponseGenerationConstants.DEFAULT_MAX_BLOCKS,
         )
         time_metric["scope_check"] = time.time() - start_time
 
-        if is_out_of_scope:
+        if is_out_of_scope and general_knowledge_enabled(request.environment):
+            general_mode = True
+            relevant_chunks = []
+        if general_mode:
+            if not components["guardrails_adapter"]:
+                raise RuntimeError("general_knowledge_requires_guardrails")
+            logger.info(f"[{chat_id}] [{stream_id}] General-knowledge fallback; no source references")
+            setattr(request, '_general_knowledge_answer', True)
+        if is_out_of_scope and not general_mode:
             logger.info(f"[{chat_id}] [{stream_id}] Question out of scope")
             yield service.format_sse(chat_id, out_of_scope_message())
             yield service.format_sse(chat_id, "END")
@@ -225,6 +237,10 @@ class RagPipeline:
 
         async def bot_response_generator() -> AsyncIterator[str]:
             """Generator that yields tokens from NATIVE DSPy LLM streaming."""
+            if general_mode:
+                async for token in GeneralKnowledgeAgent(detected_language).stream_response(refined_output.original_question):
+                    yield token
+                return
             async for token in stream_response_native(
                 agent=components["response_generator"],
                 question=refined_output.original_question,
@@ -505,10 +521,13 @@ class RagPipeline:
             logger.warning(f"Contextual retrieval failed: {str(e)}")
             return service._create_out_of_scope_response(request)
 
-        if len(relevant_chunks) == 0:
+        if len(relevant_chunks) == 0 and not general_knowledge_enabled(request.environment):
             logger.info("No relevant chunks found - returning out-of-scope response")
             return service._create_out_of_scope_response(request)
 
+        # General answers still require the normal output-guardrail stage.
+        if general_knowledge_enabled(request.environment) and not components["guardrails_adapter"]:
+            raise RuntimeError("general_knowledge_requires_guardrails")
         # Step 3: Generate response
         start_time = time.time()
         generated_response = service._generate_rag_response(
@@ -520,6 +539,8 @@ class RagPipeline:
             costs_metric=costs_metric,
         )
         time_metric[timing_key("response_generation")] = time.time() - start_time
+        if getattr(request, '_general_knowledge_answer', False):
+            relevant_chunks = []
 
         # Populate retrieval_context for eval mode (DeepEval metrics need this)
         if os.getenv("EVAL_MODE", "false").lower() == "true" and isinstance(
@@ -656,7 +677,8 @@ class RagPipeline:
 
         try:
             with llm_manager.use_task_local():
-                generator_result = response_generator.forward(
+                generator = GeneralKnowledgeAgent(detected_lang) if not relevant_chunks and general_knowledge_enabled(request.environment) else response_generator
+                generator_result = generator.forward(
                     question=refined_output.original_question,
                     chunks=relevant_chunks or [],
                     max_blocks=ResponseGenerationConstants.DEFAULT_MAX_BLOCKS,
@@ -666,6 +688,18 @@ class RagPipeline:
             question_out_of_scope = bool(
                 generator_result.get("questionOutOfLLMScope", False)
             )
+            if general_knowledge_enabled(request.environment) and (not relevant_chunks or question_out_of_scope):
+                if relevant_chunks:
+                    prior_usage = generator_result.get('usage', {})
+                    with llm_manager.use_task_local():
+                        generator_result = GeneralKnowledgeAgent(detected_lang).forward(question=refined_output.original_question)
+                    general_usage = generator_result.get('usage', {})
+                    generator_result['usage'] = {key: prior_usage.get(key, 0)+general_usage.get(key, 0) for key in set(prior_usage)|set(general_usage)}
+                    answer = generator_result['answer']
+                    question_out_of_scope = False
+                relevant_chunks = []
+                setattr(request, '_general_knowledge_answer', True)
+
 
             generator_usage = generator_result.get(
                 "usage",
