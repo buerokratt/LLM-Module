@@ -796,3 +796,106 @@ def orchestration_client(rag_stack: RAGStackTestContainers):
             self.base_url = base_url
 
     return OrchestrationClient(rag_stack.get_orchestration_service_url())
+
+
+@pytest.fixture(scope="session")
+def api_tool_endpoints_indexed(rag_stack: RAGStackTestContainers):
+    """
+    Session-scoped fixture that seeds the API tool endpoints from
+    ``tests/api_tool_eval/test-endpoints.json`` into Qdrant's
+    ``api_tool_collection`` so the agentic loop can find them.
+
+    Required by tests in ``tests/deepeval_tests/api_tool_tests.py`` — without
+    it, semantic search over API tools returns nothing and the orchestrator
+    falls back to RAG.
+
+    The indexer module hard-codes container-internal URLs in its constants
+    (``http://llm-orchestration-service:8100``, ``qdrant:6333``). Two of the
+    three are used in code paths that re-read the constant at call time
+    (monkey-patching the class attribute works), but ``ApiToolQdrantManager``
+    is instantiated with no arguments inside ``index_endpoint`` and binds the
+    host/port at function-definition time as defaults. To override those, the
+    fixture also replaces the ``ApiToolQdrantManager`` name imported into
+    ``main_indexer`` with a factory that injects the testcontainers-mapped
+    host/port.
+    """
+    import asyncio
+    import json as _json
+    from pathlib import Path as _Path
+    from unittest.mock import patch
+    from urllib.parse import urlparse
+
+    from api_tool_indexer import main_indexer
+    from api_tool_indexer.constants import ApiToolIndexerConstants
+    from api_tool_indexer.main_indexer import index_endpoint
+    from api_tool_indexer.models import EndpointData
+    from api_tool_indexer.qdrant_manager import ApiToolQdrantManager
+
+    orch_url = rag_stack.get_orchestration_service_url()
+    qdrant_url = rag_stack.get_qdrant_url()
+    parsed = urlparse(qdrant_url)
+    qdrant_host = parsed.hostname or "localhost"
+    qdrant_port = parsed.port or 6333
+
+    def _qdrant_factory(*args: Any, **kwargs: Any) -> ApiToolQdrantManager:
+        kwargs.setdefault("host", qdrant_host)
+        kwargs.setdefault("port", qdrant_port)
+        return ApiToolQdrantManager(*args, **kwargs)
+
+    endpoints_file = (
+        _Path(__file__).parent.parent / "api_tool_eval" / "test-endpoints.json"
+    )
+    if not endpoints_file.exists():
+        pytest.skip(
+            f"API tool endpoint fixture not found: {endpoints_file} — "
+            "cannot seed api_tool_collection"
+        )
+
+    with open(endpoints_file, encoding="utf-8") as f:
+        endpoints = _json.load(f)
+
+    async def _seed_all() -> list:
+        results = []
+        for ep in endpoints:
+            endpoint_data = EndpointData(
+                endpoint_id=ep["endpointId"],
+                name=ep["name"],
+                description=ep["description"],
+                url=ep["url"],
+                method=ep["method"],
+                params=ep.get("params", []),
+            )
+            res = await index_endpoint(endpoint_data)
+            logger.info(
+                f"Seeded endpoint '{ep['name']}': success={res.success} ({res.message})"
+            )
+            results.append((ep["name"], res))
+        return results
+
+    # Connection ID "evalconnection-1" matches the one used by standard_tests.py
+    # and the EVAL_MODE setup; vault is seeded for it. The default
+    # "gpt-4o-mini" used by the indexer in production has no test fixture.
+    with (
+        patch.object(ApiToolIndexerConstants, "DEFAULT_API_BASE_URL", orch_url),
+        patch.object(
+            ApiToolIndexerConstants,
+            "DEFAULT_CONNECTION_ID",
+            "evalconnection-1",
+        ),
+        patch.object(main_indexer, "ApiToolQdrantManager", _qdrant_factory),
+    ):
+        logger.info(
+            f"Seeding {len(endpoints)} API tool endpoints "
+            f"(orch={orch_url}, qdrant={qdrant_host}:{qdrant_port})"
+        )
+        results = asyncio.run(_seed_all())
+
+    failed = [name for name, r in results if not r.success]
+    if failed:
+        pytest.skip(
+            f"API tool seeding failed for {len(failed)}/{len(endpoints)} "
+            f"endpoints ({failed}) — skipping API tool tests"
+        )
+
+    logger.info(f"Indexed all {len(endpoints)} API tool endpoints successfully")
+    yield
