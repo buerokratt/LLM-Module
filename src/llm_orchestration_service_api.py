@@ -3,7 +3,7 @@
 import asyncio
 import os
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any, AsyncGenerator, Dict
 
 from src.runtime_mode import generation_enabled
@@ -145,30 +145,44 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             app.state.conversation_history_store
         )
 
-    yield
-
-    # Shutdown
-    logger.info("Shutting down LLM Orchestration Service API")
-
-    # Await any in-flight incremental summary tasks to avoid lost work.
-    store = getattr(app.state, "conversation_history_store", None)
-    if store is not None and store._pending_tasks:
-        logger.info(
-            f"Waiting for {len(store._pending_tasks)} pending summary task(s) to complete..."
-        )
-        await asyncio.gather(*store._pending_tasks, return_exceptions=True)
-
-    if (
-        hasattr(app.state, "orchestration_service")
-        and app.state.orchestration_service is not None
-    ):
-        await app.state.orchestration_service.aclose()
-        app.state.orchestration_service = None
-
+    # Retry missing environments after backend/Resql recovers, independently of
+    # requests. Absent production configuration never substitutes for testing.
+    from src.guardrails.preload import retry_preload
+    app.state.guardrails_preload_task = (
+        asyncio.create_task(retry_preload(app.state.orchestration_service, logger))
+        if generation_enabled() else None
+    )
     try:
-        await close_redis_client()
-    except Exception as e:
-        logger.warning(f"Error closing Redis client during shutdown: {e}")
+        yield
+    finally:
+        task = app.state.guardrails_preload_task
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+        # Shutdown
+        logger.info("Shutting down LLM Orchestration Service API")
+
+        # Await any in-flight incremental summary tasks to avoid lost work.
+        store = getattr(app.state, "conversation_history_store", None)
+        if store is not None and store._pending_tasks:
+            logger.info(
+                f"Waiting for {len(store._pending_tasks)} pending summary task(s) to complete..."
+            )
+            await asyncio.gather(*store._pending_tasks, return_exceptions=True)
+
+        if (
+            hasattr(app.state, "orchestration_service")
+            and app.state.orchestration_service is not None
+        ):
+            await app.state.orchestration_service.aclose()
+            app.state.orchestration_service = None
+
+        try:
+            await close_redis_client()
+        except Exception as e:
+            logger.warning(f"Error closing Redis client during shutdown: {e}")
 
 
 # Create FastAPI application
@@ -344,6 +358,7 @@ async def health_check(request: Request) -> dict[str, Any]:
         "generation_enabled": generation_enabled(),
         "guardrails_embedding_loaded": getattr(request.app.state, "guardrails_embedding_loaded", False),
         "guardrails_loaded": bool(getattr(request.app.state.orchestration_service, "shared_guardrails_adapters", {})),
+        "guardrails_environments": sorted(getattr(request.app.state.orchestration_service, "shared_guardrails_adapters", {})),
         "status": "healthy",
         "service": "llm-orchestration-service",
         "orchestration_service": service_status,

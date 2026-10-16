@@ -195,67 +195,8 @@ class LLMOrchestrationService:
         FeatureFlags.log_configuration()
 
     def _initialize_shared_guardrails_at_startup(self) -> Dict[str, NeMoRailsAdapter]:
-        """
-        Initialize shared guardrails adapters at startup for production and testing environments.
-
-        Returns:
-            Dictionary mapping environment names to NeMoRailsAdapter instances.
-            Empty dict on failure (graceful degradation).
-        """
-        adapters: Dict[str, NeMoRailsAdapter] = {}
-
-        # Initialize adapters for commonly-used environments
-        environments_to_initialize = ["production", "testing"]
-
-        logger.info("  Initializing shared guardrails at startup...")
-        total_start_time = time.time()
-
-        for env in environments_to_initialize:
-            try:
-                logger.info(f"  Initializing guardrails for environment: {env}")
-                start_time = time.time()
-
-                # Initialize with specific environment and no connection (shared config)
-                guardrails_adapter = self._initialize_guardrails(
-                    environment=env,
-                    connection_id=None,  # Shared configuration, not user-specific
-                )
-
-                # Eagerly trigger the full internal initialization (NeMo config
-                # loading, LLMRails creation, embedding model download) so that
-                # the first user query is not penalised by the cold-start cost.
-                # Without this, _ensure_initialized() runs lazily on the first
-                guardrails_adapter._ensure_initialized()
-
-                elapsed_time = time.time() - start_time
-                adapters[env] = guardrails_adapter
-                logger.info(
-                    f" Guardrails for '{env}' fully initialized in {elapsed_time:.3f}s "
-                    f"(NeMo Rails + embedding model loaded)"
-                )
-
-            except Exception as e:
-                logger.error(f" Failed to initialize guardrails for '{env}': {e}")
-                logger.warning(
-                    f"  Service will fall back to per-request initialization for '{env}' environment"
-                )
-                # Continue with other environments - partial success is acceptable
-                continue
-
-        total_elapsed = time.time() - total_start_time
-
-        if adapters:
-            logger.info(
-                f" Shared guardrails initialized for {len(adapters)} environment(s) "
-                f"in {total_elapsed:.3f}s total"
-            )
-        else:
-            logger.error(
-                "  Failed to initialize any shared guardrails - "
-                "service will use per-request initialization (slower)"
-            )
-
-        return adapters
+        from src.guardrails.preload import preload_missing
+        return preload_missing(self, logger)
 
     async def _prewarm_shared_bm25(self) -> None:
         """
