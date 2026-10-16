@@ -14,3 +14,18 @@ The cluster pull identity also needs read access to every resulting package.
 
 NoOps locks these exact source commits and assembles the operator package. Build
 outputs and credentials are ignored; keep local operator bindings outside Git.
+
+## Offline guardrails embeddings
+
+The Central LLM image includes the existing NeMo default MiniLM embedding model,
+not a generative model. `guardrails-model.json` pins the source revision and every
+artifact checksum, including upstream attribution. Build-time fetching needs no
+provider credentials. NeMo uses the exact local model path with local-only loading.
+Generation-enabled startup verifies checksums and loads the embedding model before
+serving traffic; `/health` exposes `guardrails_embedding_loaded`. Missing/corrupt
+artifacts fail startup. Vault/provider configuration is preserved.
+
+CI starts real NeMo embeddings as UID1000 with networking disabled and both model
+download methods forbidden, plus missing/corrupt-artifact negatives. Existing241
+application regressions run offline. Generation remains opt-in through
+`LLM_GENERATION_ENABLED`; provider-backed acceptance is an operator test.

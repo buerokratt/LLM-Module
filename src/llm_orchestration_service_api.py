@@ -82,6 +82,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logging.getLogger("langfuse").setLevel(logging.ERROR)
 
     try:
+        from src.guardrails.offline_embeddings import verify_and_load
+        app.state.guardrails_embedding_loaded = verify_and_load() if generation_enabled() else False
         app.state.orchestration_service = LLMOrchestrationService()
         logger.info("LLM Orchestration Service initialized successfully")
 
@@ -337,6 +339,7 @@ async def health_check(request: Request) -> dict[str, Any]:
     redis_status = await check_redis_health()
     return {
         "generation_enabled": generation_enabled(),
+        "guardrails_embedding_loaded": getattr(request.app.state, "guardrails_embedding_loaded", False),
         "guardrails_loaded": bool(getattr(request.app.state.orchestration_service, "shared_guardrails_adapters", {})),
         "status": "healthy",
         "service": "llm-orchestration-service",

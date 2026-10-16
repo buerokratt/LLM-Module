@@ -128,6 +128,8 @@ class NeMoRailsAdapter:
 
             rails_config = RailsConfig.from_path(str(config_path.parent))
 
+            from src.guardrails.offline_embeddings import configure
+            configure(rails_config)
             rails_config.streaming = True
 
             self._validate_output_streaming_config(rails_config)
