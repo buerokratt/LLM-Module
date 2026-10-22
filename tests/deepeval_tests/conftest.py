@@ -811,22 +811,19 @@ def api_tool_endpoints_indexed(rag_stack: RAGStackTestContainers):
     it, semantic search over API tools returns nothing and the orchestrator
     falls back to RAG.
 
-    The indexer module hard-codes container-internal URLs in its constants
-    (``http://llm-orchestration-service:8100``, ``qdrant:6333``). Two of the
-    three are used in code paths that re-read the constant at call time
-    (monkey-patching the class attribute works), but ``ApiToolQdrantManager``
-    is instantiated with no arguments inside ``index_endpoint`` and binds the
-    host/port at function-definition time as defaults. To override those, the
-    fixture also replaces the ``ApiToolQdrantManager`` name imported into
-    ``main_indexer`` with a factory that injects the testcontainers-mapped
-    host/port.
+    The indexer's constants carry container-internal URLs read from
+    ``constants.ini`` (``RAG_SEARCH_LLM_SERVICE``, ``QDRANT_URL``). The API base
+    URL and connection id are re-read at call time, so patching the class
+    attributes works; ``ApiToolQdrantManager`` however is instantiated with no
+    arguments inside ``index_endpoint`` and binds its ``url`` default at
+    function-definition time, so the fixture also replaces the
+    ``ApiToolQdrantManager`` name imported into ``main_indexer`` with a factory
+    that injects the testcontainers-mapped Qdrant URL.
     """
     import asyncio
     import json as _json
     from pathlib import Path as _Path
     from unittest.mock import patch
-    from urllib.parse import urlparse
-
     from api_tool_indexer import main_indexer
     from api_tool_indexer.constants import ApiToolIndexerConstants
     from api_tool_indexer.main_indexer import index_endpoint
@@ -835,13 +832,11 @@ def api_tool_endpoints_indexed(rag_stack: RAGStackTestContainers):
 
     orch_url = rag_stack.get_orchestration_service_url()
     qdrant_url = rag_stack.get_qdrant_url()
-    parsed = urlparse(qdrant_url)
-    qdrant_host = parsed.hostname or "localhost"
-    qdrant_port = parsed.port or 6333
 
     def _qdrant_factory(*args: Any, **kwargs: Any) -> ApiToolQdrantManager:
-        kwargs.setdefault("host", qdrant_host)
-        kwargs.setdefault("port", qdrant_port)
+        # ApiToolQdrantManager takes a single ``url`` (from constants.ini) that
+        # points at the container-internal Qdrant; inject the host-mapped one.
+        kwargs.setdefault("url", qdrant_url)
         return ApiToolQdrantManager(*args, **kwargs)
 
     endpoints_file = (
@@ -888,7 +883,7 @@ def api_tool_endpoints_indexed(rag_stack: RAGStackTestContainers):
     ):
         logger.info(
             f"Seeding {len(endpoints)} API tool endpoints "
-            f"(orch={orch_url}, qdrant={qdrant_host}:{qdrant_port})"
+            f"(orch={orch_url}, qdrant={qdrant_url})"
         )
         results = asyncio.run(_seed_all())
 
