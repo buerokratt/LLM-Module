@@ -101,7 +101,14 @@ about `ConfigurationError`). Match the spelling already used in the file you are
 used by the GUI test page), `/orchestrate/stream` (SSE), `/orchestrate-eval`, `/embeddings`,
 `/generate-context`, `/embedding-models`, `/cache/clear`, `/prompt-config/refresh`, `/health`.
 It builds a single `LLMOrchestrationService` (`src/llm_orchestration_service.py`) at startup, along
-with the Redis-backed stores and a rate limiter.
+with the Redis-backed stores and a rate limiter. Since Oct 2026 that class is a thin facade: the
+work lives in `src/orchestration/` (`request_preamble.py` validation/language/connection resolution,
+`component_factory.py` per-request LLM manager/guardrails/retriever construction,
+`guardrails_coordinator.py` input/output checks and the blocked-answer replacement,
+`rag_pipeline.py` the RAG-only path, `cost_budget.py`, `inference_storage.py`,
+`response_builders.py`) and in `src/vector_indexer/indexer_support.py` (`/embeddings`,
+`/generate-context`, `/embedding-models`). Many service methods are one-line delegations kept for
+compatibility, so grep for the implementation in those modules, not the facade.
 
 `LLMOrchestrationService.process_orchestration_request` / `stream_orchestration_response`:
 
@@ -111,8 +118,8 @@ with the Redis-backed stores and a rate limiter.
    `request.environment`, guardrails, retriever, generator.
 4. Input guardrails (NeMo Guardrails via DSPy adapter, `src/guardrails/`).
 5. If `TOOL_CLASSIFIER_ENABLED` is true, `ToolClassifier.classify` + `route_to_workflow`; otherwise
-   the legacy RAG-only pipeline (`_execute_orchestration_pipeline`). Errors in the classifier fall
-   back to RAG.
+   the legacy RAG-only pipeline (`src/orchestration/rag_pipeline.py`). Errors in the classifier
+   fall back to RAG.
 6. Output guardrails, cost logging to Langfuse, budget update, inference storage via Ruuter.
 
 ### Tool classifier and workflows (`src/tool_classifier/`)
@@ -186,10 +193,10 @@ and possibly a Liquibase changelog, not just Python. Schema changes go in
 
 ### Tests
 
-- `tests/test_*.py` are unit tests and run offline (they mock LLMs, Redis and Qdrant). As of
-  Sept 2026, 25 of them fail on `v1.0.0` for pre-existing reasons (mostly `ToolClassifier.classify()`
-  signature drift in `test_tool_classifier.py`, `test_context_workflow*.py`,
-  `test_api_tool_workflow_integration.py`); compare against a clean checkout before blaming a change.
+- `tests/test_*.py` are unit tests and run offline (they mock LLMs, Redis and Qdrant). All pass on
+  `v1.0.0` as of Oct 2026 (an earlier `ToolClassifier.classify()` signature drift that failed 25
+  of them was fixed upstream). `tests/test_api_tool_eval_suite.py` checks the API-tool deepeval
+  suite's own logic against a stub service, no Docker or secrets needed.
 - `tests/integration_tests/` uses `testcontainers` to start `docker-compose-test.yml`, bootstraps
   Vault from `test-vault/`, writes a fixed `TEST_VAULT_UUID` connection and exercises indexing,
   inference and connection management end to end. Requires Azure OpenAI secrets in the environment.
@@ -240,10 +247,10 @@ Everything below was learned the hard way; check it before debugging anything el
   input_parameters, success, status_code, cache_source) and `workflow` (which classifier layer
   answered). The API-tool deepeval tests score `tool_calls` and assert `workflow` instead of
   parsing the prose answer, which stopped being JSON in May 2026. Caveat: when the output
-  guardrail blocks an answer, `handle_output_guardrails` builds a fresh replacement response, so
-  `tool_calls` is carried over onto the replacement (fixed after the Estonian intent-switch
-  scenario exposed it); `retrieval_context` is not, and the `TestOrchestrationResponse` branch
-  carries neither; `workflow` is tagged afterwards on both shapes.
+  guardrail blocks an answer, `GuardrailsCoordinator.handle_output` builds a fresh replacement
+  response; `tool_calls` is carried over onto it (fixed after the Estonian intent-switch scenario
+  exposed it), `retrieval_context` is not, and the `TestOrchestrationResponse` branch carries
+  neither; `workflow` is tagged afterwards on both shapes.
 - **Guardrails run on the base prompt.** The newest optimised guardrails module
   `src/optimization/optimized_modules/guardrails/guardrails_optimized_20260424_065431.json` is
   committed without its `_config.yaml` (the older three have one), so the loader logs "Optimized
