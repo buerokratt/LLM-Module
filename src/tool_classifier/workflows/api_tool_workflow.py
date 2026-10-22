@@ -44,6 +44,31 @@ from tool_classifier.multi_response_formatter import MultiResponseFormatterModul
 
 logger = LokiLogger(service_name="api-tool-calling")
 
+
+def _tool_call_record(
+    endpoint: Dict[str, Any],
+    collected_params: Dict[str, Any],
+    success: bool,
+    status_code: Optional[int],
+    cache_source: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Structured description of one resolved external tool call.
+
+    Only attached to :class:`OrchestrationResponse.tool_calls` in EVAL_MODE so the
+    deepeval API-tool tests can score the resolved call (name + parameters)
+    instead of parsing the natural-language answer.
+    """
+    return {
+        "name": endpoint.get("name", ""),
+        "method": endpoint.get("method", "GET"),
+        "url": endpoint.get("url", ""),
+        "input_parameters": dict(collected_params),
+        "success": success,
+        "status_code": status_code,
+        "cache_source": cache_source,
+    }
+
+
 if TYPE_CHECKING:
     from guardrails.nemo_rails_adapter import NeMoRailsAdapter
 
@@ -406,6 +431,18 @@ class APIToolWorkflowExecutor(BaseWorkflow):
             questionOutOfLLMScope=False,
             inputGuardFailed=False,
             content=content,
+            tool_calls=(
+                [
+                    _tool_call_record(
+                        endpoint,
+                        collected_params,
+                        api_result.success,
+                        api_result.status_code,
+                    )
+                ]
+                if FeatureFlags.eval_mode_enabled()
+                else None
+            ),
         )
 
     @staticmethod
@@ -524,6 +561,19 @@ class APIToolWorkflowExecutor(BaseWorkflow):
             questionOutOfLLMScope=False,
             inputGuardFailed=False,
             content=content,
+            tool_calls=(
+                [
+                    _tool_call_record(
+                        state.endpoint,
+                        state.collected_params,
+                        result.success,
+                        result.status_code,
+                    )
+                    for state, result in _pairs
+                ]
+                if FeatureFlags.eval_mode_enabled()
+                else None
+            ),
         )
 
     async def _stream_multi_api_and_format(
@@ -1179,6 +1229,19 @@ class APIToolWorkflowExecutor(BaseWorkflow):
             questionOutOfLLMScope=False,
             inputGuardFailed=False,
             content=content,
+            tool_calls=(
+                [
+                    _tool_call_record(
+                        endpoint,
+                        collected_params,
+                        success=True,
+                        status_code=None,
+                        cache_source=cache_source,
+                    )
+                ]
+                if FeatureFlags.eval_mode_enabled()
+                else None
+            ),
         )
 
     async def _stream_cached_response(

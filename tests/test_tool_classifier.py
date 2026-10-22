@@ -20,7 +20,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from models.session_models import APIToolSession
-from models.request_models import OrchestrationRequest
+from models.request_models import (
+    OrchestrationRequest,
+    OrchestrationResponse,
+    TestOrchestrationResponse,
+)
 from tool_classifier.classifier import ToolClassifier
 from tool_classifier.enums import WorkflowType
 from tool_classifier.intent_decomposer import IntentDecomposerModule
@@ -749,3 +753,126 @@ class TestClassifyMultiIntentFeatureFlag:
         classifier.intent_decomposer.decompose.assert_awaited_once()
         # Single mode → normal API_TOOL_CALLING result
         assert result.workflow == WorkflowType.API_TOOL_CALLING
+
+
+# ---------------------------------------------------------------------------
+# EVAL_MODE: ``workflow`` tag on the routed response
+# ---------------------------------------------------------------------------
+
+
+class TestEvalModeWorkflowTag:
+    """``_execute_with_fallback_async`` records which layer answered — EVAL_MODE only."""
+
+    @staticmethod
+    def _response(chat_id: str = _CHAT_ID) -> OrchestrationResponse:
+        return OrchestrationResponse(
+            chatId=chat_id,
+            llmServiceActive=True,
+            questionOutOfLLMScope=False,
+            inputGuardFailed=False,
+            content="Which date range do you mean?",
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_tag_when_eval_mode_off(self, monkeypatch) -> None:
+        monkeypatch.delenv("EVAL_MODE", raising=False)
+        classifier = _make_classifier()
+        classifier.api_tool_workflow.execute_async = AsyncMock(
+            return_value=self._response()
+        )
+
+        result = await classifier._execute_with_fallback_async(
+            workflow=classifier.api_tool_workflow,
+            request=_make_request(),
+            context={},
+            start_layer=WorkflowType.API_TOOL_CALLING,
+        )
+
+        assert isinstance(result, OrchestrationResponse)
+        assert result.workflow is None
+        assert "workflow" not in result.model_dump(exclude_none=True)
+
+    @pytest.mark.asyncio
+    async def test_tags_primary_layer(self, monkeypatch) -> None:
+        monkeypatch.setenv("EVAL_MODE", "true")
+        classifier = _make_classifier()
+        classifier.api_tool_workflow.execute_async = AsyncMock(
+            return_value=self._response()
+        )
+
+        result = await classifier._execute_with_fallback_async(
+            workflow=classifier.api_tool_workflow,
+            request=_make_request(),
+            context={},
+            start_layer=WorkflowType.API_TOOL_CALLING,
+        )
+
+        assert isinstance(result, OrchestrationResponse)
+        assert result.workflow == "api_tool_calling"
+
+    @pytest.mark.asyncio
+    async def test_tags_fallback_layer_that_actually_answered(
+        self, monkeypatch
+    ) -> None:
+        """ATC returns None → CONTEXT returns None → RAG answers → tagged 'rag'."""
+        monkeypatch.setenv("EVAL_MODE", "true")
+        classifier = _make_classifier()
+        classifier.api_tool_workflow.execute_async = AsyncMock(return_value=None)
+        classifier.context_workflow.execute_async = AsyncMock(return_value=None)
+        classifier.rag_workflow.execute_async = AsyncMock(return_value=self._response())
+
+        result = await classifier._execute_with_fallback_async(
+            workflow=classifier.api_tool_workflow,
+            request=_make_request(),
+            context={},
+            start_layer=WorkflowType.API_TOOL_CALLING,
+        )
+
+        assert isinstance(result, OrchestrationResponse)
+        assert result.workflow == "rag"
+
+    @pytest.mark.asyncio
+    async def test_tags_rag_on_error_fallback(self, monkeypatch) -> None:
+        monkeypatch.setenv("EVAL_MODE", "true")
+        classifier = _make_classifier()
+        classifier.api_tool_workflow.execute_async = AsyncMock(
+            side_effect=RuntimeError("boom")
+        )
+        classifier.rag_workflow.execute_async = AsyncMock(return_value=self._response())
+
+        result = await classifier._execute_with_fallback_async(
+            workflow=classifier.api_tool_workflow,
+            request=_make_request(),
+            context={},
+            start_layer=WorkflowType.API_TOOL_CALLING,
+        )
+
+        assert isinstance(result, OrchestrationResponse)
+        assert result.workflow == "rag"
+
+    @pytest.mark.asyncio
+    async def test_tags_testing_environment_response_shape(self, monkeypatch) -> None:
+        """RAG returns TestOrchestrationResponse for environment='testing'; tag it too."""
+        monkeypatch.setenv("EVAL_MODE", "true")
+        classifier = _make_classifier()
+        classifier.api_tool_workflow.execute_async = AsyncMock(return_value=None)
+        classifier.context_workflow.execute_async = AsyncMock(return_value=None)
+        classifier.rag_workflow.execute_async = AsyncMock(
+            return_value=TestOrchestrationResponse(
+                llmServiceActive=True,
+                questionOutOfLLMScope=False,
+                inputGuardFailed=False,
+                content="From the knowledge base...",
+                chunks=None,
+            )
+        )
+
+        result = await classifier._execute_with_fallback_async(
+            workflow=classifier.api_tool_workflow,
+            request=_make_request(),
+            context={},
+            start_layer=WorkflowType.API_TOOL_CALLING,
+        )
+
+        assert isinstance(result, TestOrchestrationResponse)
+        assert result.workflow == "rag"

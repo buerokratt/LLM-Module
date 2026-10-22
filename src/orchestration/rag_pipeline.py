@@ -12,7 +12,6 @@ seams intact.
 """
 
 import asyncio
-import os
 import threading
 import time
 from datetime import datetime
@@ -28,6 +27,7 @@ from models.request_models import (
     PromptRefinerOutput,
     TestOrchestrationResponse,
 )
+from src.llm_orchestrator_config.feature_flags import FeatureFlags
 from src.llm_orchestrator_config.exceptions import (
     ContextualRetrievalFailureError,
     ContextualRetrieverInitializationError,
@@ -522,7 +522,7 @@ class RagPipeline:
         time_metric[timing_key("response_generation")] = time.time() - start_time
 
         # Populate retrieval_context for eval mode (DeepEval metrics need this)
-        if os.getenv("EVAL_MODE", "false").lower() == "true" and isinstance(
+        if FeatureFlags.eval_mode_enabled() and isinstance(
             generated_response, OrchestrationResponse
         ):
             generated_response.retrieval_context = _build_eval_context(relevant_chunks)

@@ -1,7 +1,6 @@
 """LLM Orchestration Service API - FastAPI application."""
 
 import asyncio
-import os
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Dict
@@ -38,6 +37,7 @@ from src.llm_orchestrator_config.llm_ochestrator_constants import (
 )
 from src.llm_orchestrator_config.stream_config import StreamConfig
 from src.llm_orchestrator_config.exceptions import StreamTimeoutError
+from src.llm_orchestrator_config.feature_flags import FeatureFlags
 
 # NOTE: imported via the bare package path, not "src.llm_orchestrator_config".
 # Both spellings resolve to separate module objects at runtime, so the class
@@ -905,7 +905,7 @@ async def orchestrate_llm_request_eval(
         HTTPException: For processing errors or if not in testing mode
     """
     # Check if eval mode is enabled
-    eval_mode = os.getenv("EVAL_MODE", "false").lower() == "true"
+    eval_mode = FeatureFlags.eval_mode_enabled()
     if not eval_mode:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -937,6 +937,8 @@ async def orchestrate_llm_request_eval(
         # Response may be OrchestrationResponse or TestOrchestrationResponse
         chat_id = getattr(response, "chatId", request.chatId)
         retrieval_ctx = getattr(response, "retrieval_context", None)
+        tool_calls = getattr(response, "tool_calls", None)
+        workflow = getattr(response, "workflow", None)
 
         test_response = DeepEvalTestOrchestrationResponse(
             chatId=chat_id,
@@ -945,6 +947,8 @@ async def orchestrate_llm_request_eval(
             inputGuardFailed=response.inputGuardFailed,
             content=response.content,
             retrieval_context=retrieval_ctx,
+            tool_calls=tool_calls,
+            workflow=workflow,
             expected_output=None,  # Will be populated by test framework
         )
 
