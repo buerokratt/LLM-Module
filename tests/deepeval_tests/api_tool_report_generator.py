@@ -58,12 +58,13 @@ def _pass_rate(scenarios: List[Dict[str, Any]]) -> Tuple[int, int, float]:
     return passed, total, rate
 
 
-def _status_emoji(scenario: Dict[str, Any]) -> str:
+def _status_label(scenario: Dict[str, Any]) -> str:
+    """Plain-text status for tables and headings (no emoji, per review)."""
     if scenario.get("error"):
-        return "💥"
+        return "ERROR"
     if scenario.get("passed"):
-        return "✅"
-    return "❌"
+        return "PASS"
+    return "FAIL"
 
 
 def _fmt_tool(tc: Optional[Dict[str, Any]]) -> str:
@@ -148,7 +149,7 @@ def render_scenario_table(results: Dict[str, Any]) -> str:
     out += "| Status | Scenario | Metric | Score | Expected → Actual |\n"
     out += "|---|---|---|---|---|\n"
     for s in scenarios:
-        status = _status_emoji(s)
+        status = _status_label(s)
         sid = s.get("id", "?")
         metric = s.get("metric", "—")
         score_cell = _score_str(s.get("score"), s.get("threshold", 0.0))
@@ -178,7 +179,7 @@ def render_failures(results: Dict[str, Any]) -> str:
         preview = (s.get("final_response_preview") or "").replace("\n", " ")
         if len(preview) > 200:
             preview = preview[:200] + "…"
-        out += f"#### ❌ `{sid}` ({s.get('metric', '—')})\n\n"
+        out += f"#### FAIL: `{sid}` ({s.get('metric', '—')})\n\n"
         out += f"- **Score:** {_score_str(s.get('score'), s.get('threshold', 0.0))}\n"
         if s.get("expected_tool"):
             out += f"- **Expected:** {_fmt_tool(s['expected_tool'])}\n"
@@ -235,7 +236,7 @@ def render_errors(results: Dict[str, Any]) -> str:
     for s in errored:
         sid = s.get("id", "?")
         err = s.get("error") or "_(no error captured)_"
-        out += f"- 💥 `{sid}` — {err}\n"
+        out += f"- ERROR: `{sid}` — {err}\n"
         transcript = _render_transcript(s.get("turns") or [])
         if transcript:
             out += "  " + transcript.replace("\n", "\n  ").rstrip() + "\n"
