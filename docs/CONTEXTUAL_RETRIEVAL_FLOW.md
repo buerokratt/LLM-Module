@@ -205,6 +205,20 @@ Clear gaps make it obvious which chunks are most valuable.
 - BM25 match ✓ (contains key terminology)
 - Confidence level: Maximum
 
+### Semantic Corroboration Gate
+
+BM25 has no relevance floor — it always returns the top-N chunks by keyword score, however weak the match. A contentless query (e.g. "explain it?") still produces lexical hits on common words. Semantic search *does* have a floor (`score_threshold`), so "semantic found nothing" means the knowledge base holds no conceptual match for the query.
+
+After fusion, if semantic search returned **no results above the threshold** but BM25 returned matches, the retriever returns an **empty list**. The RAG pipeline's existing zero-chunk check then returns the out-of-scope response instead of answering from lexical noise.
+
+| Situation | Result |
+|-----------|--------|
+| Semantic empty (nothing ≥ threshold), BM25 has matches | Retrieval treated as empty → out-of-scope response |
+| Semantic search **failed** (exception), BM25 has matches | Falls back to BM25-only results; logs a warning to investigate the embedding service |
+| Semantic has results | Normal fused results |
+
+Controlled by `search.require_semantic_corroboration` in `contextual_retrieval_config.yaml` (default `true`, constant `DEFAULT_REQUIRE_SEMANTIC_CORROBORATION`). Set it to `false` to restore the previous behaviour of returning BM25-only results.
+
 ---
 
 ## Step 4: Top-K Selection
@@ -318,6 +332,7 @@ For each of the top 10 chunks:
 | Constant | Value | Purpose | Rationale |
 |----------|-------|---------|-----------|
 | `DEFAULT_SCORE_THRESHOLD` | **0.4** | Semantic search minimum similarity | Captures relevant context without noise. Standard for production RAG systems. |
+| `DEFAULT_REQUIRE_SEMANTIC_CORROBORATION` | **True** | Discard BM25-only result sets | Without a semantic match, BM25 hits are keyword noise, not relevance. See [Semantic Corroboration Gate](#semantic-corroboration-gate). |
 | `DEFAULT_RRF_K` | **35** | RRF rank decay parameter | Optimal score differentiation. Top results get 65-70% higher scores vs k=60. |
 | `DEFAULT_FINAL_TOP_N` | **12** | Chunks retrieved from fusion | Sufficient diversity, manageable context size |
 | `max_blocks` | **10** | Chunks used in generation | Optimal balance for LLM context window |

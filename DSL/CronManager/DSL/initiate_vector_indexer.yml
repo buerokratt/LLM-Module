@@ -2,4 +2,4 @@ vector_indexer:
   trigger: off
   type: exec
   command: "../app/scripts/vector_indexer_pipeline.sh"
-  allowedEnvs: ['signedUrl', 'clientDataHash']
+  allowedEnvs: ['signedUrl', 'clientDataHash', 'agencyId']

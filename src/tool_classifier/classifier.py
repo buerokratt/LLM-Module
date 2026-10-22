@@ -30,9 +30,8 @@ from tool_classifier.enums import (
     ExecutionMode,
 )
 from tool_classifier.models import ClassificationResult
+from llm_orchestrator_config.llm_ochestrator_constants import QDRANT_URL
 from tool_classifier.constants import (
-    QDRANT_HOST,
-    QDRANT_PORT,
     QDRANT_COLLECTION,
     QDRANT_TIMEOUT,
     HYBRID_SEARCH_TOP_K,
@@ -105,7 +104,7 @@ class ToolClassifier:
         self.orchestration_service = orchestration_service
 
         # Shared httpx client for Qdrant queries (connection pooling)
-        self._qdrant_base_url = f"http://{QDRANT_HOST}:{QDRANT_PORT}"
+        self._qdrant_base_url = QDRANT_URL
         self._qdrant_client = httpx.AsyncClient(
             base_url=self._qdrant_base_url,
             timeout=QDRANT_TIMEOUT,

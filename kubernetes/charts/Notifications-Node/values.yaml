@@ -28,7 +28,7 @@ notifications:
     
   # CORS configuration for frontend access
   cors:
-    whitelistOrigins: "http://gui:3001,http://gui:3002,http://gui:3003,http://authentication-layer:3004,http://ruuter-public:8086,http://ruuter-private:8088"
+    whitelistOrigins: "http://gui:3001,http://gui:3002,http://gui:3003,http://ruuter-public:8086,http://ruuter-private:8088"
   
   # BYK Stack integration
   services:

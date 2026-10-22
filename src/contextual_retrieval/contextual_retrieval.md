@@ -560,6 +560,22 @@ for doc_id in all_document_ids:
 final_results = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)[:12]
 ```
 
+### Phase 5b: Semantic Corroboration Gate
+```python
+# BM25 has no relevance floor; semantic search does (score_threshold).
+# If semantic found nothing but BM25 did, the BM25 hits are lexical noise.
+if (
+    config.search.require_semantic_corroboration
+    and not semantic_results
+    and bm25_results
+):
+    if semantic_search_failed:
+        # Infrastructure problem: degrade to BM25-only results and log a warning
+        pass
+    else:
+        return []  # Triggers the RAG pipeline's zero-chunk out-of-scope response
+```
+
 ### Phase 6: Format Output
 ```python
 # Format for ResponseGeneratorAgent compatibility
@@ -696,6 +712,7 @@ search:
   topk_bm25: 40           # BM25 search results per query  
   final_top_n: 12         # Final chunks returned to LLM
   score_threshold: 0.1    # Minimum score threshold
+  require_semantic_corroboration: true  # Return no chunks when only BM25 matched (default: true)
 ```
 
 ### HTTP Client Configuration

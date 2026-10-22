@@ -15,7 +15,12 @@ from tool_classifier.constants import (
 from tool_classifier.continuation_utils import detect_continuation_response
 from tool_classifier.enums import AgenticLoopStatus
 from tool_classifier.models import AgenticLoopResult
-from tool_classifier.param_extractor import ParamExtractionModule
+from tool_classifier.param_extractor import (
+    ParamExtractionModule,
+    build_missing_params_question,
+    missing_required_names,
+    tokenize_question,
+)
 
 logger = LokiLogger(service_name="api-tool-calling")
 
@@ -218,10 +223,17 @@ class AgenticLoop:
                     updated_turn_count,
                     awaiting_continuation=awaiting_continuation,
                 )
+            # The extractor already catches its own failures, so reaching here means
+            # the call itself broke. Still owe the user a question, not a blank reply.
+            fallback_question = build_missing_params_question(
+                params_schema,
+                missing_required_names(params_schema, collected_params),
+                session_language,
+            )
             return AgenticLoopResult(
                 status=AgenticLoopStatus.NEEDS_INPUT,
                 collected_params=collected_params,
-                clarifying_question="",
+                clarifying_question=fallback_question,
                 turn_count=updated_turn_count,
             )
 
@@ -287,6 +299,12 @@ class AgenticLoop:
         await self._save_session(
             chat_id, merged_params, updated_turn_count, awaiting_continuation=False
         )
+        if not extraction["clarifying_question"]:
+            logger.warning(
+                f"AgenticLoop: NEEDS_INPUT with empty clarifying_question — user will see"
+                f" a blank response | event_type=empty_clarifying_question chat_id={chat_id}"
+                f" turn_count={updated_turn_count} missing_required={extraction['missing_required']}"
+            )
         return AgenticLoopResult(
             status=AgenticLoopStatus.NEEDS_INPUT,
             collected_params=merged_params,
@@ -397,14 +415,21 @@ class AgenticLoop:
                     updated_turn_count,
                     awaiting_continuation=awaiting_continuation,
                 )
+            # See run_turn() — the extractor swallows its own errors, so a failure
+            # here is the call itself. Stream a real question rather than nothing.
+            fallback_question = build_missing_params_question(
+                params_schema,
+                missing_required_names(params_schema, collected_params),
+                session_language,
+            )
             return (
                 AgenticLoopResult(
                     status=AgenticLoopStatus.NEEDS_INPUT,
                     collected_params=collected_params,
-                    clarifying_question="",
+                    clarifying_question=fallback_question,
                     turn_count=updated_turn_count,
                 ),
-                [],
+                tokenize_question(fallback_question),
             )
 
         # Step 3 — Merge
@@ -475,6 +500,13 @@ class AgenticLoop:
         await self._save_session(
             chat_id, merged_params, updated_turn_count, awaiting_continuation=False
         )
+        if not extraction["clarifying_question"] and not question_tokens:
+            logger.warning(
+                f"AgenticLoop: NEEDS_INPUT (streaming) with empty clarifying_question and"
+                f" no tokens — user will see a blank SSE response"
+                f" | event_type=empty_clarifying_question chat_id={chat_id}"
+                f" turn_count={updated_turn_count} missing_required={extraction['missing_required']}"
+            )
         return (
             AgenticLoopResult(
                 status=AgenticLoopStatus.NEEDS_INPUT,

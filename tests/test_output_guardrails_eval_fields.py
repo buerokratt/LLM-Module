@@ -1,25 +1,28 @@
 """When the output guardrail blocks an answer, the replacement response must keep
 the EVAL_MODE-only ``tool_calls`` so evaluation can score tool selection
 separately from the guardrail outcome. Production is unaffected (field is None).
+
+``LLMOrchestrationService.handle_output_guardrails`` delegates to
+``GuardrailsCoordinator.handle_output``; the coordinator is tested directly.
 """
 
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from guardrails.nemo_rails_adapter import GuardrailCheckResult
 from models.request_models import OrchestrationRequest, OrchestrationResponse
-from src.llm_orchestration_service import LLMOrchestrationService
+from src.guardrails import GuardrailCheckResult
+from src.orchestration.guardrails_coordinator import GuardrailsCoordinator
 
 
-def _service(allowed: bool) -> LLMOrchestrationService:
-    svc: LLMOrchestrationService = object.__new__(LLMOrchestrationService)
-    svc._check_output_guardrails = AsyncMock(  # type: ignore[method-assign]
+def _coordinator(allowed: bool) -> GuardrailsCoordinator:
+    coord = GuardrailsCoordinator(langfuse_config=None)
+    coord.check_output = AsyncMock(  # type: ignore[method-assign]
         return_value=GuardrailCheckResult(
             allowed=allowed, verdict="safe" if allowed else "unsafe", reason="test"
         )
     )
-    return svc
+    return coord
 
 
 def _request() -> OrchestrationRequest:
@@ -60,10 +63,10 @@ def _response(tool_calls) -> OrchestrationResponse:
 
 @pytest.mark.asyncio
 async def test_blocked_response_keeps_tool_calls() -> None:
-    svc = _service(allowed=False)
+    coord = _coordinator(allowed=False)
     original = _response(_TOOL_CALLS)
 
-    result = await svc.handle_output_guardrails(MagicMock(), original, _request(), {})
+    result = await coord.handle_output(MagicMock(), original, _request(), {})
 
     assert isinstance(result, OrchestrationResponse)
     assert result is not original
@@ -74,11 +77,9 @@ async def test_blocked_response_keeps_tool_calls() -> None:
 @pytest.mark.asyncio
 async def test_blocked_response_without_tool_calls_stays_none() -> None:
     """Production shape: no eval field leaks into the JSON."""
-    svc = _service(allowed=False)
+    coord = _coordinator(allowed=False)
 
-    result = await svc.handle_output_guardrails(
-        MagicMock(), _response(None), _request(), {}
-    )
+    result = await coord.handle_output(MagicMock(), _response(None), _request(), {})
 
     assert result.tool_calls is None
     assert "tool_calls" not in result.model_dump(exclude_none=True)
@@ -86,9 +87,9 @@ async def test_blocked_response_without_tool_calls_stays_none() -> None:
 
 @pytest.mark.asyncio
 async def test_allowed_response_is_returned_unchanged() -> None:
-    svc = _service(allowed=True)
+    coord = _coordinator(allowed=True)
     original = _response(_TOOL_CALLS)
 
-    result = await svc.handle_output_guardrails(MagicMock(), original, _request(), {})
+    result = await coord.handle_output(MagicMock(), original, _request(), {})
 
     assert result is original

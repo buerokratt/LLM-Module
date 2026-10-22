@@ -506,7 +506,10 @@ class TestErrorHandling:
         )
 
         assert result.status == AgenticLoopStatus.NEEDS_INPUT
-        assert result.clarifying_question == ""
+        # The extractor swallows its own failures, so reaching the except branch means
+        # the call itself broke — the loop still owes the user a question, not a blank
+        # reply, and builds one naming the params still missing.
+        assert result.clarifying_question == "Please provide the following: Country"
         # Prior collected_params preserved on error
         assert result.collected_params == {"validFrom": "2026-01-01"}
         assert result.turn_count == 2
@@ -898,7 +901,7 @@ class TestStreamRunTurn:
 
     @pytest.mark.asyncio
     async def test_stream_extraction_exception_returns_safe_defaults(self) -> None:
-        """An exception from stream_forward must return NEEDS_INPUT with empty tokens."""
+        """An exception from stream_forward must stream a fallback question, not nothing."""
         extractor_mock = MagicMock()
         extractor_mock.stream_forward = AsyncMock(
             side_effect=RuntimeError("stream failure")
@@ -914,8 +917,11 @@ class TestStreamRunTurn:
             turn_count=0,
         )
 
+        expected_question = "Please provide the following: Country, Start date"
         assert result.status == AgenticLoopStatus.NEEDS_INPUT
-        assert tokens == []
+        assert result.clarifying_question == expected_question
+        # The fallback is re-tokenized so the SSE frames carry the question text.
+        assert "".join(tokens) == expected_question
         assert result.collected_params == {}
 
     @pytest.mark.asyncio

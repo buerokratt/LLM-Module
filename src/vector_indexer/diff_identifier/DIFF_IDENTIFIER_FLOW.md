@@ -1005,6 +1005,27 @@ export LOG_LEVEL="INFO"
 4. **Error Handling:** Captures and logs any initialization or processing failures
 5. **Resource Cleanup:** Ensures containers clean up temporary files and datasets
 
+#### Preventing Overlapping Runs
+
+Two non-blocking file locks stop the same work from running twice at once:
+
+| Lock | Where | Behaviour when busy |
+|------|-------|---------------------|
+| `/app/data/agency_data_resync.lock` | `agency_data_resync.sh` (`flock -n`) | Logs that a run is already in progress and exits `0` without doing anything |
+| `/app/data/locks/<sha256(signed_url)>.lock` | `main_indexer.py` (`fcntl.flock`, one lock per dataset) | `main_indexer.py` exits with code `3`; `vector_indexer_pipeline.sh` logs `[SKIPPED]` and exits `0` |
+
+The indexer lock is per signed URL, so different datasets can still be indexed at the same time. Locks are released when the process exits.
+
+**`main_indexer.py` exit codes** (as handled by `vector_indexer_pipeline.sh`):
+
+| Code | Meaning | Pipeline exit |
+|------|---------|---------------|
+| `0` | Success | `0` |
+| `2` | Completed with some failures | `2` |
+| `3` | Skipped: a run for this dataset is already in progress | `0` |
+| `130` | Interrupted | `130` |
+| other | Failure | same code |
+
 #### Advanced Pipeline Configuration
 ```bash
 # Enhanced pipeline execution with monitoring

@@ -1,15 +1,11 @@
 """Constants and configuration for tool classifier module."""
 
+from src.constants_loader import get_constant
+
 
 # ============================================================================
 # Qdrant Vector Database Configuration
 # ============================================================================
-
-QDRANT_HOST = "qdrant"
-"""Qdrant server hostname."""
-
-QDRANT_PORT = 6333
-"""Qdrant server port."""
 
 QDRANT_TIMEOUT = 10.0
 """Qdrant HTTP client timeout in seconds."""
@@ -34,18 +30,11 @@ Lowered from 0.4 to handle broader queries."""
 # Ruuter Service Configuration
 # ============================================================================
 
-RUUTER_BASE_URL = "http://ruuter-private:8086"
-"""Base URL for Ruuter private service endpoints."""
+RUUTER_SERVICE_BASE_URL = get_constant("RAG_SEARCH_RUUTER_PUBLIC_INTERNAL_SERVICE")
+"""Base URL for Ruuter service endpoints (active services), from constants.ini."""
 
-RUUTER_SERVICE_BASE_URL = "http://ruuter:8086/services"
-"""Base URL for Ruuter service endpoints (active services)."""
-
-RUUTER_COMMON_SERVICE_BASE_URL = "http://ruuter-test:8086/common-services"
-"""Base URL for Ruuter common service endpoints.
-This is a placeholder test URL — replace with the real URL when available."""
-
-RAG_SEARCH_RUUTER_PUBLIC = "http://ruuter-public:8086/rag-search"
-"""Public Ruuter endpoint for RAG search service discovery."""
+RUUTER_COMMON_SERVICE_BASE_URL = get_constant("RUUTER_COMMON_SERVICE_BASE_URL")
+"""Base URL for Ruuter common service endpoints, from constants.ini."""
 
 SERVICE_CALL_TIMEOUT = 10
 """Timeout in seconds for external service calls via Ruuter."""
@@ -137,6 +126,17 @@ Only a clear, unambiguous new query (cosine >= 0.50) should override a session."
 
 
 # ============================================================================
+# Parameter Extraction Guardrails
+# ============================================================================
+
+MAX_PARAM_VALUE_LENGTH = 500
+"""Maximum length (chars) of a single extracted parameter value.
+Values longer than this are treated as invalid (same path as a type mismatch),
+preventing oversized values from reaching Redis session storage, the external
+API call, or being re-echoed into the prompt on subsequent turns."""
+
+
+# ============================================================================
 # Agentic Loop — Continuation Threshold
 # ============================================================================
 
@@ -196,6 +196,17 @@ CONTINUATION_QUESTION_RU = (
     "Хотите ли вы продолжить и ответить ещё на несколько вопросов? (да / нет)"
 )
 """Russian version of the continuation question."""
+
+MISSING_PARAMS_PROMPT = "Please provide the following: {items}"
+"""Deterministic fallback question used when the LLM produced no usable
+clarifying_question but required params are still missing. ``{items}`` is a
+comma-separated list of the missing parameters' human-readable descriptions."""
+
+MISSING_PARAMS_PROMPT_ET = "Palun sisestage järgmine teave: {items}"
+"""Estonian version of the missing-params fallback question."""
+
+MISSING_PARAMS_PROMPT_RU = "Пожалуйста, предоставьте следующую информацию: {items}"
+"""Russian version of the missing-params fallback question."""
 
 # ============================================================================
 # API Caller Configuration

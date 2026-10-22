@@ -1,8 +1,18 @@
 #!/bin/bash
 
-# DEFINING ENDPOINTS
+# PREVENT OVERLAPPING RUNS
+# Non-blocking flock: if another run already holds the lock, skip this invocation instead of queuing.
+LOCKFILE="/app/data/agency_data_resync.lock"
+exec 200>"$LOCKFILE"
+if ! flock -n 200; then
+    echo "An existing agency_data_resync run is already in progress - skipping this invocation."
+    exit 0
+fi
 
-CHECK_RESYNC_DATA_AVAILABILITY_ENDPOINT=http://ruuter-public:8086/rag-search/data/update
+# DEFINING ENDPOINTS
+source /app/scripts/load_constants.sh
+
+CHECK_RESYNC_DATA_AVAILABILITY_ENDPOINT="${RAG_SEARCH_RUUTER_PUBLIC}/data/update"
 
 # Construct payload to update training status using cat
 payload=$(cat <<EOF

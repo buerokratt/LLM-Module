@@ -23,13 +23,14 @@ from models.request_models import (
     TestOrchestrationResponse,
 )
 from tool_classifier.base_workflow import BaseWorkflow
+from llm_orchestrator_config.llm_ochestrator_constants import (
+    QDRANT_URL,
+    RAG_SEARCH_RUUTER_PUBLIC,
+)
 from tool_classifier.constants import (
     MAX_SERVICES_FOR_LLM_CONTEXT,
     QDRANT_COLLECTION,
-    QDRANT_HOST,
-    QDRANT_PORT,
     QDRANT_TIMEOUT,
-    RAG_SEARCH_RUUTER_PUBLIC,
     RUUTER_COMMON_SERVICE_BASE_URL,
     RUUTER_SERVICE_BASE_URL,
     SEMANTIC_SEARCH_THRESHOLD,
@@ -173,9 +174,8 @@ class ServiceWorkflowExecutor(BaseWorkflow):
 
             query_embedding = embeddings[0]
 
-            qdrant_url = f"http://{QDRANT_HOST}:{QDRANT_PORT}"
             async with httpx.AsyncClient(
-                base_url=qdrant_url, timeout=QDRANT_TIMEOUT
+                base_url=QDRANT_URL, timeout=QDRANT_TIMEOUT
             ) as client:
                 try:
                     collection_info = await client.get(
@@ -266,7 +266,7 @@ class ServiceWorkflowExecutor(BaseWorkflow):
             logger.error(f"[{chat_id}] Service discovery failed: {e}", exc_info=True)
             return None
 
-    @observe(name="service_intent_detection_orchestration", as_type="generation")
+    @observe(name="service_intent_detection_orchestration", as_type="chain")
     async def _detect_service_intent(
         self,
         user_query: str,
@@ -329,6 +329,13 @@ class ServiceWorkflowExecutor(BaseWorkflow):
                 )
 
             usage_info = get_lm_usage_since(history_length_before)
+            # NOTE: this is a "chain" span wrapping the child "generation" span
+            # (service_intent_detection_llm), which already attaches this same
+            # usage/cost. Do NOT pass usage under the "usage" key here — that
+            # would make update_observation_safe() call update_current_generation()
+            # a second time with the identical cost, double-counting it in
+            # Langfuse (chain costs auto-aggregate from children already).
+            # Reported here as "usage_summary" for visibility only.
             update_observation_safe(
                 input_data={
                     "chat_id": chat_id,
@@ -345,7 +352,7 @@ class ServiceWorkflowExecutor(BaseWorkflow):
                     if intent_result
                     else 0.0,
                 },
-                metadata={"usage": usage_info},
+                metadata={"usage_summary": usage_info},
             )
 
             return intent_result, usage_info
@@ -359,7 +366,7 @@ class ServiceWorkflowExecutor(BaseWorkflow):
                     "services_count": len(services),
                 },
                 output_data={"matched_service_id": None, "error": str(e)},
-                metadata={"usage": {}},
+                metadata={"usage_summary": {}},
             )
             return None, {}
 

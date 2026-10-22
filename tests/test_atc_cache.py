@@ -537,7 +537,6 @@ class TestIntentSwitchInvalidatesL2:
         ):
             result = await classifier.classify(
                 query="What is the weather in Tallinn?",
-                conversation_history=[],
                 language="en",
                 request=_make_request("What is the weather in Tallinn?"),
             )
@@ -864,7 +863,6 @@ class TestCacheKillSwitch:
         ):
             result = await classifier.classify(
                 query="What is the weather in Tallinn?",
-                conversation_history=[],
                 language="en",
                 request=_make_request("What is the weather in Tallinn?"),
             )

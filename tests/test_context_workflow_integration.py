@@ -229,7 +229,6 @@ class TestClassifyAndRouteGreeting:
         ):
             result = await classifier.classify(
                 query="Tere!",
-                conversation_history=[],
                 language="et",
             )
 
@@ -246,7 +245,6 @@ class TestClassifyAndRouteGreeting:
         with _mock_dspy_greeting("Hello! How can I help you?"), _patch_cost_utils():
             classification = await classifier.classify(
                 query="Hello!",
-                conversation_history=[],
                 language="en",
             )
 
@@ -288,7 +286,6 @@ class TestClassifyAndRouteGreeting:
         ):
             classification = await classifier.classify(
                 query="Tere!",
-                conversation_history=[],
                 language="et",
             )
 
@@ -322,7 +319,6 @@ class TestClassifyAndRouteGreeting:
         with _mock_dspy_greeting("Goodbye! Have a great day!"), _patch_cost_utils():
             classification = await classifier.classify(
                 query="Goodbye!",
-                conversation_history=[],
                 language="en",
             )
 
@@ -359,7 +355,6 @@ class TestClassifyAndRouteGreeting:
         ):
             classification = await classifier.classify(
                 query="Thank you!",
-                conversation_history=[],
                 language="en",
             )
 
@@ -413,7 +408,6 @@ class TestClassifyAndRouteContextAnswer:
         ):
             classification = await classifier.classify(
                 query="What was the rate?",
-                conversation_history=history,
                 language="en",
             )
 
@@ -474,7 +468,6 @@ class TestClassifyAndRouteContextAnswer:
         ):
             classification = await classifier.classify(
                 query="What did we discuss?",
-                conversation_history=history,
                 language="en",
             )
 
@@ -511,7 +504,6 @@ class TestContextToRAGFallback:
         with _mock_dspy_no_match(), _patch_cost_utils():
             classification = await classifier.classify(
                 query="What is a digital signature?",
-                conversation_history=[],
                 language="en",
             )
 
@@ -537,7 +529,6 @@ class TestContextToRAGFallback:
         with _mock_dspy_no_match(), _patch_cost_utils():
             classification = await classifier.classify(
                 query="What is a digital signature?",
-                conversation_history=[],
                 language="en",
             )
 
@@ -606,7 +597,6 @@ class TestStreamingIntegration:
         with _mock_dspy_greeting("Hello! How can I help you?"), _patch_cost_utils():
             classification = await classifier.classify(
                 query="Hello!",
-                conversation_history=[],
                 language="en",
             )
 
@@ -676,7 +666,6 @@ class TestStreamingIntegration:
         ):
             classification = await classifier.classify(
                 query="When is the deadline?",
-                conversation_history=history,
                 language="en",
             )
 
@@ -772,7 +761,6 @@ class TestCostTrackingIntegration:
         with _mock_dspy_greeting("Hello!"), _patch_cost_utils():
             classification = await classifier.classify(
                 query="Hello!",
-                conversation_history=[],
                 language="en",
             )
 
@@ -819,7 +807,6 @@ class TestErrorResilience:
         ):
             classification = await classifier.classify(
                 query="Hello!",
-                conversation_history=[],
                 language="en",
             )
 
@@ -859,7 +846,6 @@ class TestErrorResilience:
         ):
             classification = await classifier.classify(
                 query="Hello!",
-                conversation_history=[],
                 language="en",
             )
 

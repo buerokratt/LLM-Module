@@ -44,6 +44,7 @@ def mock_orchestration_service() -> MagicMock:
 
     service.format_sse = _format_sse_impl
     service.log_costs = MagicMock()
+    service.store_streaming_inference = AsyncMock()
     return service
 
 

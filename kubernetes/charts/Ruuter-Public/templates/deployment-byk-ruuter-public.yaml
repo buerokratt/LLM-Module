@@ -29,7 +29,7 @@ spec:
             - sh
             - -c
             - |
-                git clone --single-branch --depth 1 --branch wip https://github.com/rootcodelabs/RAG-Module /tmp/rag &&
+                git clone --single-branch --depth 1 --branch v1.0.0 https://github.com/rootcodelabs/RAG-Module /tmp/rag &&
 
                 cp -r /tmp/rag/DSL/Ruuter.public/* /DSL/
       containers:

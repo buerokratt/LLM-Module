@@ -33,10 +33,6 @@ dependencies:
     version: 0.1.0
     repository: "file://./charts/TIM"
     condition: TIM.enabled
-  - name: Authentication-Layer
-    version: 0.1.0
-    repository: "file://./charts/Authentication-Layer"
-    condition: Authentication-Layer.enabled
   - name: CronManager
     version: 0.1.0
     repository: "file://./charts/CronManager"

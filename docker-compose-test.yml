@@ -67,7 +67,9 @@ services:
     volumes:
       - ./DSL/CronManager/DSL:/DSL
       - ./DSL/CronManager/script:/app/scripts
+      - ./constants.ini:/app/config/constants.ini:ro  # service endpoint URLs (NOT /app/constants.ini - that one is baked into the image)
       - ./src/vector_indexer:/app/src/vector_indexer
+      - ./src/constants_loader.py:/app/src/constants_loader.py:ro  # reads /app/config/constants.ini
       - ./datasets:/app/datasets
       - ./grafana-configs/loki_logger.py:/app/src/vector_indexer/loki_logger.py
       - ./test-vault/agent-out:/agent/out:ro

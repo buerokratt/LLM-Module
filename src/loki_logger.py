@@ -12,14 +12,53 @@ Two copies exist for environments where `src` is not a Python package:
 If you change the logger logic here, apply the same change to both copies.
 """
 
+import configparser
 import json
+import os
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 from threading import Thread
 from queue import Full, Queue
+from typing import Optional
 
 import requests
+
+
+def _candidate_constants_paths() -> list[Path]:
+    """constants.ini locations, in the same order as src/constants_loader.py."""
+    candidates: list[Path] = []
+    explicit = os.environ.get("RAG_SEARCH_CONSTANTS")  # exported by load_constants.sh
+    if explicit:
+        candidates.append(Path(explicit))
+    candidates.append(Path("/app/config/constants.ini"))  # cron-manager mount
+    # llm-orchestration (/app/constants.ini) and local dev: search upward
+    candidates.extend(d / "constants.ini" for d in Path(__file__).resolve().parents)
+    return candidates
+
+
+def _read_loki_url_from_constants() -> Optional[str]:
+    """Read LOKI_URL from the [DSL] section of constants.ini.
+
+    Files without a [DSL] section (e.g. the cron-manager image's own baked
+    /app/constants.ini) are skipped. Returns None when no file or key is found.
+    """
+    for ini_path in _candidate_constants_paths():
+        if not ini_path.is_file():
+            continue
+        parser = configparser.ConfigParser(interpolation=None, strict=False)
+        parser.optionxform = str  # type: ignore[assignment,method-assign]
+        try:
+            parser.read(ini_path, encoding="utf-8")
+        except configparser.Error:
+            continue  # not our INI format - never let logging break the caller
+        if parser.has_section("DSL"):
+            return parser.get("DSL", "LOKI_URL", fallback="").strip() or None
+    return None
+
+
+_CONFIGURED_LOKI_URL = _read_loki_url_from_constants()
 
 
 class LokiLogger:
@@ -28,27 +67,34 @@ class LokiLogger:
     _instances: dict[str, "LokiLogger"] = {}
 
     def __new__(
-        cls, loki_url: str = "http://loki:3100", service_name: str = "default"
+        cls, loki_url: Optional[str] = None, service_name: str = "default"
     ) -> "LokiLogger":
-        key = f"{loki_url}:{service_name}"
+        key = f"{loki_url or _CONFIGURED_LOKI_URL}:{service_name}"
         if key not in cls._instances:
             cls._instances[key] = super().__new__(cls)
         return cls._instances[key]
 
     def __init__(
-        self, loki_url: str = "http://loki:3100", service_name: str = "default"
+        self, loki_url: Optional[str] = None, service_name: str = "default"
     ) -> None:
         """
         Initialize LokiLogger
 
         Args:
-            loki_url: URL for Loki service (default: container URL in bykstack network)
+            loki_url: URL for Loki service (default: LOKI_URL from constants.ini).
+                If neither is available, logs go to the console only.
             service_name: Name of the service for labeling logs
         """
         if hasattr(self, "_initialized"):
             return
         self._initialized = True
-        self.loki_url = loki_url
+        self.loki_url = loki_url or _CONFIGURED_LOKI_URL
+        if not self.loki_url:
+            print(  # noqa: T201
+                f"LokiLogger[{service_name}]: LOKI_URL not found in constants.ini; "
+                "logging to console only",
+                file=sys.stderr,
+            )
         self.service_name = service_name
         self.session = requests.Session()
         # Set default timeout for all requests
@@ -126,6 +172,9 @@ class LokiLogger:
         # log lines mixed in with the actual output.
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"[{timestamp}] {level: <8} | {message}", file=sys.stderr)  # noqa: T201
+
+        if not self.loki_url:
+            return
 
         # Queue for async Loki sending (non-blocking, drops log if queue is full)
         try:

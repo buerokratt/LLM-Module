@@ -27,6 +27,9 @@ class BudgetTracker:
         """
         Make the actual budget update API request.
 
+        If the budget threshold is exceeded and disconnect_on_budget_exceed is set,
+        the connection will be deactivated and the connection cache cleared.
+
         Args:
             vault_uuid: The vault UUID identifying the connection
             usage_cost: The cost to add
@@ -57,17 +60,24 @@ class BudgetTracker:
 
             # Check if budget was exceeded
             budget_exceeded: bool = False
+            disconnect_on_exceed: bool = False
             if isinstance(data, dict):
-                budget_exceeded_value = cast(Dict[str, Any], data).get(
-                    "budgetExceeded", False
-                )
+                typed_data = cast(Dict[str, Any], data)
+                budget_exceeded_value = typed_data.get("budgetExceeded", False)
                 budget_exceeded = bool(budget_exceeded_value)
+                disconnect_on_exceed = bool(
+                    typed_data.get("disconnectOnBudgetExceed", False)
+                )
 
             if budget_exceeded:
                 logger.warning(
                     f"Budget threshold exceeded for vault_uuid={vault_uuid}. "
-                    f"Connection may have been deactivated."
+                    f"disconnect_on_budget_exceed={disconnect_on_exceed}"
                 )
+
+                # Deactivate connection if disconnect_on_budget_exceed is true
+                if disconnect_on_exceed:
+                    self._deactivate_connection(vault_uuid)
 
             return {
                 "success": True,
@@ -86,29 +96,76 @@ class BudgetTracker:
                 "error_message": response.text,
             }
 
+    def _deactivate_connection(self, vault_uuid: str) -> None:
+        """
+        Deactivate an LLM connection due to budget threshold being exceeded.
+
+        Also clears the ConnectionIdFetcher cache so the next request
+        picks up the deactivated status immediately.
+
+        Args:
+            vault_uuid: The vault UUID identifying the connection to deactivate
+        """
+        deactivate_endpoint = (
+            f"{self.resql_base}/deactivate-llm-connection-budget-exceed"
+        )
+        try:
+            deactivate_response = requests.post(
+                deactivate_endpoint,
+                json={"vault_uuid": vault_uuid},
+                timeout=self.timeout,
+            )
+
+            if deactivate_response.status_code == 200:
+                logger.warning(
+                    f"Connection deactivated due to budget exceed: "
+                    f"vault_uuid={vault_uuid}"
+                )
+            else:
+                logger.error(
+                    f"Failed to deactivate connection vault_uuid={vault_uuid}. "
+                    f"Status: {deactivate_response.status_code}"
+                )
+        except Exception as deactivate_err:
+            logger.error(
+                f"Error deactivating connection vault_uuid={vault_uuid}: "
+                f"{deactivate_err}"
+            )
+
+        # Clear the connection cache so subsequent requests see the inactive status
+        try:
+            from src.utils.connection_id_fetcher import get_connection_id_fetcher
+
+            fetcher = get_connection_id_fetcher()
+            fetcher.clear_cache()
+            logger.info(
+                f"Connection cache cleared after deactivation of vault_uuid={vault_uuid}"
+            )
+        except Exception as cache_err:
+            logger.warning(
+                f"Failed to clear connection cache after deactivation: {cache_err}"
+            )
+
     def update_budget(
-        self, connection_id: Optional[str], usage_cost: float
+        self, vault_uuid: Optional[str], usage_cost: float
     ) -> Dict[str, Any]:
         """
         Update the used budget for an LLM connection.
 
         Args:
-            connection_id: The vault_uuid identifying the LLM connection
+            vault_uuid: The vault UUID identifying the LLM connection
             usage_cost: The cost to add to the used budget
 
         Returns:
             Dictionary containing the response from the update endpoint
             or an error indicator if the update failed
         """
-        # Validate connection_id (vault_uuid) is provided
-        if not connection_id:
-            logger.debug(
-                "No connection_id (vault_uuid) provided, skipping budget update"
-            )
+        if not vault_uuid:
+            logger.debug("No vault_uuid provided, skipping budget update")
             return {
                 "success": False,
-                "reason": "no_connection_id",
-                "connection_id": connection_id,
+                "reason": "no_vault_uuid",
+                "vault_uuid": vault_uuid,
             }
 
         # Skip if usage cost is 0 or negative
@@ -117,34 +174,32 @@ class BudgetTracker:
             return {"success": False, "reason": "zero_or_negative_cost"}
 
         try:
-            return self._make_budget_update_request(connection_id, usage_cost)
+            return self._make_budget_update_request(vault_uuid, usage_cost)
 
         except requests.exceptions.Timeout:
-            logger.error(
-                f"Timeout while updating budget for vault_uuid={connection_id}"
-            )
+            logger.error(f"Timeout while updating budget for vault_uuid={vault_uuid}")
             return {"success": False, "reason": "timeout"}
 
         except requests.exceptions.RequestException as e:
             logger.error(
-                f"Request error while updating budget for vault_uuid={connection_id}: {str(e)}"
+                f"Request error while updating budget for vault_uuid={vault_uuid}: {str(e)}"
             )
             return {"success": False, "reason": "request_error", "error": str(e)}
 
         except Exception as e:
             logger.error(
-                f"Unexpected error while updating budget for vault_uuid={connection_id}: {str(e)}"
+                f"Unexpected error while updating budget for vault_uuid={vault_uuid}: {str(e)}"
             )
             return {"success": False, "reason": "unexpected_error", "error": str(e)}
 
     def update_budget_from_costs(
-        self, connection_id: Optional[str], costs_metric: Dict[str, Dict[str, Any]]
+        self, vault_uuid: Optional[str], costs_metric: Dict[str, Dict[str, Any]]
     ) -> Dict[str, Any]:
         """
         Update budget from a costs dictionary containing component costs.
 
         Args:
-            connection_id: The LLM connection ID (optional)
+            vault_uuid: The vault UUID identifying the LLM connection
             costs_metric: Dictionary of component costs with total_cost values
 
         Returns:
@@ -160,7 +215,7 @@ class BudgetTracker:
             f"(components: {list(costs_metric.keys())})"
         )
 
-        return self.update_budget(connection_id, total_cost)
+        return self.update_budget(vault_uuid, total_cost)
 
 
 # Singleton instance

@@ -1618,6 +1618,16 @@ None required.
 }
 ```
 
+### Response (400 Bad Request) — re-indexing trigger failed
+Returned when the data hash was updated but the CronManager call that starts the vector indexer failed (no status code, or status ≥ 400).
+```json
+{
+  "message": "Data hash updated but vector indexer trigger failed - reindexing did not start",
+  "operationSuccessful": false,
+  "error": "CRON_MANAGER_TRIGGER_FAILED"
+}
+```
+
 ### Response (404 Not Found)
 ```json
 {

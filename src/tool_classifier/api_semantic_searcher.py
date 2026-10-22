@@ -16,10 +16,9 @@ from tool_classifier.constants import (
     API_TOOL_MIN_THRESHOLD,
     API_TOOL_SCORE_GAP_THRESHOLD,
     API_TOOL_SEARCH_TOP_K,
-    QDRANT_HOST,
-    QDRANT_PORT,
     QDRANT_TIMEOUT,
 )
+from llm_orchestrator_config.llm_ochestrator_constants import QDRANT_URL
 from tool_classifier.sparse_encoder import compute_sparse_vector
 from tool_classifier.sparse_encoder import SparseVector
 from src.utils.cost_utils import get_lm_usage_since
@@ -229,7 +228,7 @@ class APISemanticSearcher:
             self._qdrant_client = qdrant_client
         else:
             self._qdrant_client = httpx.AsyncClient(
-                base_url=f"http://{QDRANT_HOST}:{QDRANT_PORT}",
+                base_url=QDRANT_URL,
                 timeout=QDRANT_TIMEOUT,
                 limits=httpx.Limits(
                     max_connections=10,

@@ -77,9 +77,16 @@ uv run pre-commit run --all-files
 ### Core Components
 
 1. **LLM Orchestration Service** (`src/llm_orchestration_service.py`)
-   - Central business logic for RAG orchestration
+   - Facade and entry point for RAG orchestration (`process_orchestration_request`, `stream_orchestration_response`)
    - Coordinates prompt refinement, retrieval, generation, and guardrails
    - Integrates with Langfuse for observability
+   - Pipeline logic lives in `src/orchestration/`; the facade's private methods delegate there:
+     - `rag_pipeline.py`: RAG streaming and non-streaming pipelines
+     - `request_preamble.py`: query validation, connection and budget checks before routing
+     - `guardrails_coordinator.py`: input/output guardrail checks
+     - `component_factory.py`: LLM manager, guardrails, retriever, and response generator setup
+     - `cost_budget.py`, `prompt_refinement.py`, `inference_storage.py`, `response_builders.py`
+     - `constants.py`: shared constants, including `_HISTORY_EXCLUDED_MESSAGES` (localized error messages that must never be saved to conversation history)
 
 2. **FastAPI Application** (`src/llm_orchestration_service_api.py`)
    - HTTP API layer exposing `/orchestrate` endpoint

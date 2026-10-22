@@ -7,8 +7,8 @@ metadata:
 data:
   constants.ini: |
     [DSL]
-    RAG_SEARCH_RUUTER_PUBLIC=http://ruuter-public:8086
-    RAG_SEARCH_RUUTER_PRIVATE=http://ruuter-private:8088
+    RAG_SEARCH_RUUTER_PUBLIC=http://ruuter-public:8086/rag-search
+    RAG_SEARCH_RUUTER_PRIVATE=http://ruuter-private:8088/rag-search
     RAG_SEARCH_DMAPPER=http://data-mapper:3001
     RAG_SEARCH_RESQL=http://resql:8082/rag-search
     RAG_SEARCH_PROJECT_LAYER=rag-search

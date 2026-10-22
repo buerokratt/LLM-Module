@@ -2,13 +2,15 @@
 
 from dataclasses import dataclass
 
+from src.constants_loader import get_constant
+
 
 @dataclass(frozen=True)
 class EnrichmentConstants:
     """Constants for enrichment pipeline."""
 
-    # API Configuration
-    DEFAULT_API_BASE_URL = "http://llm-orchestration-service:8100"
+    # API Configuration (from constants.ini)
+    DEFAULT_API_BASE_URL = get_constant("RAG_SEARCH_LLM_SERVICE")
     DEFAULT_ENVIRONMENT = "production"
     # None → orchestration service resolves the embedding model via the
     # DB-fetched vault UUID (path: embeddings/connections/{provider}/{vault_uuid}).
@@ -19,10 +21,9 @@ class EnrichmentConstants:
     RETRY_DELAY_BASE = 2  # Exponential backoff base (2^attempt seconds)
     REQUEST_TIMEOUT = 60  # seconds
 
-    # Qdrant Configuration
+    # Qdrant Configuration (from constants.ini)
     COLLECTION_NAME = "intent_collections"
-    DEFAULT_QDRANT_HOST = "qdrant"
-    DEFAULT_QDRANT_PORT = 6333
+    DEFAULT_QDRANT_URL = get_constant("QDRANT_URL")
     VECTOR_SIZE = 3072  # Azure text-embedding-3-large dimension
     DISTANCE_METRIC = "Cosine"
 

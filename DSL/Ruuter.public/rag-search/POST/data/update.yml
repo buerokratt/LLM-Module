@@ -1,7 +1,7 @@
 declaration:
   call: declare
   version: 0.1
-  description: "Resync new data from KB"
+  description: "Resync new data from CKB"
   method: post
   accepts: json
   returns: json
@@ -85,37 +85,10 @@ check_has_match:
   switch:
     - condition: ${current_data_hash !== null && current_data_hash === importResult.response.body.response.response[0].agencyDataHash}
       next: noAgencyData
-  next: sync_current_hash_with_ckb_latest_hash
-
-sync_current_hash_with_ckb_latest_hash:
-  call: http.post
-  args:
-    url: "[#RAG_SEARCH_RESQL]/update-agency-hash"
-    body:
-      id: ${single_agency_id}
-      newAgencyDataHash: ${ckb_data_hash}
-      dataUrl: ${signed_s3_url}
-  result: sync_agency_hash_result
-  next: log_sync_hash_result
-  on_error: handle_hash_update_error
-
-log_sync_hash_result:
-  log: "Current hash sync result: ${JSON.stringify(sync_agency_hash_result.response)}"
   next: execute_cron_manager
 
-handle_hash_update_error:
-  log: "ERROR: Failed to update data hash - ${sync_agency_hash_result.error || 'Unknown error'}"
-  next: assign_hash_error_response
-
-assign_hash_error_response:
-  assign:
-    format_res: {
-      message: "Failed to update data hash. Data synchronization aborted.",
-      operationSuccessful: false,
-      error: "HASH_UPDATE_FAILED"
-    }
-  next: return_bad_request
-
+# The agency hash is NOT saved here: vector_indexer_pipeline.sh saves it only
+# after indexing succeeds, so a failed run is retried on the next sync.
 execute_cron_manager:
   call: http.post
   args:
@@ -123,8 +96,26 @@ execute_cron_manager:
     query:
       signedUrl: ${signed_s3_url}
       clientDataHash: ${ckb_data_hash}
+      agencyId: ${single_agency_id}
   result: res
+  next: check_cron_manager_response
+  on_error: handle_cron_manager_error
+
+check_cron_manager_response:
+  switch:
+    - condition: ${res.response.statusCodeValue == null || res.response.statusCodeValue >= 400}
+      next: handle_cron_manager_error
   next: assign_success_response
+
+handle_cron_manager_error:
+  log: "ERROR: Failed to trigger vector indexer via CronManager - status ${res.response.statusCodeValue}, body: ${JSON.stringify(res.response.body)}"
+  assign:
+    format_res: {
+      message: "Vector indexer trigger failed - reindexing did not start",
+      operationSuccessful: false,
+      error: "CRON_MANAGER_TRIGGER_FAILED"
+    }
+  next: return_bad_request
 
 assign_success_response:
   assign:

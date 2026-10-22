@@ -1,0 +1,27 @@
+{
+  "component": "guardrails",
+  "optimizer": "MIPROv2-light",
+  "optimization_time_seconds": 1422.0954,
+  "trainset_size": 10,
+  "valset_size": 47,
+  "num_candidates": 10,
+  "validation_stats": {
+    "raw_accuracy": 1.0,
+    "weighted_accuracy": 1.0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1_score": 1.0,
+    "confusion_matrix": {
+      "tp": 23,
+      "tn": 24,
+      "fp": 0,
+      "fn": 0
+    },
+    "true_positives": 23,
+    "true_negatives": 24,
+    "false_positives": 0,
+    "false_negatives": 0,
+    "total_predictions": 47
+  },
+  "timestamp": "2026-07-15T17:51:14.748309"
+}

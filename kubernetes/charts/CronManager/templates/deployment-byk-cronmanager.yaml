@@ -13,6 +13,8 @@ spec:
   template:
     metadata:
       annotations:
+        # Restart pods when constants.ini changes (subPath mounts are not live-updated)
+        checksum/constants: {{ include (print $.Template.BasePath "/configmap-cronmanager-config.yaml") . | sha256sum }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -44,11 +46,15 @@ spec:
             mountPath: /app/src/api_tool_indexer
           - name: src-utils
             mountPath: /app/src/utils
+          - name: constants-loader
+            mountPath: /app/constants-loader
+          - name: loki-logger
+            mountPath: /app/loki-logger
           command:
             - sh
             - -c
             - |
-                git clone --single-branch --depth 1 --branch wip  https://github.com/rootcodelabs/RAG-Module /tmp/rag &&
+                git clone --single-branch --depth 1 --branch v1.0.0  https://github.com/rootcodelabs/RAG-Module /tmp/rag &&
 
                 mkdir -p /app/src/vector_indexer &&
                 mkdir -p /app/scripts &&
@@ -65,8 +71,12 @@ spec:
                 cp -r /tmp/rag/src/intent_data_enrichment/* /app/src/intent_data_enrichment/ &&
                 cp -r /tmp/rag/src/api_tool_indexer/* /app/src/api_tool_indexer/ &&
                 cp /tmp/rag/src/utils/decrypt_vault_secrets.py /app/src/utils/ &&
+                # Optional until the cloned branch ships it (older scripts don't need it)
+                { [ ! -f /tmp/rag/src/constants_loader.py ] || cp /tmp/rag/src/constants_loader.py /app/constants-loader/constants_loader.py; } &&
                 cp /tmp/rag/src/__init__.py /app/src/__init__.py &&
                 cp /tmp/rag/grafana-configs/loki_logger.py /app/src/vector_indexer/loki_logger.py &&
+                # /app/src is not a shared volume; stage it for the main container (from src.loki_logger import ...)
+                cp /tmp/rag/src/loki_logger.py /app/loki-logger/loki_logger.py &&
                 
                 # Set execute permissions on all shell scripts
                 chmod +x /app/scripts/*.sh &&
@@ -138,6 +148,19 @@ spec:
               mountPath: /app/src/utils
             - name: datasets
               mountPath: /app/datasets
+            # Endpoint URLs (constants.ini) and its stdlib-only Python loader
+            - name: config-volume
+              mountPath: /app/config/constants.ini
+              subPath: constants.ini
+              readOnly: true
+            - name: constants-loader
+              mountPath: /app/src/constants_loader.py
+              subPath: constants_loader.py
+              readOnly: true
+            - name: loki-logger
+              mountPath: /app/src/loki_logger.py
+              subPath: loki_logger.py
+              readOnly: true
          
       volumes:
         - name: dsl
@@ -155,6 +178,10 @@ spec:
         - name: datasets
           emptyDir: {}
         - name: src-utils
+          emptyDir: {}
+        - name: constants-loader
+          emptyDir: {}
+        - name: loki-logger
           emptyDir: {}
         - name: cronmanager-data
           persistentVolumeClaim:

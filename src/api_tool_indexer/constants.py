@@ -2,15 +2,16 @@
 
 from dataclasses import dataclass
 
+from src.constants_loader import get_constant
+
 
 @dataclass(frozen=True)
 class ApiToolIndexerConstants:
     """Constants for the API tool indexing pipeline."""
 
-    # Qdrant Configuration
+    # Qdrant Configuration (from constants.ini)
     COLLECTION_NAME = "api_tool_collection"
-    DEFAULT_QDRANT_HOST = "qdrant"
-    DEFAULT_QDRANT_PORT = 6333
+    DEFAULT_QDRANT_URL = get_constant("QDRANT_URL")
 
     # Vector Configuration - mirrors intent_collections for consistency
     VECTOR_SIZE = 3072  # text-embedding-3-large dimension (Azure)
@@ -20,8 +21,8 @@ class ApiToolIndexerConstants:
     DENSE_VECTOR_NAME = "dense"
     SPARSE_VECTOR_NAME = "sparse"
 
-    # LLM / Embedding API
-    DEFAULT_API_BASE_URL = "http://llm-orchestration-service:8100"
+    # LLM / Embedding API (from constants.ini)
+    DEFAULT_API_BASE_URL = get_constant("RAG_SEARCH_LLM_SERVICE")
     DEFAULT_ENVIRONMENT = "production"
     # None → orchestration service resolves the embedding model via the
     # DB-fetched vault UUID (path: embeddings/connections/{provider}/{vault_uuid}).

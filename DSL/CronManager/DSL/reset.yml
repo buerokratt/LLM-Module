@@ -1,5 +1,5 @@
 reset_monthly_budget:
-  trigger: "0 0 1 * * ?" # Runs at 00:00 AM 1st day of every month
+  trigger: "0 0 0 1 * ?" # Runs at 00:00 AM 1st day of every month
   # trigger: off
   type: exec
   command: "../app/scripts/budget_reset.sh -s 10"

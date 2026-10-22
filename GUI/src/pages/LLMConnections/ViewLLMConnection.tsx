@@ -20,11 +20,53 @@ const ViewLLMConnection = () => {
   const isEditing = true;
   const connectionId = searchParams.get('id');
 
+  // Delete mutation
+  const deleteConnectionMutation = useMutation({
+    mutationFn: () => deleteLLMConnection(connectionId!),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: llmConnectionsQueryKeys.all()
+      });
+
+      navigate('/llm-connections');
+
+      openDialog({
+        title: t('llmConnectionForm.viewConnection.deleteSuccessTitle') || 'Connection Deletion Succeeded',
+        content: <p>{t('llmConnectionForm.viewConnection.deleteSuccessMessage') || 'LLM connection deleted successfully!'}</p>,
+        footer: (
+          <Button
+            appearance={ButtonAppearanceTypes.PRIMARY}
+            onClick={() => {
+              closeDialog();
+            }}
+          >
+            {t('llmConnectionForm.viewConnection.viewConnectionsButton') || 'View LLM Connections'}
+          </Button>
+        ),
+      });
+    },
+    onError: (error: any) => {
+      console.error('Error deleting LLM connection:', error);
+      openDialog({
+        title: t('llmConnectionForm.viewConnection.deleteErrorTitle') || 'Error',
+        content: <p>{error?.message || t('llmConnectionForm.viewConnection.deleteErrorMessage') || 'Failed to delete LLM connection. Please try again.'}</p>,
+        footer: (
+          <Button
+            appearance={ButtonAppearanceTypes.PRIMARY}
+            onClick={closeDialog}
+          >
+            {t('llmConnectionForm.viewConnection.goBackButton') || 'Go Back'}
+          </Button>
+        ),
+      });
+    },
+  });
+
   // Fetch connection data
   const { data: connectionData, isLoading, error } = useQuery({
     queryKey: llmConnectionsQueryKeys.detail(connectionId!),
     queryFn: () => getLLMConnection(connectionId!),
-    enabled: !!connectionId,
+    enabled: !!connectionId && !deleteConnectionMutation.isLoading,
   });
 
   // Update mutation
@@ -68,48 +110,6 @@ const ViewLLMConnection = () => {
     },
   });
 
-  // Delete mutation
-  const deleteConnectionMutation = useMutation({
-    mutationFn: () => deleteLLMConnection(connectionId!),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
-        queryKey: llmConnectionsQueryKeys.all()
-      });
-
-      navigate('/llm-connections');
-
-      openDialog({
-        title: t('llmConnectionForm.viewConnection.deleteSuccessTitle') || 'Connection Deletion Succeeded',
-        content: <p>{t('llmConnectionForm.viewConnection.deleteSuccessMessage') || 'LLM connection deleted successfully!'}</p>,
-        footer: (
-          <Button
-            appearance={ButtonAppearanceTypes.PRIMARY}
-            onClick={() => {
-              closeDialog();
-              navigate('/llm-connections');
-            }}
-          >
-            {t('llmConnectionForm.viewConnection.viewConnectionsButton') || 'View LLM Connections'}
-          </Button>
-        ),
-      });
-    },
-    onError: (error: any) => {
-      console.error('Error deleting LLM connection:', error);
-      openDialog({
-        title: t('llmConnectionForm.viewConnection.deleteErrorTitle') || 'Error',
-        content: <p>{error?.message || t('llmConnectionForm.viewConnection.deleteErrorMessage') || 'Failed to delete LLM connection. Please try again.'}</p>,
-        footer: (
-          <Button
-            appearance={ButtonAppearanceTypes.PRIMARY}
-            onClick={closeDialog}
-          >
-            {t('llmConnectionForm.viewConnection.goBackButton') || 'Go Back'}
-          </Button>
-        ),
-      });
-    },
-  });
 
   const handleSubmit = async (data: LLMConnectionFormData) => {
     const isCurrentlyProduction = connectionData?.environment === 'production';

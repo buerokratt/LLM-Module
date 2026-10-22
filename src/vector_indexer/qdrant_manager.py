@@ -23,7 +23,7 @@ class QdrantManager:
 
     def __init__(self, config: VectorIndexerConfig) -> None:
         self.config = config
-        self.qdrant_url: str = getattr(config, "qdrant_url", "http://localhost:6333")
+        self.qdrant_url: str = config.qdrant_url  # from constants.ini via config
         self.client = httpx.AsyncClient(timeout=30.0)
 
         # Collection configurations based on embedding models
