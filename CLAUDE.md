@@ -213,7 +213,7 @@ Everything below was learned the hard way; check it before debugging anything el
   feed the local Langfuse containers (any generated values work). The blob download is mandatory
   even for tests that never use RAG embeddings; the fixture raises without it.
 - **Judge model.** Run `uv run deepeval set-azure-openai ...` once (see the workflow file for the
-  flags); it writes `.deepeval/.deepeval` in the repo root. Not git-ignored, so don't commit it.
+  flags); it writes `.deepeval/.deepeval` in the repo root (git-ignored).
 - **Chat deployment must not be a reasoning model.** `providers/azure_openai.py` builds
   `dspy.LM("azure/<deployment>")` with temperature/max_tokens from `llm_config.yaml`; DSPy rejects
   gpt-5/o1/o3/o4 deployments unless temperature is 1.0 and max_tokens ≥ 16000, so every LLM call
@@ -225,7 +225,8 @@ Everything below was learned the hard way; check it before debugging anything el
 - **Run artifacts to clean up.** The fixture writes AppRole creds into the *tracked* files
   `test-vault/agents/llm/role_id` and `secret_id` (restore with `git checkout --`), creates
   `test-vault/agent-out/`, downloads the 165 MB `tests/data/test_embeddings.json`, and the API-tool
-  tests write `api_tool_test_results.json` to the CWD. None are git-ignored.
+  tests write `api_tool_test_results.json` to the CWD. All but the two tracked credential files are
+  git-ignored.
 - **Ports.** Only host ports the fixture itself needs are published; Redis deliberately has none.
   Check `docker compose -f docker-compose-eval.yml config | grep published` against `ss -ltn`.
 - **No Ruuter/Resql in the eval stack.** Anything that resolves the production connection via
@@ -240,16 +241,17 @@ Everything below was learned the hard way; check it before debugging anything el
   answered). The API-tool deepeval tests score `tool_calls` and assert `workflow` instead of
   parsing the prose answer, which stopped being JSON in May 2026. Caveat: when the output
   guardrail blocks an answer, `handle_output_guardrails` builds a fresh replacement response, so
-  `tool_calls` is lost even though the API call itself happened (seen with the Estonian
-  intent-switch scenario); `workflow` survives because it is tagged afterwards.
+  `tool_calls` is carried over onto the replacement (fixed after the Estonian intent-switch
+  scenario exposed it); `retrieval_context` is not, and the `TestOrchestrationResponse` branch
+  carries neither; `workflow` is tagged afterwards on both shapes.
 - **Guardrails run on the base prompt.** The newest optimised guardrails module
   `src/optimization/optimized_modules/guardrails/guardrails_optimized_20260424_065431.json` is
   committed without its `_config.yaml` (the older three have one), so the loader logs "Optimized
   module found but no extracted config" and falls back to the base prompt in every environment
   that ships this image. A benign Estonian address answer was blocked by it in the eval.
-- **Service logs are truncated.** The fixture dumps only `docker logs --tail 200` per service at
-  teardown, which is far too little for a multi-turn agentic-loop run; raise it or dump to a file
-  when diagnosing loop behaviour.
+- **Service logs are truncated.** The fixture dumps `docker logs --tail 5000` for the orchestration
+  service (200 for the others) at teardown; 200 hid every agentic-loop diagnosis, so keep it high or
+  dump to a file when diagnosing loop behaviour.
 - **MinIO.** Docker Hub's `minio/minio` is no longer pullable; the eval compose uses
   `quay.io/minio/minio`. The other compose files and the Helm chart still reference Docker Hub.
 - **Diagnosing seeding failures.** Fixture output is loguru → stderr, captured per test and never
