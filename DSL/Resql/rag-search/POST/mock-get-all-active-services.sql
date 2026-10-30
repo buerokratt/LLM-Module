@@ -16,5 +16,6 @@ FROM
     public.services
 WHERE 
     current_state = 'active'
+    AND discoverable = true
 ORDER BY 
     name ASC;
