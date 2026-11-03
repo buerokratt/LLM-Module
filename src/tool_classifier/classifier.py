@@ -45,6 +45,10 @@ from tool_classifier.constants import (
 )
 
 from tool_classifier.sparse_encoder import SparseVector, compute_sparse_vector
+from tool_classifier.discoverable_services import (
+    fetch_discoverable_service_ids,
+    keep_discoverable,
+)
 from tool_classifier.api_semantic_searcher import (
     APISemanticSearcher,
     APIToolSearchResult,
@@ -283,6 +287,11 @@ class ToolClassifier:
                 top_k=DENSE_SEARCH_TOP_K,
             )
 
+            discoverable_ids = (
+                await fetch_discoverable_service_ids() if dense_results else set()
+            )
+            dense_results = keep_discoverable(dense_results, discoverable_ids)
+
             if not dense_results:
                 logger.info(
                     "No dense search results from intent_collections - trying API tools"
@@ -350,6 +359,7 @@ class ToolClassifier:
                 sparse_vector=query_sparse,
                 top_k=HYBRID_SEARCH_TOP_K,
             )
+            hybrid_results = keep_discoverable(hybrid_results, discoverable_ids)
 
             # Use hybrid results for service identification, dense scores for confidence
             if not hybrid_results:

@@ -41,6 +41,7 @@ from tool_classifier.constants import (
     SERVICE_STEP_PREFIXES,
 )
 from tool_classifier.intent_detector import IntentDetectionModule
+from tool_classifier.discoverable_services import filter_discoverable_services
 import time
 
 # Initialize Loki logger
@@ -232,6 +233,10 @@ class ServiceWorkflowExecutor(BaseWorkflow):
                         "similarity_score": score,
                     }
                     services.append(service)
+
+                services = await filter_discoverable_services(services)
+                if not services:
+                    return None
 
                 logger.info(
                     f"[{chat_id}] Found {len(services)} services via semantic search"
