@@ -1,6 +1,7 @@
 """Pydantic models for API requests and responses."""
 
 from typing import Any, Dict, List, Literal, Optional
+from uuid import UUID
 from pydantic import BaseModel, Field, field_validator, model_validator
 import json
 
@@ -137,6 +138,26 @@ class OrchestrationRequest(BaseModel):
                 f"Payload size validation skipped due to serialization error: {type(e).__name__}: {e}"
             )
         return self
+
+
+class StreamNotifyRequest(OrchestrationRequest):
+    """Streaming request delivered to a UUID chat on the notifications node."""
+
+    @field_validator("chatId")
+    @classmethod
+    def validate_chat_uuid(cls, value: str) -> str:
+        try:
+            chat_id = UUID(value)
+        except ValueError as exc:
+            raise ValueError("chatId must be a UUID v4") from exc
+        if chat_id.version != 4:
+            raise ValueError("chatId must be a UUID v4")
+        return str(chat_id)
+
+
+class StreamNotifyResponse(BaseModel):
+    chatId: str
+    requestId: str
 
 
 class DocumentReference(BaseModel):

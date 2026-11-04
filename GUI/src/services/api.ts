@@ -9,16 +9,6 @@ const instance = axios.create({
   withCredentials: true,
 });
 
-const notificationApiDev = axios.create({
-  baseURL: import.meta.env.REACT_APP_NOTIFICATION_NODE_URL,
-  headers: {
-    Accept: 'application/json',
-    'Content-Type': 'application/json',
-    'Cache-Control': 'no-cache, no-store, must-revalidate',
-  },
-  withCredentials: false,
-});
-
 instance.interceptors.response.use(
   (axiosResponse) => {
     return axiosResponse;
@@ -44,4 +34,3 @@ instance.interceptors.request.use(
 );
 
 export default instance;
-export { notificationApiDev };

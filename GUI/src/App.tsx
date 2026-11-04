@@ -11,13 +11,14 @@ import CreateLLMConnection from 'pages/LLMConnections/CreateLLMConnection';
 import ViewLLMConnection from 'pages/LLMConnections/ViewLLMConnection';
 import TestProductionLLM from 'pages/TestProductionLLM';
 import PromptConfigurations from 'pages/PromptConfigurations';
-import useTabCloseEffect from 'hooks/useTabCloseEffects';
+import { useNotificationsClient } from '@buerokratt-ria/notifications/react';
 
 const isLocal = import.meta.env.REACT_APP_LOCAL?.toLowerCase() === 'true';
 
 const App: FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const userId = useStore((state) => state.userId);
   const [hasRedirected, setHasRedirected] = useState(false);
 
   const { isLoading, data } = useQuery<{ response: UserInfo }>({
@@ -31,6 +32,13 @@ const App: FC = () => {
   });
 
   const userInfo = data?.response;
+  const { connect, disconnect } = useNotificationsClient();
+
+  useEffect(() => {
+    if (!userId) return;
+    connect();
+    return disconnect;
+  }, [userId, connect, disconnect]);
 
   useEffect(() => {
     if (!isLoading && userInfo && !hasRedirected && location.pathname === '/') {
@@ -46,8 +54,6 @@ const App: FC = () => {
     }
   }, [isLoading, userInfo, navigate, hasRedirected, location.pathname]);
 
-  useTabCloseEffect();
-  
   return (
     <>
       {isLoading ? (

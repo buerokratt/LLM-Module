@@ -26,7 +26,7 @@ services:
     image: ruuter
     environment:
       - application.cors.allowedOrigins=http://localhost:3001,http://localhost:3003,http://localhost:8088,http://localhost:3002,http://localhost:3004,http://localhost:8000
-      - application.httpCodesAllowList=200,201,202,400,401,403,500
+      - application.httpCodesAllowList=200,201,202,204,400,401,403,404,409,422,429,500,503
       - application.internalRequests.allowedIPs=127.0.0.1
       - application.logging.displayRequestContent=true
       - application.logging.displayResponseContent=true
@@ -65,8 +65,7 @@ services:
       tim-postgresql:
         condition: service_started
     environment:
-      - SECURITY_ALLOWLIST_JWT=ruuter-private,ruuter-public,data-mapper,resql,tim,tim-postgresql,chat-widget,authentication-layer,127.0.0.1,::1
-      - KEY_PASS=ppjjpp
+      - SECURITY_ALLOWLIST_JWT=ruuter-private,ruuter-public,data-mapper,resql,tim,tim-postgresql,chat-widget,authentication-layer,notifications-node,127.0.0.1,::1
     ports:
       - 8085:8085
     networks:
@@ -119,8 +118,9 @@ services:
       - REACT_APP_RUUTER_API_URL=http://localhost:8086/rag-search
       - REACT_APP_RUUTER_PRIVATE_API_URL=http://localhost:8088/rag-search
       - REACT_APP_AUTH_BASE_URL=http://localhost:8088/rag-search
-      - REACT_APP_NOTIFICATION_NODE_URL=http://localhost:4040
-      - REACT_APP_CSP=upgrade-insecure-requests; default-src 'self'; font-src 'self' data:; img-src 'self' data:; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; object-src 'none'; connect-src 'self' http://localhost:8086 http://localhost:8088 http://localhost:3004 http://localhost:3005 http://localhost:4040 https://vault-agent-gui:8202 ws://localhost https://est-rag-rtc.rootcode.software;
+      - REACT_APP_NOTIFICATION_NODE_URL=http://localhost:3010
+      - REACT_APP_NOTIFICATIONS_VAPID_PUBLIC_KEY=BGtr18_RnioZdJqSdhw3tHEKwklwzm-er3gnHWYolmx0GW-WhAhT-xu46acxbhRZN3_JTyqkFJPI8kFLkyONsGs
+      - REACT_APP_CSP=upgrade-insecure-requests; default-src 'self'; font-src 'self' data:; img-src 'self' data:; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; object-src 'none'; connect-src 'self' ${REACT_APP_NOTIFICATION_NODE_URL:-http://localhost:3010} http://localhost:8086 http://localhost:8088 http://localhost:3004 http://localhost:3005 https://vault-agent-gui:8202 ws://localhost https://est-rag-rtc.rootcode.software;
       - DEBUG_ENABLED=true
       - CHOKIDAR_USEPOLLING=true
       - PORT=3001
@@ -631,30 +631,66 @@ services:
     networks:
       - bykstack
 
+  notification-valkey:
+    image: valkey/valkey:8-alpine
+    command: ["valkey-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - bykstack
+
+  notification-rabbitmq:
+    image: rabbitmq:4.3-management-alpine
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - bykstack
+
   notifications-node:
-    container_name: notifications-node
-    build:
-      context: ./notification-server
-      dockerfile: Dockerfile
-    ports:
-      - 4040:4040
+    image: notifications-node
     depends_on:
-      - opensearch-node
+      notification-valkey:
+        condition: service_healthy
+      notification-rabbitmq:
+        condition: service_healthy
     environment:
-      OPENSEARCH_PROTOCOL: http
-      OPENSEARCH_HOST: opensearch-node
-      OPENSEARCH_PORT: 9200
-      OPENSEARCH_USERNAME: admin
-      OPENSEARCH_PASSWORD: admin
-      PORT: 4040
-      REFRESH_INTERVAL: 1000
-      QUEUE_REFRESH_INTERVAL: 4000
-      CORS_WHITELIST_ORIGINS: http://localhost:3001,http://localhost:3003,http://localhost:3004,http://localhost:8080,https://est-rag-rtc.rootcode.software
-      RUUTER_URL: http://ruuter-public:8086
-      CHAT_TERMINATION_DELAY: 5000
-    volumes:
-      - /app/node_modules
-      - ./notification-server:/app
+      NODE_ENV: development
+      API_CORS_ORIGIN: http://localhost:3003
+      API_DOCUMENTATION_ENABLED: "true"
+      API_PORT_PUBLIC: "3000"
+      API_PORT_PRIVATE: "3001"
+      PRIVATE_RUUTER_URL: http://ruuter-private:8088
+      TIM_URL: http://tim:8085
+      TIM_JWT_COOKIE_NAMES: chatJwt,customJwtCookie,customSmaxJwtCookie,userJwt
+      TIM_TOKEN_REVALIDATION_INTERVAL_MS: "5000"
+      RABBITMQ_URL: amqp://notification-rabbitmq:5672?heartbeat=30
+      RABBITMQ_PREFIX: development
+      VALKEY_HOST: notification-valkey
+      VALKEY_PORT: "6379"
+      VALKEY_USE_TLS: "false"
+      VALKEY_CONNECT_TIMEOUT_MS: "10000"
+      VALKEY_REQUEST_TIMEOUT_MS: "5000"
+      WEB_PUSH_VAPID_SUBJECT: mailto:notifications@example.com
+      WEB_PUSH_VAPID_PUBLIC_KEY: BGtr18_RnioZdJqSdhw3tHEKwklwzm-er3gnHWYolmx0GW-WhAhT-xu46acxbhRZN3_JTyqkFJPI8kFLkyONsGs
+      WEB_PUSH_VAPID_PRIVATE_KEY: sbbab246el5KZfUIKgmX_UTHDgvwpK4J2aAzbYKkoeU
+      WEB_PUSH_TTL_SECONDS: "86400"
+      WEB_PUSH_REQUEST_TIMEOUT_MS: "10000"
+      WEB_PUSH_CONCURRENCY: "20"
+      PRESENCE_LEASE_SECONDS: "45"
+      TERMINATION_GRACE_SECONDS: "10"
+      LIFECYCLE_POLL_INTERVAL_MS: "500"
+      LIFECYCLE_BATCH_SIZE: "20"
+      LIFECYCLE_ACTION_LEASE_SECONDS: "30"
+      LIFECYCLE_MAX_ATTEMPTS: "5"
+    ports:
+      - "3010:3000"
+      - "127.0.0.1:3011:3001"
     networks:
       - bykstack
 
