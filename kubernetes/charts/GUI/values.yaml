@@ -11,6 +11,9 @@ gui:
     port: 3001
     debugEnabled: true
     enableHiddenFeatures: false
+    notifications:
+      apiUrl: ""
+      vapidPublicKey: ""
     
     #service URLs 
     services:
@@ -20,7 +23,7 @@ gui:
       datasetGenerator: "http://dataset-gen-service:8000"
 
     # Content Security Policy - Updated for browser access
-    csp: "default-src 'self'; connect-src 'self' http://<your-domain>/ruuter-public http://<your-domain>/ruuter-private http://<your-domain> http://<your-domain> http://notifications-node:4040 http://notifications-node:4040 http://dataset-gen-service:8000 http://dataset-gen-service:8000 http://localhost:* http://localhost:* http://global-classifier.local http://global-classifier.local ws://global-classifier.local ws://global-classifier.local; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:;"    
+    csp: "default-src 'self'; connect-src 'self' http://<your-domain>/ruuter-public http://<your-domain>/ruuter-private http://<your-domain> http://<your-domain> http://dataset-gen-service:8000 http://dataset-gen-service:8000 http://localhost:* http://localhost:* http://global-classifier.local http://global-classifier.local ws://global-classifier.local ws://global-classifier.local; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:;"
     
     # Service configuration
     serviceId: "rag-search"

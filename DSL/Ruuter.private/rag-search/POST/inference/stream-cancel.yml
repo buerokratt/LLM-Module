@@ -1,0 +1,82 @@
+declaration:
+  call: declare
+  version: 0.1
+  description: "Cancel an LLM notification stream"
+  method: post
+  accepts: json
+  returns: json
+  namespace: rag-search
+  allowlist:
+    headers:
+      - field: cookie
+        type: string
+        description: "Authenticated session cookie"
+    body:
+      - field: requestId
+        type: string
+        description: "Stream request UUID"
+
+get_user:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_TIM]/jwt/custom-jwt-userinfo"
+    contentType: plaintext
+    headers:
+      cookie: ${incoming.headers.cookie}
+    plaintext: "customJwtCookie"
+  result: user_result
+  next: check_user
+
+check_user:
+  switch:
+    - condition: ${user_result.response.statusCodeValue == 200 && user_result.response.body != null && (user_result.response.body.authorities.includes('ROLE_ADMINISTRATOR') || user_result.response.body.authorities.includes('ROLE_MODEL_TRAINER'))}
+      next: validate_request
+  next: unauthorized
+
+validate_request:
+  switch:
+    - condition: ${incoming.body.requestId != null && incoming.body.requestId.length == 36}
+      next: cancel_stream
+  next: invalid_request
+
+cancel_stream:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_LLM_ORCHESTRATOR]/stream/notify/${encodeURIComponent(incoming.body.requestId)}/cancel"
+    headers:
+      cookie: ${incoming.headers.cookie}
+    body: {}
+  result: cancel_result
+  next: check_cancel_result
+
+check_cancel_result:
+  switch:
+    - condition: ${cancel_result.response.statusCodeValue == 204}
+      next: cancelled
+    - condition: ${cancel_result.response.statusCodeValue == 404}
+      next: not_found
+  next: upstream_error
+
+cancelled:
+  return: true
+  next: end
+
+unauthorized:
+  status: 401
+  return: "Authentication required"
+  next: end
+
+invalid_request:
+  status: 400
+  return: "Invalid request ID"
+  next: end
+
+not_found:
+  status: 404
+  return: "Stream not found"
+  next: end
+
+upstream_error:
+  status: 500
+  return: "Unable to cancel stream"
+  next: end
