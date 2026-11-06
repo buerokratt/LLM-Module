@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 from uuid import UUID, uuid4
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Dict
@@ -79,6 +80,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Startup
     logger.info("Starting LLM Orchestration Service API")
     app.state.notification_streams = {}
+    app.state.active_notification_chats = set()
 
     # nemoguardrails.actions.action_dispatcher logs every action it registers
     logging.getLogger("nemoguardrails.actions.action_dispatcher").setLevel(
@@ -154,7 +156,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     for entry in streams:
         entry["task"].cancel()
     if streams:
-        await asyncio.gather(*(entry["task"] for entry in streams), return_exceptions=True)
+        await asyncio.gather(
+            *(entry["task"] for entry in streams), return_exceptions=True
+        )
 
     # Await any in-flight incremental summary tasks to avoid lost work.
     store = getattr(app.state, "conversation_history_store", None)
@@ -791,47 +795,70 @@ async def stream_to_notifications(
     http_request: Request, request: StreamNotifyRequest
 ) -> StreamNotifyResponse:
     """Start the existing guarded stream and forward events in the background."""
-    cookie = http_request.headers.get("cookie")
-    if not cookie:
-        raise HTTPException(status_code=401, detail="Authentication cookie required")
     try:
-        base_url = os.environ.get("RAG_SEARCH_NOTIFICATIONS_NODE_PRIVATE") or get_constant(
+        base_url = os.environ.get(
             "RAG_SEARCH_NOTIFICATIONS_NODE_PRIVATE"
-        )
+        ) or get_constant("RAG_SEARCH_NOTIFICATIONS_NODE_PRIVATE")
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail="Notifications node is not configured") from exc
+        raise HTTPException(
+            status_code=503, detail="Notifications node is not configured"
+        ) from exc
 
     streams = getattr(http_request.app.state, "notification_streams", None)
     if streams is None:
         streams = http_request.app.state.notification_streams = {}
-    if any(entry["chat_id"] == request.chatId for entry in streams.values()):
-        raise HTTPException(status_code=409, detail="A stream is already active for this chat")
+    active_chats = getattr(http_request.app.state, "active_notification_chats", None)
+    if active_chats is None:
+        active_chats = http_request.app.state.active_notification_chats = set()
+    if request.chatId in active_chats:
+        raise HTTPException(
+            status_code=409, detail="A stream is already active for this chat"
+        )
 
-    streaming_response = await stream_orchestrated_response(http_request, request)
-    if streaming_response.status_code >= 400:
-        await streaming_response.body_iterator.aclose()
-        raise HTTPException(status_code=streaming_response.status_code, detail="Unable to start stream")
+    # Reserve synchronously before awaiting stream setup, so another request in
+    # this process cannot start a stream for the same chat in the meantime.
+    active_chats.add(request.chatId)
+    handed_off = False
+    try:
+        streaming_response = await stream_orchestrated_response(http_request, request)
+        if streaming_response.status_code >= 400:
+            aclose = getattr(streaming_response.body_iterator, "aclose", None)
+            if aclose is not None:
+                await aclose()
+            raise HTTPException(
+                status_code=streaming_response.status_code,
+                detail="Unable to start stream",
+            )
 
-    request_id = str(uuid4())
+        request_id = str(uuid4())
 
-    async def relay_stream() -> None:
-        async with aiohttp.ClientSession() as session:
-            publisher = NotificationPublisher(base_url, session)
-            await StreamRelay(publisher, request.chatId, request_id).run(streaming_response.body_iterator)
+        async def relay_stream() -> None:
+            async with aiohttp.ClientSession() as session:
+                publisher = NotificationPublisher(base_url, session)
+                await StreamRelay(publisher, request.chatId, request_id).run(
+                    streaming_response.body_iterator
+                )
 
-    task = asyncio.create_task(relay_stream())
-    streams[request_id] = {
-        "task": task,
-        "chat_id": request.chatId,
-    }
-    task.add_done_callback(lambda _: streams.pop(request_id, None))
-    return StreamNotifyResponse(chatId=request.chatId, requestId=request_id)
+        def cleanup_stream(_: asyncio.Task) -> None:
+            streams.pop(request_id, None)
+            active_chats.discard(request.chatId)
+
+        task = asyncio.create_task(relay_stream())
+        streams[request_id] = {"task": task, "chat_id": request.chatId}
+        task.add_done_callback(cleanup_stream)
+        handed_off = True
+        return StreamNotifyResponse(chatId=request.chatId, requestId=request_id)
+    finally:
+        if not handed_off:
+            active_chats.discard(request.chatId)
 
 
 @app.post("/orchestrate/stream/notify/{request_id}/cancel", status_code=204)
 async def cancel_notification_stream(http_request: Request, request_id: UUID) -> None:
     """Cancel an active notification stream by request ID."""
-    entry = getattr(http_request.app.state, "notification_streams", {}).get(str(request_id))
+    entry = getattr(http_request.app.state, "notification_streams", {}).get(
+        str(request_id)
+    )
     if not entry:
         raise HTTPException(status_code=404, detail="Stream not found")
     entry["task"].cancel()

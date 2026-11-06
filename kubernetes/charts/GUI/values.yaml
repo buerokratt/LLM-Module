@@ -13,7 +13,8 @@ gui:
     enableHiddenFeatures: false
     notifications:
       apiUrl: ""
-      vapidPublicKey: ""
+      # Must match the public key configured on the notifications service.
+      vapidPublicKey: "BGtr18_RnioZdJqSdhw3tHEKwklwzm-er3gnHWYolmx0GW-WhAhT-xu46acxbhRZN3_JTyqkFJPI8kFLkyONsGs"
     
     #service URLs 
     services:

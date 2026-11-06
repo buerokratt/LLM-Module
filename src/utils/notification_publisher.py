@@ -4,7 +4,7 @@ import asyncio
 import codecs
 import json
 import logging
-from typing import AsyncIterator, Protocol
+from typing import AsyncIterable, Protocol
 from uuid import uuid4
 
 import aiohttp
@@ -25,7 +25,9 @@ class NotificationPublisher:
         self._url = f"{base_url.rstrip('/')}/private/v1/notifications/events"
         self._session = session
 
-    async def publish(self, chat_id: str, event_type: str, payload: dict[str, object]) -> None:
+    async def publish(
+        self, chat_id: str, event_type: str, payload: dict[str, object]
+    ) -> None:
         event = {
             "eventUuid": str(uuid4()),
             "recipient": "CHAT",
@@ -34,7 +36,8 @@ class NotificationPublisher:
             "payload": payload,
         }
         async with self._session.post(
-            self._url, json=event,
+            self._url,
+            json=event,
             timeout=aiohttp.ClientTimeout(total=10),
         ) as response:
             response.raise_for_status()
@@ -50,20 +53,26 @@ class StreamRelay:
 
     async def _publish(self, event_type: str, **payload: object) -> None:
         await self.publisher.publish(
-            self.chat_id, event_type, {"channelId": self.chat_id, "requestId": self.request_id, **payload}
+            self.chat_id,
+            event_type,
+            {"channelId": self.chat_id, "requestId": self.request_id, **payload},
         )
 
-    async def run(self, body: AsyncIterator[str | bytes]) -> None:
+    async def run(self, body: AsyncIterable[str | bytes | memoryview]) -> None:
         buffer = ""
         decoder = codecs.getincrementaldecoder("utf-8")()
         try:
             await self._publish("stream_start")
             async for chunk in body:
-                buffer += decoder.decode(chunk) if isinstance(chunk, bytes) else chunk
+                buffer += chunk if isinstance(chunk, str) else decoder.decode(chunk)
                 buffer = buffer.replace("\r\n", "\n")
                 while "\n\n" in buffer:
                     frame, buffer = buffer.split("\n\n", 1)
-                    lines = [line[5:].lstrip() for line in frame.split("\n") if line.startswith("data:")]
+                    lines = [
+                        line[5:].lstrip()
+                        for line in frame.split("\n")
+                        if line.startswith("data:")
+                    ]
                     if not lines:
                         continue
                     content = json.loads("\n".join(lines))["payload"]
@@ -80,11 +89,17 @@ class StreamRelay:
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("Notification relay failed for request %s", self.request_id)
+            logger.exception(
+                "Notification relay failed for request %s", self.request_id
+            )
             try:
-                await self._publish("stream_error", error="Unable to complete the stream")
+                await self._publish(
+                    "stream_error", error="Unable to complete the stream"
+                )
             except Exception:
-                logger.exception("Could not publish stream error for request %s", self.request_id)
+                logger.exception(
+                    "Could not publish stream error for request %s", self.request_id
+                )
         finally:
             aclose = getattr(body, "aclose", None)
             if aclose is not None:

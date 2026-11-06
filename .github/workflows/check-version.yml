@@ -45,11 +45,6 @@ jobs:
           echo "Building Docker image for branch: ${{ env.BRANCH }} major: ${{ env.MAJOR }} minor: ${{ env.MINOR }} patch: ${{ env.PATCH }}"
           cd GUI && docker image build --tag $DOCKER_TAG_CUSTOM-gui -f Dockerfile.dev --no-cache .
 
-      - name: Build notification-server image
-        run: |
-          echo "Building Docker image for branch: ${{ env.BRANCH }} major: ${{ env.MAJOR }} minor: ${{ env.MINOR }} patch: ${{ env.PATCH }}"
-          cd notification-server && docker image build --tag $DOCKER_TAG_CUSTOM-notification-server --no-cache .
-
       - name: Build vault-init image
         run: |
           echo "Building Docker image for branch: ${{ env.BRANCH }} major: ${{ env.MAJOR }} minor: ${{ env.MINOR }} patch: ${{ env.PATCH }}"
@@ -63,9 +58,6 @@ jobs:
 
       - name: Push GUI image to GitHub Packages
         run: docker push $DOCKER_TAG_CUSTOM-gui
-
-      - name: Push notification-server image to GitHub Packages
-        run: docker push $DOCKER_TAG_CUSTOM-notification-server
 
       - name: Push vault-init image to GitHub Packages
         run: docker push $DOCKER_TAG_CUSTOM-vault-init
