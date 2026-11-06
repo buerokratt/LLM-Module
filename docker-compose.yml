@@ -66,6 +66,7 @@ services:
         condition: service_started
     environment:
       - SECURITY_ALLOWLIST_JWT=ruuter-private,ruuter-public,data-mapper,resql,tim,tim-postgresql,chat-widget,authentication-layer,notifications-node,127.0.0.1,::1
+      - KEY_PASS=ppjjpp
     ports:
       - 8085:8085
     networks:
@@ -678,7 +679,7 @@ services:
       VALKEY_REQUEST_TIMEOUT_MS: "5000"
       WEB_PUSH_VAPID_SUBJECT: mailto:notifications@example.com
       WEB_PUSH_VAPID_PUBLIC_KEY: BGtr18_RnioZdJqSdhw3tHEKwklwzm-er3gnHWYolmx0GW-WhAhT-xu46acxbhRZN3_JTyqkFJPI8kFLkyONsGs
-      WEB_PUSH_VAPID_PRIVATE_KEY: sbbab246el5KZfUIKgmX_UTHDgvwpK4J2aAzbYKkoeU
+      WEB_PUSH_VAPID_PRIVATE_KEY: ${WEB_PUSH_VAPID_PRIVATE_KEY:?Set WEB_PUSH_VAPID_PRIVATE_KEY in .env}
       WEB_PUSH_TTL_SECONDS: "86400"
       WEB_PUSH_REQUEST_TIMEOUT_MS: "10000"
       WEB_PUSH_CONCURRENCY: "20"
