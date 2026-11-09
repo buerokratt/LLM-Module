@@ -129,3 +129,16 @@ class IndexingResult(BaseModel):
     endpoint_id: str = Field(..., description="Endpoint UUID")
     message: str = Field(..., description="Result message")
     error: Optional[str] = Field(default=None, description="Error message if failed")
+    failed_step: Optional[str] = Field(
+        default=None,
+        description="Pipeline step that failed (one of IndexingStep values)",
+    )
+
+
+class IndexingStep:
+    """Pipeline step names reported in the status callback."""
+
+    ENRICHING = "ENRICHING"
+    EMBEDDING = "EMBEDDING"
+    QDRANT_DELETE = "QDRANT_DELETE"
+    QDRANT_UPSERT = "QDRANT_UPSERT"

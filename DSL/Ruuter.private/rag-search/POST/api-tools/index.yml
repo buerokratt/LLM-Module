@@ -11,6 +11,9 @@ declaration:
       - field: endpointId
         type: string
         description: "Unique endpoint identifier"
+      - field: attemptNo
+        type: number
+        description: "Optional. Service Module attempt number; when set, the result is sent to the Service Module callback"
       - field: serviceId
         type: string
         description: "Parent service ID"
@@ -47,11 +50,13 @@ extract_request_data:
     visibility: ${incoming.body.visibility || 'public'}
     type: ${incoming.body.type || 'custom_endpoint'}
     params: ${encodeURIComponent(JSON.stringify(incoming.body.params || []))}
+    attempt_no: "${incoming.body.attemptNo != null ? incoming.body.attemptNo : ''}"
+    raw_url: ${incoming.body.url}
   next: validate_required_fields
 
 validate_required_fields:
   switch:
-    - condition: "${!endpoint_id || !name || !description || !url}"
+    - condition: "${!endpoint_id || !name || !description || !raw_url}"
       next: return_missing_fields
   next: execute_indexing
 
@@ -70,6 +75,7 @@ execute_indexing:
     url: "[#RAG_SEARCH_CRON_MANAGER]/execute/api_tool_indexer/index_endpoint"
     query:
       endpoint_id: ${endpoint_id}
+      attempt_no: ${attempt_no}
       service_id: ${service_id}
       name: ${name}
       description: ${description}

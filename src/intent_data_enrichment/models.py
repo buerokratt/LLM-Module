@@ -60,3 +60,16 @@ class EnrichmentResult(BaseModel):
         None, description="Embedding vector dimension"
     )
     error: Optional[str] = Field(None, description="Error message if failed")
+    failed_step: Optional[str] = Field(
+        default=None,
+        description="Pipeline step that failed (one of EnrichmentStep values)",
+    )
+
+
+class EnrichmentStep:
+    """Pipeline step names reported in the status callback."""
+
+    ENRICHING = "ENRICHING"
+    EMBEDDING = "EMBEDDING"
+    QDRANT_DELETE = "QDRANT_DELETE"
+    QDRANT_UPSERT = "QDRANT_UPSERT"

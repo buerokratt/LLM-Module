@@ -1,0 +1,197 @@
+declaration:
+  call: declare
+  version: 0.1
+  description: "Validate an indexing result (ENDPOINT or SERVICE) and forward it to the Service Module callback"
+  method: post
+  accepts: json
+  returns: json
+  namespace: rag-search
+  allowlist:
+    body:
+      - field: entityType
+        type: string
+        description: "ENDPOINT or SERVICE"
+      - field: entityId
+        type: string
+        description: "Endpoint ID or service ID"
+      - field: attemptNo
+        type: number
+        description: "Service Module attempt number (0 is valid)"
+      - field: status
+        type: string
+        description: "SUCCESS or FAILED"
+      - field: failureReason
+        type: string
+        description: "Optional. Required when status is FAILED"
+
+# Conditions read incoming.body directly so a missing attemptNo stays null/undefined
+# (0 is a valid attemptNo, so it is never checked with !attemptNo).
+validate_request:
+  switch:
+    - condition: "${incoming.body.entityType !== 'ENDPOINT' && incoming.body.entityType !== 'SERVICE'}"
+      next: invalid_entity_type
+    - condition: "${!incoming.body.entityId}"
+      next: invalid_entity_id
+    - condition: "${incoming.body.attemptNo == null}"
+      next: invalid_attempt_no
+    - condition: "${incoming.body.status !== 'SUCCESS' && incoming.body.status !== 'FAILED'}"
+      next: invalid_status
+    - condition: "${incoming.body.status === 'FAILED' && !incoming.body.failureReason}"
+      next: invalid_failure_reason
+  next: extract_request_data
+
+invalid_entity_type:
+  assign:
+    error_message: "entityType must be ENDPOINT or SERVICE"
+  next: assign_invalid_callback
+
+invalid_entity_id:
+  assign:
+    error_message: "entityId is required"
+  next: assign_invalid_callback
+
+invalid_attempt_no:
+  assign:
+    error_message: "attemptNo is required"
+  next: assign_invalid_callback
+
+invalid_status:
+  assign:
+    error_message: "status must be SUCCESS or FAILED"
+  next: assign_invalid_callback
+
+invalid_failure_reason:
+  assign:
+    error_message: "failureReason is required when status is FAILED"
+  next: assign_invalid_callback
+
+assign_invalid_callback:
+  assign:
+    error_data: {
+      success: false,
+      error: "INVALID_CALLBACK",
+      message: "${error_message}"
+    }
+  next: return_bad_request
+
+extract_request_data:
+  assign:
+    entity_type: ${incoming.body.entityType}
+    entity_id: ${incoming.body.entityId}
+    attempt_no: ${incoming.body.attemptNo}
+    status: ${incoming.body.status}
+    failure_reason: ${incoming.body.failureReason}
+  next: get_new_nonce
+
+# The Service Module's llm/.guard accepts service-to-service calls with a one-time
+# x-ruuter-nonce header (same pattern as Buerokratt-Chatbot trigger-service.yml).
+# The nonce is created in request_nonces in the shared database; the Service Module
+# consumes it with use-nonce. A fresh nonce is created on every call, so script retries work.
+get_new_nonce:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_RESQL]/get-new-nonce"
+  result: nonce_res
+  on_error: handle_nonce_error
+  next: check_nonce
+
+check_nonce:
+  switch:
+    - condition: ${nonce_res.response.body != null && nonce_res.response.body.length > 0 && nonce_res.response.body[0].nonce != null}
+      next: select_forward
+  next: handle_nonce_error
+
+handle_nonce_error:
+  log: "ERROR: Could not create a nonce for the indexing callback of ${entity_type} ${entity_id} (attempt ${attempt_no})"
+  assign:
+    response_data:
+      success: false
+      error: "CALLBACK_NONCE_FAILED"
+      details: "Could not create a request nonce"
+  next: return_bad_gateway
+
+# Ruuter's http.post cannot send a field whose value is null (NullPointerException),
+# and it drops null fields from incoming.body. So SUCCESS is forwarded without
+# failureReason, FAILED with it.
+select_forward:
+  switch:
+    - condition: "${status === 'FAILED'}"
+      next: forward_failed
+  next: forward_success
+
+forward_success:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_RUUTER_PUBLIC_INTERNAL_SERVICE]/llm/index-callback"
+    headers:
+      x-ruuter-nonce: ${nonce_res.response.body[0].nonce}
+    body:
+      entityType: ${entity_type}
+      entityId: ${entity_id}
+      attemptNo: ${attempt_no}
+      status: ${status}
+  result: forward_result
+  on_error: handle_forward_error
+  next: check_forward_response
+
+forward_failed:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_RUUTER_PUBLIC_INTERNAL_SERVICE]/llm/index-callback"
+    headers:
+      x-ruuter-nonce: ${nonce_res.response.body[0].nonce}
+    body:
+      entityType: ${entity_type}
+      entityId: ${entity_id}
+      attemptNo: ${attempt_no}
+      status: ${status}
+      failureReason: ${failure_reason}
+  result: forward_result
+  on_error: handle_forward_error
+  next: check_forward_response
+
+check_forward_response:
+  switch:
+    - condition: ${200 <= forward_result.response.statusCodeValue && forward_result.response.statusCodeValue < 300}
+      next: assign_success
+  next: handle_forward_bad_status
+
+handle_forward_bad_status:
+  log: "ERROR: Indexing callback forward failed for ${entity_type} ${entity_id} (attempt ${attempt_no}) - HTTP ${forward_result.response.statusCodeValue}"
+  assign:
+    response_data:
+      success: false
+      error: "CALLBACK_FORWARD_FAILED"
+      details: "Service Module returned HTTP ${forward_result.response.statusCodeValue}"
+  next: return_bad_gateway
+
+handle_forward_error:
+  log: "ERROR: Indexing callback forward failed for ${entity_type} ${entity_id} (attempt ${attempt_no}) - ${forward_result.error || 'Service Module unreachable'}"
+  assign:
+    response_data:
+      success: false
+      error: "CALLBACK_FORWARD_FAILED"
+      details: ${forward_result.error || 'Service Module unreachable'}
+  next: return_bad_gateway
+
+assign_success:
+  assign:
+    response_data:
+      success: true
+  next: return_ok
+
+return_ok:
+  status: 200
+  return: ${response_data}
+  next: end
+
+return_bad_request:
+  status: 400
+  return: ${error_data}
+  next: end
+
+# A failed forward returns a 5xx (a bare 500 in this Ruuter build), so curl retries it.
+return_bad_gateway:
+  status: 502
+  return: ${response_data}
+  next: end

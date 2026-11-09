@@ -38,6 +38,9 @@ class QdrantManager:
         self.url = url
         self.collection_name = collection_name
         self.client: Optional[QdrantClient] = None
+        # Error text of the last failed delete/upsert (those return False
+        # instead of raising), so callers can report the real reason.
+        self.last_error: Optional[str] = None
 
     def connect(self) -> None:
         """Connect to Qdrant."""
@@ -168,6 +171,7 @@ class QdrantManager:
         Returns:
             True if successful, False otherwise
         """
+        self.last_error = None
         try:
             if not self.client:
                 raise RuntimeError(_CLIENT_NOT_INITIALIZED)
@@ -195,6 +199,7 @@ class QdrantManager:
 
         except Exception as e:
             logger.error(f"Failed to delete points for service '{service_id}': {e}")
+            self.last_error = f"{type(e).__name__}: {e}"
             return False
 
     def upsert_service_points(self, enriched_points: List[EnrichedService]) -> bool:
@@ -209,6 +214,7 @@ class QdrantManager:
         Returns:
             True if all points upserted successfully, False otherwise
         """
+        self.last_error = None
         try:
             if not self.client:
                 raise RuntimeError(_CLIENT_NOT_INITIALIZED)
@@ -279,6 +285,7 @@ class QdrantManager:
 
         except Exception as e:
             logger.error(f"Failed to upsert service points: {e}")
+            self.last_error = f"{type(e).__name__}: {e}"
             return False
 
     def upsert_service(self, enriched_service: EnrichedService) -> bool:

@@ -1642,10 +1642,12 @@ Returned when the data hash was updated but the CronManager call that starts the
 
 ### Endpoint
 ```http
-POST /ruuter-public/rag-search/api-tools/index
+POST /ruuter-private/rag-search/api-tools/index
 ```
 
 Queues an API tool endpoint for vector indexing in Qdrant via CronManager (async).
+
+Called by the Service Module through **ruuter-private** (no auth: the folder's own `.guard` allows all requests, overriding the cookie + TIM check in `POST/.guard`).
 
 ### Request Body
 ```json
@@ -1675,6 +1677,7 @@ Queues an API tool endpoint for vector indexing in Qdrant via CronManager (async
 | `visibility` | string | No | `"public"` or `"private"` (default: `"public"`) |
 | `type` | string | No | Endpoint type (default: `"custom_endpoint"`) |
 | `params` | array | No | List of parameters |
+| `attemptNo` | number | No | Service Module attempt number (`0` is valid). When set, the job result is sent back to the Service Module (see section 5) |
 
 ### Response (200 OK)
 ```json
@@ -1709,10 +1712,12 @@ Queues an API tool endpoint for vector indexing in Qdrant via CronManager (async
 
 ### Endpoint
 ```http
-POST /ruuter-public/rag-search/services/enrich
+POST /ruuter-private/rag-search/services/enrich
 ```
 
 Queues a service for enrichment and Qdrant indexing via CronManager (async).
+
+Called by the Service Module through **ruuter-private** (no auth: the folder's own `.guard` allows all requests, overriding the cookie + TIM check in `POST/.guard`).
 
 ### Request Body
 ```json
@@ -1739,6 +1744,7 @@ Queues a service for enrichment and Qdrant indexing via CronManager (async).
 | `ruuter_type` | string | No | HTTP method (default: `"GET"`) |
 | `current_state` | string | No | `"active"`, `"inactive"`, or `"draft"` (default: `"draft"`) |
 | `is_common` | boolean | No | Whether this is a common service (default: `false`) |
+| `attemptNo` | number | No | Service Module attempt number (`0` is valid). When set, the job result is sent back to the Service Module (see section 5) |
 
 ### Response (200 OK)
 ```json
@@ -1768,3 +1774,79 @@ Queues a service for enrichment and Qdrant indexing via CronManager (async).
 ```
 
 ---
+---
+
+## 5. Indexing Result Callback
+
+### Endpoint
+```http
+POST /ruuter-private/rag-search/indexing/callback
+```
+
+Called by the CronManager jobs (`api_tool_indexer.sh`, `service_enrichment.sh`) when a job started with an `attemptNo` finishes. It validates the result and forwards it to the Service Module (`POST /services/llm/index-callback`). One endpoint for both entity types.
+
+Served by **ruuter-private** (no auth: the folder's own `.guard` allows all requests, because the scripts have no user cookie). The script retries a `5xx` response 3 times (`curl --retry 3`).
+
+### Request Body
+```json
+{
+  "entityType": "ENDPOINT",
+  "entityId": "ep-001",
+  "attemptNo": 1,
+  "status": "FAILED",
+  "failureReason": "Failed at EMBEDDING: RuntimeError: 503 Service Unavailable"
+}
+```
+
+### Request Parameters
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `entityType` | string | Yes | `"ENDPOINT"` (API tool indexing) or `"SERVICE"` (service enrichment) |
+| `entityId` | string | Yes | Endpoint ID or service ID |
+| `attemptNo` | number | Yes | The `attemptNo` from the indexing request (`0` is valid) |
+| `status` | string | Yes | `"SUCCESS"` or `"FAILED"` |
+| `failureReason` | string | When `FAILED` | `Failed at <STEP>: <error>` (`ENRICHING`, `EMBEDDING`, `QDRANT_DELETE`, `QDRANT_UPSERT`), or the reason the script stopped. Not forwarded for `SUCCESS` |
+
+### Nonce (call to the Service Module)
+The Service Module's `llm/.guard` accepts calls without a user cookie only when they carry a one-time `x-ruuter-nonce` header. Before forwarding, the DSL creates a nonce with Resql `get-new-nonce` (inserts into `request_nonces`, valid for 1 day) and sends it in that header. The Service Module consumes it with `use-nonce`, so each nonce works once; a new one is created on every call, so retries work. RAG and the Service Module must use the same database for `request_nonces`.
+
+Calls **into** RAG (`api-tools/index`, `services/enrich`, `indexing/callback`) need no nonce: ruuter-private is only reachable inside the stack.
+
+**Where `request_nonces` comes from**
+
+RAG does not create this table. It is created by the Buerokratt-Chatbot migration `DSL/Liquibase/changelog/20250211084322-add-request-nonces.sql` in the shared BYK database, and the Service Module uses the same table. In the BYK stack nothing extra is needed.
+
+**Local testing**
+
+- **Indexing without `attemptNo`**: no callback is sent, so no nonce is needed.
+- **Indexing with `attemptNo`, no Service Module running**: indexing works; the callback then fails (no table or no receiver), the script retries and logs it. The job result is not affected.
+- **Callback to the real Service Module, separate local databases**: the Service Module only accepts nonces from its own database. Temporarily point the `get_new_nonce` step in `indexing/callback.yml` to `http://sm-resql:8087/services/get-new-nonce` and restart ruuter-private. **Do not commit this change.** If both modules use one database, no change is needed.
+- **Callback to a mock Service Module**: create the table in RAG's local database (same definition as the Chatbot migration):
+  ```sql
+  CREATE TABLE IF NOT EXISTS request_nonces(
+          nonce varchar(36) DEFAULT (gen_random_uuid()),
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT (now()),
+          valid_until TIMESTAMP WITH TIME ZONE,
+          used_at TIMESTAMP );
+  ```
+
+### Response (200 OK)
+Returned when the Service Module answered `2xx`.
+```json
+{
+  "success": true
+}
+```
+
+### Response (400 Bad Request)
+Not retried.
+```json
+{
+  "success": false,
+  "error": "INVALID_CALLBACK",
+  "message": "status must be SUCCESS or FAILED"
+}
+```
+
+### Response (500 Internal Server Error)
+Returned when the nonce cannot be created or the Service Module is unreachable or answers non-`2xx`. Ruuter aborts the flow and returns an empty `500`; the script retries, then logs the failure in CronManager.
