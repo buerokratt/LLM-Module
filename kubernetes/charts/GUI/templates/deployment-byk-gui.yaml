@@ -89,6 +89,8 @@ spec:
           value: {{ .Values.gui.csp | quote }}
         - name: REACT_APP_SERVICE_ID
           value: {{ .Values.gui.serviceId | quote }}
+        - name: REACT_APP_MENU_JSON
+          value: {{ .Values.gui.menuJson | quote }}
         - name: REACT_APP_ENABLE_HIDDEN_FEATURES
           value: {{ .Values.gui.enableHiddenFeatures | quote | upper }}
         
