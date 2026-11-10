@@ -1,0 +1,7 @@
+# Overrides POST/.guard (cookie + TIM role check) for this folder only.
+# indexing/callback.yml is called by CronManager job scripts, which have no
+# user cookie, so every request is allowed here.
+guard_allow_all:
+  return: "success"
+  status: 200
+  next: end

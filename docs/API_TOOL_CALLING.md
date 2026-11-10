@@ -76,7 +76,7 @@ User (GUI)
 
 ### Trigger: `POST /rag-search/api-tools/index`
 
-Defined in [DSL/Ruuter.public/rag-search/POST/api-tools/index.yml](../DSL/Ruuter.public/rag-search/POST/api-tools/index.yml).
+Defined in [DSL/Ruuter.private/rag-search/POST/api-tools/index.yml](../DSL/Ruuter.private/rag-search/POST/api-tools/index.yml). Served by ruuter-private; `api-tools/.guard` allows all requests, since the Service Module calls it without a user cookie.
 
 **Request body** (sent from Postman while no UI exists):
 
@@ -99,6 +99,9 @@ Defined in [DSL/Ruuter.public/rag-search/POST/api-tools/index.yml](../DSL/Ruuter
 }
 ```
 
+The Service Module also sends an optional `attemptNo` (number). When it is set, the job
+result is reported back to the Service Module (see *Result callback* below).
+
 Ruuter URL-encodes `params` (JSON array → `encodeURIComponent`) and forwards everything to
 CronManager via:
 
@@ -118,7 +121,7 @@ index_endpoint:
   trigger: off         # Not scheduled — on-demand only
   type: exec
   command: "/app/scripts/api_tool_indexer.sh"
-  allowedEnvs: ['endpoint_id', 'service_id', 'name', 'description',
+  allowedEnvs: ['endpoint_id', 'attempt_no', 'service_id', 'name', 'description',
                  'method', 'url', 'visibility', 'type', 'params']
 ```
 
@@ -141,8 +144,26 @@ Defined in [DSL/CronManager/script/api_tool_indexer.sh](../DSL/CronManager/scrip
 5. URL-decodes the `params` env var back to a JSON array and writes it to a temp file
 6. Invokes `main_indexer.py` with CLI args (avoids shell parsing issues with JSON)
 7. Cleans up the temp file; exits with the Python exit code
+8. If `attempt_no` is set, an `EXIT` trap sends the result (`SUCCESS` / `FAILED` with the
+   failure reason) to the result callback below
 
+---
 
+### Result callback: `POST /rag-search/indexing/callback`
+
+Defined in [DSL/Ruuter.private/rag-search/POST/indexing/callback.yml](../DSL/Ruuter.private/rag-search/POST/indexing/callback.yml)
+and shared with service enrichment (`entityType` `ENDPOINT` or `SERVICE`).
+
+```
+api_tool_indexer.sh  →  ruuter-private /rag-search/indexing/callback   (no auth, curl --retry 3)
+callback.yml         →  Service Module /services/llm/index-callback    (x-ruuter-nonce header)
+```
+
+The DSL validates the body (`400 INVALID_CALLBACK` if invalid), creates a one-time nonce
+with Resql `get-new-nonce` (shared `request_nonces` table), and forwards the result with
+that nonce in the `x-ruuter-nonce` header, which the Service Module's `llm/.guard` requires
+for calls without a user cookie. `failureReason` is left out for `SUCCESS`. Body and
+responses: [API_REFERENCE.md, section 5](API_REFERENCE.md#5-indexing-result-callback).
 
 ---
 

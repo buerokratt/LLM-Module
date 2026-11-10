@@ -22,17 +22,24 @@ Pipeline steps:
     8. Return IndexingResult
 """
 
+import os
 import re
 import sys
 import json
 import asyncio
 import argparse
-from typing import List
+import tempfile
+from typing import List, Optional, Sequence, Tuple
 
 from src.loki_logger import LokiLogger
 
 from api_tool_indexer.constants import ApiToolIndexerConstants
-from api_tool_indexer.models import EndpointData, EnrichedEndpoint, IndexingResult
+from api_tool_indexer.models import (
+    EndpointData,
+    EnrichedEndpoint,
+    IndexingResult,
+    IndexingStep,
+)
 from api_tool_indexer.qdrant_manager import ApiToolQdrantManager
 
 # Reuse LLMAPIClient from intent_data_enrichment.
@@ -50,7 +57,6 @@ except ImportError:
             "attempting direct import"
         )
         import importlib.util
-        import os
 
         module_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -259,9 +265,12 @@ async def index_endpoint(endpoint_data: EndpointData) -> IndexingResult:
         endpoint_data: Raw endpoint data from mock_endpoints table.
 
     Returns:
-        IndexingResult indicating success or failure with details.
+        IndexingResult indicating success or failure with details. On failure,
+        ``failed_step`` names the step that failed (see IndexingStep).
     """
     endpoint_id = endpoint_data.endpoint_id
+    # Updated as the pipeline moves on, so any exception can be tied to a step.
+    current_step = IndexingStep.ENRICHING
     logger.info(
         f"Starting indexing pipeline for endpoint '{endpoint_id}' "
         f"(name='{endpoint_data.name}')"
@@ -296,6 +305,7 @@ async def index_endpoint(endpoint_data: EndpointData) -> IndexingResult:
                 )
 
             # Step 3: Embed each example query individually → example points
+            current_step = IndexingStep.EMBEDDING
             logger.info(
                 f"Step 3/4: Creating embeddings for {len(example_queries)} example points"
             )
@@ -361,6 +371,7 @@ async def index_endpoint(endpoint_data: EndpointData) -> IndexingResult:
         )
 
         # Qdrant operations — separate block so the connection is always closed
+        current_step = IndexingStep.QDRANT_DELETE
         qdrant = ApiToolQdrantManager()
         try:
             qdrant.connect()
@@ -378,8 +389,10 @@ async def index_endpoint(endpoint_data: EndpointData) -> IndexingResult:
                     endpoint_id=endpoint_id,
                     message="Qdrant delete failed before upsert",
                     error="delete_endpoint_points returned False",
+                    failed_step=IndexingStep.QDRANT_DELETE,
                 )
 
+            current_step = IndexingStep.QDRANT_UPSERT
             upserted = qdrant.upsert_endpoint_points(enriched_points)
         finally:
             qdrant.close()
@@ -404,21 +417,64 @@ async def index_endpoint(endpoint_data: EndpointData) -> IndexingResult:
                 success=False,
                 endpoint_id=endpoint_id,
                 message="Qdrant upsert failed",
-                error="upsert_endpoint_points returned False",
+                error=(
+                    "upsert_endpoint_points returned False. The old index for this "
+                    "endpoint was removed and the new one was not written."
+                ),
+                failed_step=IndexingStep.QDRANT_UPSERT,
             )
 
     except Exception as e:
-        logger.error(f"Indexing pipeline failed for endpoint '{endpoint_id}': {e}")
+        error = _describe_error(e)
+        if current_step == IndexingStep.QDRANT_UPSERT:
+            error += (
+                " The old index for this endpoint was removed and the new one "
+                "was not written."
+            )
+        logger.error(
+            f"Indexing pipeline failed for endpoint '{endpoint_id}' "
+            f"at step {current_step}: {error}"
+        )
         return IndexingResult(
             success=False,
             endpoint_id=endpoint_id,
-            message="Indexing pipeline failed with an unexpected error",
-            error=str(e),
+            message=f"Indexing pipeline failed at step {current_step}",
+            error=error,
+            failed_step=current_step,
         )
 
 
-def parse_arguments() -> EndpointData:
-    """Parse command line arguments into EndpointData model."""
+def _describe_error(e: BaseException) -> str:
+    """Return a non-empty error message (some exceptions have an empty str())."""
+    text = str(e).strip()
+    return f"{type(e).__name__}: {text}" if text else type(e).__name__
+
+
+def write_result_file(path: str, result: dict) -> None:
+    """Write the result JSON atomically, so the shell never reads a half file.
+
+    Errors are logged and swallowed: a missing result file is handled by the
+    shell script (it falls back to the log tail), and must never change the
+    indexer's exit code.
+    """
+    try:
+        directory = os.path.dirname(os.path.abspath(path))
+        fd, tmp_path = tempfile.mkstemp(dir=directory, suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False)
+        os.replace(tmp_path, path)
+    except Exception as e:
+        logger.error(f"Failed to write result file '{path}': {e}")
+
+
+def parse_arguments(
+    argv: Optional[Sequence[str]] = None,
+) -> Tuple[EndpointData, Optional[str], Optional[int]]:
+    """Parse command line arguments.
+
+    Returns:
+        (EndpointData, result_file path or None, attempt_no or None)
+    """
     parser = argparse.ArgumentParser(description="API Tool Indexing")
     parser.add_argument("--endpoint-id", type=str, required=True, help="Endpoint ID")
     parser.add_argument("--name", type=str, required=True, help="Endpoint name")
@@ -433,8 +489,19 @@ def parse_arguments() -> EndpointData:
         "--type", type=str, default="custom_endpoint", help="Endpoint type"
     )
     parser.add_argument("--params-file", type=str, help="Path to params JSON file")
+    parser.add_argument(
+        "--result-file",
+        type=str,
+        help="Where to write {success, step, error} JSON for the status callback",
+    )
+    parser.add_argument(
+        "--attempt-no",
+        type=int,
+        default=None,
+        help="Service Module attempt number (logged and written to the result file)",
+    )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # Read and parse JSON array from file
     params = []
@@ -447,7 +514,7 @@ def parse_arguments() -> EndpointData:
         except (FileNotFoundError, json.JSONDecodeError) as e:
             logger.warning(f"Failed to read/parse params file: {e}")
 
-    return EndpointData(
+    endpoint_data = EndpointData(
         endpoint_id=args.endpoint_id,
         service_id=args.service_id,
         name=args.name,
@@ -458,17 +525,45 @@ def parse_arguments() -> EndpointData:
         type=args.type,
         params=params,
     )
+    return endpoint_data, args.result_file, args.attempt_no
 
 
-def main() -> int:
-    """Main entry point for API tool indexing via CLI."""
+def _find_result_file_arg(argv: Sequence[str]) -> Optional[str]:
+    """Pick --result-file out of raw argv.
+
+    Used so the result file can still be written when argparse or the
+    EndpointData validation fails (before parse_arguments returns).
+    """
+    for i, arg in enumerate(argv):
+        if arg == "--result-file" and i + 1 < len(argv):
+            return argv[i + 1]
+        if arg.startswith("--result-file="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """Main entry point for API tool indexing via CLI.
+
+    Whatever happens, if --result-file was given, a JSON file
+    ``{success, step, error, message}`` is written on the way out (``finally``),
+    so api_tool_indexer.sh can report the exact outcome in its status callback.
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    result_file = _find_result_file_arg(argv)
+    result: Optional[IndexingResult] = None
+    attempt_no: Optional[int] = None
+    fatal_error: Optional[str] = None
+    exit_code = 1
+
     logger.info("Starting API Tool indexing pipeline...")
 
     try:
         # Parse arguments
-        endpoint_data = parse_arguments()
+        endpoint_data, result_file, attempt_no = parse_arguments(argv)
         logger.info(f"Endpoint ID: {endpoint_data.endpoint_id}")
         logger.info(f"Endpoint Name: {endpoint_data.name}")
+        logger.info(f"Attempt No: {attempt_no}")
         logger.info(f"Params count: {len(endpoint_data.params)}")
 
         # Run indexing pipeline
@@ -479,17 +574,45 @@ def main() -> int:
             logger.success("Indexing completed successfully")
             logger.info(f"Endpoint: {result.endpoint_id}")
             logger.info(f"Message: {result.message}")
-            return 0
+            exit_code = 0
         else:
             logger.error("Indexing failed")
             logger.error(f"Endpoint: {result.endpoint_id}")
+            logger.error(f"Step: {result.failed_step}")
             logger.error(f"Message: {result.message}")
             logger.error(f"Error: {result.error}")
-            return 1
+            exit_code = 1
 
+    except SystemExit as e:
+        # argparse exits with code 2 on bad arguments
+        fatal_error = f"Invalid arguments (exit code {e.code})"
+        exit_code = e.code if isinstance(e.code, int) and e.code != 0 else 1
+        logger.error(f"Fatal error: {fatal_error}")
     except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        return 1
+        fatal_error = _describe_error(e)
+        exit_code = 1
+        logger.error(f"Fatal error: {fatal_error}")
+    finally:
+        if result_file:
+            if result is not None:
+                payload = {
+                    "success": result.success,
+                    "step": result.failed_step,
+                    "error": result.error,
+                    "message": result.message,
+                    "attemptNo": attempt_no,
+                }
+            else:
+                payload = {
+                    "success": False,
+                    "step": None,
+                    "error": fatal_error or "Indexer exited before producing a result",
+                    "message": "Indexer failed before the pipeline started",
+                    "attemptNo": attempt_no,
+                }
+            write_result_file(result_file, payload)
+
+    return exit_code
 
 
 if __name__ == "__main__":
