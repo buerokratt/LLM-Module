@@ -337,7 +337,15 @@
       "replaceProductionDialogMessage": "A production connection \"{{connectionName}}\" already exists.",
       "replaceProductionDialogWarning": "Creating this new production connection will replace the current one. Are you sure you want to proceed?",
       "cancelButton": "Cancel",
-      "confirmReplaceButton": "Yes, replace production connection"
+      "confirmReplaceButton": "Yes, replace production connection",
+      "errors": {
+        "save": "The connection could not be saved. Nothing was created. Please try again.",
+        "vault": "The connection credentials could not be stored securely, so the connection was not created. Please try again.",
+        "vaultRollbackFailed": "The connection credentials could not be stored securely, and the incomplete connection could not be removed. Please delete it from the LLM connections list.",
+        "promoteTitle": "Connection created as testing",
+        "promote": "The connection was created as a testing connection, but it could not be switched to production. Open the connection and set its environment to production.",
+        "noProductionConnection": "No production connection is currently active. Set a connection to production in the LLM connections list."
+      }
     },
     "viewConnection": {
       "updateSuccessTitle": "Connection update succeeded",
