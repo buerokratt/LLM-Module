@@ -19,11 +19,6 @@ jobs:
         with:
           version: "0.8.15"
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version-file: '.python-version'
-
       # The authoritative guard: MUST match uv.lock and Python markers
       - name: Sync (frozen)
         run: uv sync --frozen
