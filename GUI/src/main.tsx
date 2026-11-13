@@ -17,6 +17,13 @@ import 'styles/main.scss';
 import '../i18n';
 import { CookiesProvider } from 'react-cookie';
 import { DialogProvider } from 'context/DialogContext';
+import { createNotificationsClient } from '@buerokratt-ria/notifications';
+import { NotificationsProvider } from '@buerokratt-ria/notifications/react';
+
+const notificationsClient = createNotificationsClient({
+  apiBaseUrl: import.meta.env.REACT_APP_NOTIFICATION_NODE_URL,
+  vapidPublicKey: import.meta.env.REACT_APP_NOTIFICATIONS_VAPID_PUBLIC_KEY,
+});
 
 const isLocal = import.meta.env.REACT_APP_LOCAL?.toLowerCase() === 'true';
 
@@ -48,6 +55,7 @@ const queryClient = new QueryClient({
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
+    <NotificationsProvider client={notificationsClient}>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter basename={import.meta.env.BASE_URL}>
         <DialogProvider>
@@ -59,5 +67,6 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
         </DialogProvider>
       </BrowserRouter>
     </QueryClientProvider>
+    </NotificationsProvider>
   </React.StrictMode>
 );

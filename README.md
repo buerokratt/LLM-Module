@@ -67,6 +67,39 @@ For the full picture — container and component (C4) diagrams plus the request 
 
 ### Run the stack
 
+Before starting Docker Compose, add the local development VAPID private key to
+the root `.env` file. This example key matches the public key in
+`docker-compose.yml` and is intended only for local development:
+
+```dotenv
+WEB_PUSH_VAPID_PRIVATE_KEY=sbbab246el5KZfUIKgmX_UTHDgvwpK4J2aAzbYKkoeU # gitleaks:allow -- local development example
+```
+
+Build the local image from the [notifications-node repository](https://github.com/buerokratt/notifications-node).
+Select the latest `v*.*.*` branch or `main`:
+
+```bash
+git clone https://github.com/buerokratt/notifications-node.git
+cd notifications-node
+git checkout <branch>
+cd api
+docker build -t notifications-node .
+```
+
+To generate your own VAPID key pair, run the following from the
+`notifications-node` repository root (requires Node.js):
+
+```bash
+./scripts/generate-vapid-keys.sh
+```
+
+Set the generated `WEB_PUSH_VAPID_PRIVATE_KEY` in the LLM Module's `.env` file.
+Replace both `WEB_PUSH_VAPID_PUBLIC_KEY` and
+`REACT_APP_NOTIFICATIONS_VAPID_PUBLIC_KEY` in `docker-compose.yml` with the
+generated public key so the notifications service and GUI use the same pair.
+
+Then return to the LLM Module directory and start the stack:
+
 ```bash
 # Start the full stack (orchestration service + data stores + tooling)
 docker compose up -d
@@ -109,7 +142,6 @@ Configuration is supplied through environment files at the repository root:
 | `.env` | Shared infrastructure (storage, databases, Redis, Vault, feature flags) |
 | `.env.llm_orchestration_service` | LLM Orchestration Service |
 | `.env.gui` | Admin GUI |
-| `.env.notification` | Notification server |
 
 Feature flags such as `TOOL_CLASSIFIER_ENABLED`, `SERVICE_WORKFLOW_ENABLED`,
 `CONTEXT_WORKFLOW_ENABLED`, and `API_TOOL_CALLING_WORKFLOW_ENABLED` toggle individual workflows.
