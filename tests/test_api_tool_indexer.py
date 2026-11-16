@@ -427,3 +427,236 @@ class TestIndexEndpoint:
 
         assert result.success is False
         assert result.endpoint_id == "ep-holidays"
+
+
+# ---------------------------------------------------------------------------
+# Step tracking (failed_step) and the --result-file output
+# ---------------------------------------------------------------------------
+
+
+def _make_qdrant(
+    delete_ok: bool = True,
+    upsert_ok: bool = True,
+    raise_on_connect: Optional[Exception] = None,
+    raise_on_upsert: Optional[Exception] = None,
+) -> MagicMock:
+    qdrant = MagicMock()
+    qdrant.connect = MagicMock(side_effect=raise_on_connect)
+    qdrant.ensure_collection = MagicMock()
+    qdrant.delete_endpoint_points = MagicMock(return_value=delete_ok)
+    if raise_on_upsert:
+        qdrant.upsert_endpoint_points = MagicMock(side_effect=raise_on_upsert)
+    else:
+        qdrant.upsert_endpoint_points = MagicMock(return_value=upsert_ok)
+    qdrant.close = MagicMock()
+    return qdrant
+
+
+async def _run_index(client: MagicMock, qdrant: MagicMock):
+    with (
+        patch(
+            "api_tool_indexer.main_indexer.LLMAPIClient",
+            return_value=_make_ctx_manager_client(client),
+        ),
+        patch(
+            "api_tool_indexer.main_indexer.ApiToolQdrantManager",
+            return_value=qdrant,
+        ),
+        patch("api_tool_indexer.main_indexer.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        return await index_endpoint(_ENDPOINT_DATA)
+
+
+class TestFailedStep:
+    @pytest.mark.asyncio
+    async def test_success_has_no_failed_step(self) -> None:
+        result = await _run_index(_make_api_client(), _make_qdrant())
+        assert result.success is True
+        assert result.failed_step is None
+
+    @pytest.mark.asyncio
+    async def test_context_failure_is_enriching(self) -> None:
+        client = _make_api_client(raise_on_generate=Exception("LLM down"))
+        client.max_retries = 1
+        result = await _run_index(client, _make_qdrant())
+        assert result.success is False
+        assert result.failed_step == "ENRICHING"
+        assert "LLM down" in (result.error or "")
+
+    @pytest.mark.asyncio
+    async def test_embedding_failure_is_embedding(self) -> None:
+        client = _make_api_client(
+            raise_on_embed=RuntimeError("503 Service Unavailable")
+        )
+        result = await _run_index(client, _make_qdrant())
+        assert result.success is False
+        assert result.failed_step == "EMBEDDING"
+        assert "503" in (result.error or "")
+
+    @pytest.mark.asyncio
+    async def test_empty_exception_message_still_gives_error(self) -> None:
+        client = _make_api_client(raise_on_embed=TimeoutError())
+        result = await _run_index(client, _make_qdrant())
+        assert result.failed_step == "EMBEDDING"
+        assert result.error == "TimeoutError"
+
+    @pytest.mark.asyncio
+    async def test_qdrant_connect_failure_is_qdrant_delete(self) -> None:
+        qdrant = _make_qdrant(raise_on_connect=ConnectionError("qdrant unreachable"))
+        result = await _run_index(_make_api_client(), qdrant)
+        assert result.failed_step == "QDRANT_DELETE"
+        assert "qdrant unreachable" in (result.error or "")
+        qdrant.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_delete_returns_false_is_qdrant_delete(self) -> None:
+        result = await _run_index(_make_api_client(), _make_qdrant(delete_ok=False))
+        assert result.failed_step == "QDRANT_DELETE"
+
+    @pytest.mark.asyncio
+    async def test_upsert_returns_false_is_qdrant_upsert(self) -> None:
+        result = await _run_index(_make_api_client(), _make_qdrant(upsert_ok=False))
+        assert result.failed_step == "QDRANT_UPSERT"
+        assert "old index" in (result.error or "").lower()
+
+    @pytest.mark.asyncio
+    async def test_upsert_raises_is_qdrant_upsert(self) -> None:
+        qdrant = _make_qdrant(raise_on_upsert=RuntimeError("write timeout"))
+        result = await _run_index(_make_api_client(), qdrant)
+        assert result.failed_step == "QDRANT_UPSERT"
+        assert "write timeout" in (result.error or "")
+        assert "old index" in (result.error or "").lower()
+
+
+class TestResultFile:
+    _ARGS = [
+        "--endpoint-id",
+        "ep-holidays",
+        "--name",
+        "get_public_holidays",
+        "--description",
+        "Returns public holidays.",
+        "--url",
+        "https://openholidaysapi.org/PublicHolidays",
+    ]
+
+    def _read(self, path) -> dict:
+        import json
+
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_success_writes_success_true(self, tmp_path) -> None:
+        from api_tool_indexer.main_indexer import main
+        from api_tool_indexer.models import IndexingResult
+
+        out = tmp_path / "result.json"
+        ok = IndexingResult(success=True, endpoint_id="ep-holidays", message="done")
+        with patch(
+            "api_tool_indexer.main_indexer.index_endpoint",
+            new=AsyncMock(return_value=ok),
+        ):
+            code = main(self._ARGS + ["--result-file", str(out)])
+
+        assert code == 0
+        data = self._read(out)
+        assert data["success"] is True
+        assert data["step"] is None
+        assert data["error"] is None
+
+    def test_failure_writes_step_and_error(self, tmp_path) -> None:
+        from api_tool_indexer.main_indexer import main
+        from api_tool_indexer.models import IndexingResult
+
+        out = tmp_path / "result.json"
+        failed = IndexingResult(
+            success=False,
+            endpoint_id="ep-holidays",
+            message="failed",
+            error="503 Service Unavailable",
+            failed_step="EMBEDDING",
+        )
+        with patch(
+            "api_tool_indexer.main_indexer.index_endpoint",
+            new=AsyncMock(return_value=failed),
+        ):
+            code = main(self._ARGS + ["--result-file", str(out)])
+
+        assert code == 1
+        data = self._read(out)
+        assert data == {
+            "success": False,
+            "step": "EMBEDDING",
+            "error": "503 Service Unavailable",
+            "message": "failed",
+            "attemptNo": None,
+        }
+
+    def test_unexpected_crash_still_writes_file(self, tmp_path) -> None:
+        from api_tool_indexer.main_indexer import main
+
+        out = tmp_path / "result.json"
+        with patch(
+            "api_tool_indexer.main_indexer.index_endpoint",
+            new=AsyncMock(side_effect=RuntimeError("boom")),
+        ):
+            code = main(self._ARGS + ["--result-file", str(out)])
+
+        assert code == 1
+        data = self._read(out)
+        assert data["success"] is False
+        assert "boom" in data["error"]
+
+    def test_bad_arguments_still_write_file(self, tmp_path) -> None:
+        from api_tool_indexer.main_indexer import main
+
+        out = tmp_path / "result.json"
+        # --name, --description, --url missing → argparse exits with code 2
+        code = main(["--endpoint-id", "x", "--result-file", str(out)])
+
+        assert code == 2
+        data = self._read(out)
+        assert data["success"] is False
+        assert "Invalid arguments" in data["error"]
+
+    def test_no_result_file_flag_writes_nothing(self, tmp_path) -> None:
+        from api_tool_indexer.main_indexer import main
+        from api_tool_indexer.models import IndexingResult
+
+        ok = IndexingResult(success=True, endpoint_id="ep-holidays", message="done")
+        with patch(
+            "api_tool_indexer.main_indexer.index_endpoint",
+            new=AsyncMock(return_value=ok),
+        ):
+            assert main(self._ARGS) == 0
+        assert list(tmp_path.iterdir()) == []
+
+    def test_attempt_no_is_accepted_and_written(self, tmp_path) -> None:
+        from api_tool_indexer.main_indexer import main
+        from api_tool_indexer.models import IndexingResult
+
+        out = tmp_path / "result.json"
+        ok = IndexingResult(success=True, endpoint_id="ep-holidays", message="done")
+        with patch(
+            "api_tool_indexer.main_indexer.index_endpoint",
+            new=AsyncMock(return_value=ok),
+        ):
+            code = main(self._ARGS + ["--attempt-no", "2", "--result-file", str(out)])
+
+        assert code == 0
+        assert self._read(out)["attemptNo"] == 2
+
+    def test_without_attempt_no_still_works(self, tmp_path) -> None:
+        from api_tool_indexer.main_indexer import main
+        from api_tool_indexer.models import IndexingResult
+
+        out = tmp_path / "result.json"
+        ok = IndexingResult(success=True, endpoint_id="ep-holidays", message="done")
+        with patch(
+            "api_tool_indexer.main_indexer.index_endpoint",
+            new=AsyncMock(return_value=ok),
+        ):
+            code = main(self._ARGS + ["--result-file", str(out)])
+
+        assert code == 0
+        assert self._read(out)["attemptNo"] is None

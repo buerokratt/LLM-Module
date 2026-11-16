@@ -2,4 +2,4 @@ enrich_and_index:
   trigger: off
   type: exec
   command: "/app/scripts/service_enrichment.sh"
-  allowedEnvs: ['service_id', 'name', 'description', 'examples', 'entities', 'ruuter_type', 'current_state', 'is_common']
+  allowedEnvs: ['service_id', 'name', 'description', 'examples', 'entities', 'ruuter_type', 'current_state', 'is_common', 'attempt_no']

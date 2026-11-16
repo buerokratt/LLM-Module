@@ -10,15 +10,22 @@ Indexing strategy:
 - One 'summary' point per service (dense + sparse vectors of name + description + context)
 """
 
+import os
 import sys
 import json
 import argparse
 import asyncio
+import tempfile
 
-from typing import List
+from typing import List, Optional, Sequence, Tuple
 from src.loki_logger import LokiLogger
 
-from intent_data_enrichment.models import ServiceData, EnrichedService, EnrichmentResult
+from intent_data_enrichment.models import (
+    ServiceData,
+    EnrichedService,
+    EnrichmentResult,
+    EnrichmentStep,
+)
 from intent_data_enrichment.api_client import LLMAPIClient
 from intent_data_enrichment.qdrant_manager import QdrantManager
 
@@ -63,8 +70,14 @@ except ImportError:
             ) from None
 
 
-def parse_arguments() -> ServiceData:
-    """Parse command line arguments into ServiceData model."""
+def parse_arguments(
+    argv: Optional[Sequence[str]] = None,
+) -> Tuple[ServiceData, Optional[str], Optional[int]]:
+    """Parse command line arguments.
+
+    Returns:
+        (ServiceData, result_file path or None, attempt_no or None)
+    """
     parser = argparse.ArgumentParser(description="Service Data Enrichment")
     parser.add_argument("--service-id", type=str, required=True, help="Service ID")
     parser.add_argument("--name", type=str, required=True, help="Service name")
@@ -84,8 +97,19 @@ def parse_arguments() -> ServiceData:
         default="false",
         help="Is common service",
     )
+    parser.add_argument(
+        "--result-file",
+        type=str,
+        help="Where to write {success, step, error} JSON for the status callback",
+    )
+    parser.add_argument(
+        "--attempt-no",
+        type=int,
+        default=None,
+        help="Service Module attempt number (logged and written to the result file)",
+    )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # Read and parse JSON arrays from files
     examples = []
@@ -108,7 +132,7 @@ def parse_arguments() -> ServiceData:
         except (FileNotFoundError, json.JSONDecodeError) as e:
             logger.warning(f"Failed to read/parse entities file: {e}")
 
-    return ServiceData(
+    service_data = ServiceData(
         service_id=args.service_id,
         name=args.name,
         description=args.description,
@@ -118,6 +142,7 @@ def parse_arguments() -> ServiceData:
         current_state=args.current_state,
         is_common=args.is_common.lower() == "true",
     )
+    return service_data, args.result_file, args.attempt_no
 
 
 async def enrich_service(service_data: ServiceData) -> EnrichmentResult:
@@ -129,8 +154,11 @@ async def enrich_service(service_data: ServiceData) -> EnrichmentResult:
         service_data: Service data to enrich
 
     Returns:
-        EnrichmentResult with success/failure information
+        EnrichmentResult with success/failure information. On failure,
+        ``failed_step`` names the step that failed (see EnrichmentStep).
     """
+    # Updated as the pipeline moves on, so any exception can be tied to a step.
+    current_step = EnrichmentStep.ENRICHING
     try:
         # Step 1: Generate rich context using LLM (unchanged from original)
         logger.info("Step 1: Generating rich context with LLM")
@@ -139,6 +167,7 @@ async def enrich_service(service_data: ServiceData) -> EnrichmentResult:
             logger.success(f"Context generated: {len(context)} characters")
 
             # Step 2: Create per-example points (dense + sparse vectors)
+            current_step = EnrichmentStep.EMBEDDING
             logger.info(
                 f"Step 2: Creating per-example embeddings for "
                 f"{len(service_data.examples)} examples"
@@ -219,6 +248,7 @@ async def enrich_service(service_data: ServiceData) -> EnrichmentResult:
 
         # Step 4: Delete existing points for this service (idempotent update)
         logger.info("Step 4: Removing existing points for idempotent update")
+        current_step = EnrichmentStep.QDRANT_DELETE
         qdrant = QdrantManager()
         try:
             qdrant.connect()
@@ -231,14 +261,23 @@ async def enrich_service(service_data: ServiceData) -> EnrichmentResult:
                     f"Failed to delete existing points for service_id={service_data.service_id}; "
                     "aborting upsert to avoid stale data."
                 )
-                success = False
-            else:
-                # Step 5: Bulk upsert all points (examples + summary)
-                logger.info(
-                    f"Step 5: Storing {len(enriched_points)} points in Qdrant "
-                    f"({len(service_data.examples)} examples + 1 summary)"
+                return EnrichmentResult(
+                    success=False,
+                    service_id=service_data.service_id,
+                    message="Qdrant delete failed before upsert",
+                    context_length=None,
+                    embedding_dimension=None,
+                    error=qdrant.last_error or "delete_service_points returned False",
+                    failed_step=EnrichmentStep.QDRANT_DELETE,
                 )
-                success = qdrant.upsert_service_points(enriched_points)
+
+            # Step 5: Bulk upsert all points (examples + summary)
+            logger.info(
+                f"Step 5: Storing {len(enriched_points)} points in Qdrant "
+                f"({len(service_data.examples)} examples + 1 summary)"
+            )
+            current_step = EnrichmentStep.QDRANT_UPSERT
+            success = qdrant.upsert_service_points(enriched_points)
         finally:
             qdrant.close()
 
@@ -262,30 +301,93 @@ async def enrich_service(service_data: ServiceData) -> EnrichmentResult:
                 message="Failed to store in Qdrant",
                 context_length=None,
                 embedding_dimension=None,
-                error="Qdrant upsert operation failed",
+                error=(
+                    f"{qdrant.last_error or 'upsert_service_points returned False'}. "
+                    "The old index for this service was removed and the new one "
+                    "was not written."
+                ),
+                failed_step=EnrichmentStep.QDRANT_UPSERT,
             )
 
     except Exception as e:
-        logger.error(f"Enrichment pipeline failed: {e}")
+        error = _describe_error(e)
+        if current_step == EnrichmentStep.QDRANT_UPSERT:
+            error += (
+                " The old index for this service was removed and the new one "
+                "was not written."
+            )
+        logger.error(f"Enrichment pipeline failed at step {current_step}: {error}")
         return EnrichmentResult(
             success=False,
             service_id=service_data.service_id,
-            message="Enrichment pipeline failed",
+            message=f"Enrichment pipeline failed at step {current_step}",
             context_length=None,
             embedding_dimension=None,
-            error=str(e),
+            error=error,
+            failed_step=current_step,
         )
 
 
-def main() -> int:
-    """Main entry point for service enrichment"""
+def _describe_error(e: BaseException) -> str:
+    """Return a non-empty error message (some exceptions have an empty str())."""
+    text = str(e).strip()
+    return f"{type(e).__name__}: {text}" if text else type(e).__name__
+
+
+def write_result_file(path: str, result: dict) -> None:
+    """Write the result JSON atomically, so the shell never reads a half file.
+
+    Errors are logged and swallowed: a missing result file is handled by the
+    shell script (it falls back to the log tail), and must never change the
+    enrichment's exit code.
+    """
+    try:
+        directory = os.path.dirname(os.path.abspath(path))
+        fd, tmp_path = tempfile.mkstemp(dir=directory, suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False)
+        os.replace(tmp_path, path)
+    except Exception as e:
+        logger.error(f"Failed to write result file '{path}': {e}")
+
+
+def _find_result_file_arg(argv: Sequence[str]) -> Optional[str]:
+    """Pick --result-file out of raw argv.
+
+    Used so the result file can still be written when argparse or the
+    ServiceData validation fails (before parse_arguments returns).
+    """
+    for i, arg in enumerate(argv):
+        if arg == "--result-file" and i + 1 < len(argv):
+            return argv[i + 1]
+        if arg.startswith("--result-file="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """Main entry point for service enrichment.
+
+    Whatever happens, if --result-file was given, a JSON file
+    ``{success, step, error, message, attemptNo}`` is written on the way out
+    (``finally``), so service_enrichment.sh can report the exact outcome in its
+    status callback.
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    result_file = _find_result_file_arg(argv)
+    result: Optional[EnrichmentResult] = None
+    attempt_no: Optional[int] = None
+    fatal_error: Optional[str] = None
+    exit_code = 1
+
     logger.info("Starting service data enrichment pipeline")
 
     try:
         # Parse arguments
-        service_data = parse_arguments()
+        service_data, result_file, attempt_no = parse_arguments(argv)
         logger.info(f"Service ID: {service_data.service_id}")
         logger.info(f"Service Name: {service_data.name}")
+        logger.info(f"Attempt No: {attempt_no}")
         logger.info(f"Examples: {len(service_data.examples)} provided")
         logger.info(f"Entities: {len(service_data.entities)} provided")
 
@@ -299,17 +401,46 @@ def main() -> int:
             logger.info(f"Message: {result.message}")
             logger.info(f"Context Length: {result.context_length} characters")
             logger.info(f"Embedding Dimension: {result.embedding_dimension}")
-            return 0
+            exit_code = 0
         else:
             logger.error("Enrichment failed")
             logger.error(f"Service: {result.service_id}")
+            logger.error(f"Step: {result.failed_step}")
             logger.error(f"Message: {result.message}")
             logger.error(f"Error: {result.error}")
-            return 1
+            exit_code = 1
 
+    except SystemExit as e:
+        # argparse exits with code 2 on bad arguments
+        fatal_error = f"Invalid arguments (exit code {e.code})"
+        exit_code = e.code if isinstance(e.code, int) and e.code != 0 else 1
+        logger.error(f"Fatal error: {fatal_error}")
     except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        return 1
+        fatal_error = _describe_error(e)
+        exit_code = 1
+        logger.error(f"Fatal error: {fatal_error}")
+    finally:
+        if result_file:
+            if result is not None:
+                payload = {
+                    "success": result.success,
+                    "step": result.failed_step,
+                    "error": result.error,
+                    "message": result.message,
+                    "attemptNo": attempt_no,
+                }
+            else:
+                payload = {
+                    "success": False,
+                    "step": None,
+                    "error": fatal_error
+                    or "Enrichment exited before producing a result",
+                    "message": "Enrichment failed before the pipeline started",
+                    "attemptNo": attempt_no,
+                }
+            write_result_file(result_file, payload)
+
+    return exit_code
 
 
 if __name__ == "__main__":
