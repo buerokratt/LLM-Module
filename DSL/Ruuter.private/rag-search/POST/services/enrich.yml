@@ -32,6 +32,9 @@ declaration:
       - field: is_common
         type: boolean
         description: "Is common service"
+      - field: attemptNo
+        type: number
+        description: "Optional. Service Module attempt number; when set, the result is sent to the Service Module callback"
 
 extract_request_data:
   assign:
@@ -43,6 +46,7 @@ extract_request_data:
     service_ruuter_type: ${incoming.body.ruuter_type || 'GET'}
     service_current_state: ${incoming.body.current_state || 'draft'}
     service_is_common: ${incoming.body.is_common || false}
+    attempt_no: "${incoming.body.attemptNo != null ? incoming.body.attemptNo : ''}"
   next: validate_required_fields
 
 validate_required_fields:
@@ -73,6 +77,7 @@ execute_enrichment:
       ruuter_type: ${service_ruuter_type}
       current_state: ${service_current_state}
       is_common: ${service_is_common}
+      attempt_no: ${attempt_no}
   result: enrichment_result
   on_error: handle_cron_error
   next: assign_success

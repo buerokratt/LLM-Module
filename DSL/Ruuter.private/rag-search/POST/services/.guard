@@ -1,0 +1,7 @@
+# Overrides POST/.guard (cookie + TIM role check) for this folder only.
+# These endpoints are called server-to-server by the Service Module, which
+# sends no user cookie, so every request is allowed here.
+guard_allow_all:
+  return: "success"
+  status: 200
+  next: end

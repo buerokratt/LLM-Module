@@ -3,7 +3,7 @@ Batch Indexer — sends all endpoints from test-endpoints.json to POST /api-tool
 
 Usage:
     python batch_index.py
-    python batch_index.py --ruuter-url http://localhost:8086
+    python batch_index.py --ruuter-url http://localhost:8088
 """
 
 import argparse
@@ -14,7 +14,7 @@ from pathlib import Path
 import requests
 
 ENDPOINTS_FILE = Path(__file__).parent / "test-endpoints.json"
-DEFAULT_RUUTER_URL = "http://localhost:8086"
+DEFAULT_RUUTER_URL = "http://localhost:8088"
 INDEX_ENDPOINT = "/rag-search/api-tools/index"
 
 
@@ -43,7 +43,7 @@ def main():
     parser.add_argument(
         "--ruuter-url",
         default=DEFAULT_RUUTER_URL,
-        help=f"Base URL of Ruuter public (default: {DEFAULT_RUUTER_URL})",
+        help=f"Base URL of Ruuter private (default: {DEFAULT_RUUTER_URL})",
     )
     parser.add_argument(
         "--delay",
