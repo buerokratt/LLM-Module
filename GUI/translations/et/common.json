@@ -337,7 +337,15 @@
       "replaceProductionDialogMessage": "Toodanguühendus \"{connectionName}\" on juba olemas.",
       "replaceProductionDialogWarning": "Uue toodanguühenduse loomine asendab praeguse. Kas oled kindel, et soovid jätkata?",
       "cancelButton": "Tühista",
-      "confirmReplaceButton": "Jah, asenda toodanguühendus"
+      "confirmReplaceButton": "Jah, asenda toodanguühendus",
+      "errors": {
+        "save": "Ühendust ei õnnestunud salvestada. Midagi ei loodud. Palun proovi uuesti.",
+        "vault": "Ühenduse autentimisandmeid ei õnnestunud turvaliselt salvestada, seega ühendust ei loodud. Palun proovi uuesti.",
+        "vaultRollbackFailed": "Ühenduse autentimisandmeid ei õnnestunud turvaliselt salvestada ning poolikut ühendust ei õnnestunud eemaldada. Palun kustuta see mudeli ühenduste nimekirjast.",
+        "promoteTitle": "Ühendus loodi testimiskeskkonda",
+        "promote": "Ühendus loodi testimisühendusena, kuid seda ei õnnestunud toodangusse viia. Ava ühendus ja määra selle keskkonnaks Toodang.",
+        "noProductionConnection": "Hetkel ei ole ükski toodanguühendus aktiivne. Määra mudeli ühenduste nimekirjas mõni ühendus toodangusse."
+      }
     },
     "viewConnection": {
       "updateSuccessTitle": "Ühenduse uuendamine õnnestus",
