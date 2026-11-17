@@ -760,34 +760,46 @@ Bot: "Here are the public holidays in Estonia for 2026:\n- New Year's Day (1 Jan
 
 ---
 
-## Part 6 — Integration Testing
+## Part 6 — Evaluation Testing
 
-### Test Script
+### DeepEval suite
 
-Defined in [tests/api_tool_eval/integration_test_agentic_loop.py](../tests/api_tool_eval/integration_test_agentic_loop.py).
+Defined in [tests/deepeval_tests/api_tool_tests.py](../tests/deepeval_tests/api_tool_tests.py),
+reported by [api_tool_report_generator.py](../tests/deepeval_tests/api_tool_report_generator.py).
 
-Runs end-to-end against the live service at `http://localhost:8100` via `/orchestrate`.
-Each scenario uses a unique `chatId` (UUID) so sessions are fully isolated.
+Runs end-to-end against the `docker-compose-eval.yml` stack (started by the `rag_stack`
+fixture) via `/orchestrate-eval`. With `EVAL_MODE=true` the service attaches the resolved
+external call(s) to each response as `tool_calls` and the answering workflow as `workflow`, so
+scenarios are scored on the *resolved call* (DeepEval `ToolCorrectnessMetric`, exact endpoint
+name + expected parameters, optional extras tolerated) rather than on the natural-language
+answer. Each scenario uses a unique `chatId` so sessions are isolated; every turn is recorded
+(user, bot, workflow, tool calls, latency) and rendered as a transcript in the report.
 
 ```bash
-uv run --no-project --with requests python tests/api_tool_eval/integration_test_agentic_loop.py \
-  --no-fail-fast \
-  --output tests/api_tool_eval/integration-results.json
+# needs Azure OpenAI + Azure Storage secrets, see tests/deepeval_tests/conftest.py
+uv run --env-file .env python -m pytest tests/deepeval_tests/api_tool_tests.py -v --tb=short
+uv run python tests/deepeval_tests/api_tool_report_generator.py   # writes api_tool_test_report.md
 ```
 
-### Covered Scenarios
+The suite's own logic (helpers, metric wiring, collector, report) is unit-tested offline against
+a stub service in `tests/test_api_tool_eval_suite.py`.
 
-| # | Scenario | Turns | What it validates |
-|---|---|---|---|
-| 1 | Single-turn complete | 1 | Vehicle tax with plate number in first message → immediate API call + formatted response |
-| 2 | Multi-turn EN | 2 | Public holidays, country extracted turn 1, dates provided turn 2 → API call + formatted response |
-| 3 | Multi-turn ET | 2 | School holidays in Estonian → language-aware classification + Estonian response |
-| 4 | No-params fast path | 1 | Parliament votings endpoint has no required params → immediate API call without session |
-| 5 | Address search | 2 | Two-turn address lookup |
-| 6 | Electricity prices | 2 | `datetime` params across two turns |
-| 7 | Session isolation | 2 | Two different chat IDs — no param leak between sessions |
-| 8 | AWAITING_CONTINUATION → yes | 4+ | User says “yes” at continuation prompt → loop resumes → API call on completion |
-| 9 | MAX_TURNS_REACHED | 5+ | User never provides params → falls back to RAG |
+### Covered Scenarios (issue #447)
+
+| Group | Scenarios | What it validates |
+|---|---|---|
+| Strict single-intent | S1 (EN/ET), S2a (EN/ET), S2b (EN/DE), S3 (EN/ET) | Expected endpoint + parameters on the final turn: normal flow, date-range corrections, intent switch |
+| Loose single-intent | S4 (EN/ET) | 5-turn continuation flow must end in a resolved call; arguments judged by `ArgumentCorrectnessMetric` |
+| Multi-intent | MI-1..MI-8 (EN/ET) | Query must be answered by the API Tool Calling workflow (tool call, or a clarifying question from it); input-guardrail blocks and RAG fall-throughs are reported distinctly |
+
+### Not yet covered
+
+Single-turn completion with all params in the first message, the no-required-params fast path,
+session isolation between chat IDs, the `AWAITING_CONTINUATION → yes` resume path, the
+`MAX_TURNS_REACHED → RAG` fallback, response-cache (L1/L2) follow-ups, upstream API failures,
+genuine parallel execution and the streaming endpoint. The earlier ad-hoc scripts that exercised
+some of these (`tests/api_tool_eval/integration_test_*.py`) asserted on a JSON payload the
+workflow no longer returns and were removed.
 
 ---
 

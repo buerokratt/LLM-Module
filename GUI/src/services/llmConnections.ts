@@ -233,8 +233,33 @@ export async function getProductionConnection(filters?: ProductionConnectionFilt
 }
 
 
-export async function createLLMConnection(connectionData: LLMConnectionFormData): Promise<LLMConnection> {
-  const { data } = await apiDev.post(llmConnectionsEndpoints.CREATE_LLM_CONNECTION(), {
+/**
+ * Step of createLLMConnection() that failed:
+ * - save: the connection could not be saved; nothing was stored
+ * - vault: credentials could not be stored in Vault; the saved connection was removed again
+ * - vaultRollbackFailed: credentials could not be stored and the saved connection could not be removed
+ * - promote: the connection was created as testing but could not be switched to production
+ */
+export type CreateLLMConnectionFailureStage = 'save' | 'vault' | 'vaultRollbackFailed' | 'promote';
+
+export class CreateLLMConnectionError extends Error {
+  readonly stage: CreateLLMConnectionFailureStage;
+  readonly originalError: unknown;
+  // Only set for the 'promote' stage: true when no production connection is active afterwards
+  readonly noProductionConnection: boolean;
+
+  constructor(stage: CreateLLMConnectionFailureStage, originalError: unknown, noProductionConnection = false) {
+    super(`Creating LLM connection failed at stage: ${stage}`);
+    this.name = 'CreateLLMConnectionError';
+    this.stage = stage;
+    this.originalError = originalError;
+    this.noProductionConnection = noProductionConnection;
+  }
+}
+
+// Request body shared by the create (/llm-connections/add) and edit (/llm-connections/edit) endpoints
+function buildLLMConnectionPayload(connectionData: LLMConnectionFormData, deploymentEnvironment: string) {
+  return {
     connection_name: connectionData.connectionName,
     llm_platform: connectionData.llmPlatform,
     llm_model: connectionData.llmModel,
@@ -244,7 +269,7 @@ export async function createLLMConnection(connectionData: LLMConnectionFormData)
     warn_budget_threshold: parseInt(connectionData.warnBudget),
     stop_budget_threshold: connectionData.disconnectOnBudgetExceed ? parseInt(connectionData.stopBudget) : 0,
     disconnect_on_budget_exceed: connectionData.disconnectOnBudgetExceed,
-    deployment_environment: connectionData.deploymentEnvironment.toLowerCase(),
+    deployment_environment: deploymentEnvironment.toLowerCase(),
     // Azure credentials
     deployment_name: connectionData.deploymentName || "",
     target_uri: connectionData.targetUri || "",
@@ -260,17 +285,78 @@ export async function createLLMConnection(connectionData: LLMConnectionFormData)
     embedding_deployment_name: connectionData.embeddingDeploymentName || "",
     embedding_target_uri: connectionData.embeddingTargetUri || "",
     embedding_azure_api_key: maskSensitiveKey(connectionData.embeddingAzureApiKey) || "",
-  });
+  };
+}
 
-  const connection = data?.response;
-  console.log('Created LLM Connection:', connection);
+/**
+ * Create an LLM connection without leaving a half-created connection behind.
+ *
+ * 1. Save the connection as testing, even when production was chosen, so the
+ *    current production connection is not touched yet.
+ * 2. Store the credentials in Vault. If that fails, delete the saved connection.
+ * 3. Only if production was chosen, switch the connection to production.
+ *    /llm-connections/edit then moves the previous production connection to testing.
+ *
+ * Throws CreateLLMConnectionError with the step that failed.
+ */
+export async function createLLMConnection(connectionData: LLMConnectionFormData): Promise<LLMConnection> {
+  const wantsProduction = connectionData.deploymentEnvironment.toLowerCase() === 'production';
 
-  // After successful database creation, store secrets in vault
-  if (connection && connection.id && connection.vaultUuid) {
-    await createVaultSecret(connection.vaultUuid, connectionData);
+  // 1. Save as testing
+  let connection: LLMConnection | undefined;
+  try {
+    const { data } = await apiDev.post(
+      llmConnectionsEndpoints.CREATE_LLM_CONNECTION(),
+      buildLLMConnectionPayload(connectionData, 'testing')
+    );
+    connection = data?.response;
+  } catch (saveError) {
+    throw new CreateLLMConnectionError('save', saveError);
   }
 
-  return connection;
+  if (!connection?.id) {
+    throw new CreateLLMConnectionError('save', new Error('Create response did not contain a connection id'));
+  }
+  const connectionId = Number(connection.id);
+
+  // 2. Store credentials in Vault; on failure remove the saved connection again
+  try {
+    if (!connection.vaultUuid) {
+      throw new Error('Create response did not contain a vaultUuid');
+    }
+    await createVaultSecret(connection.vaultUuid, connectionData);
+  } catch (vaultError) {
+    console.error('Storing LLM connection credentials failed, removing the saved connection:', vaultError);
+    try {
+      await apiDev.post(llmConnectionsEndpoints.DELETE_LLM_CONNECTION(), { connection_id: connectionId });
+    } catch (rollbackError) {
+      console.error('Removing the saved LLM connection failed:', rollbackError);
+      throw new CreateLLMConnectionError('vaultRollbackFailed', vaultError);
+    }
+    throw new CreateLLMConnectionError('vault', vaultError);
+  }
+
+  // 3. Switch to production only after the credentials are stored
+  if (wantsProduction) {
+    try {
+      const { data } = await apiDev.post(llmConnectionsEndpoints.UPDATE_LLM_CONNECTION(), {
+        connection_id: connectionId,
+        ...buildLLMConnectionPayload(connectionData, 'production'),
+      });
+      connection = data?.response ?? connection;
+    } catch (promoteError) {
+      console.error('Switching the new LLM connection to production failed:', promoteError);
+      let noProductionConnection = false;
+      try {
+        noProductionConnection = !(await getProductionConnection());
+      } catch (checkError) {
+        console.error('Checking for an active production connection failed:', checkError);
+      }
+      throw new CreateLLMConnectionError('promote', promoteError, noProductionConnection);
+    }
+  }
+
+  return connection as LLMConnection;
 }
 
 export async function updateLLMConnection(
@@ -279,31 +365,7 @@ export async function updateLLMConnection(
 ): Promise<LLMConnection> {
   const { data } = await apiDev.post(llmConnectionsEndpoints.UPDATE_LLM_CONNECTION(), {
     connection_id: id,
-    connection_name: connectionData.connectionName,
-    llm_platform: connectionData.llmPlatform,
-    llm_model: connectionData.llmModel,
-    embedding_platform: connectionData.embeddingModelPlatform,
-    embedding_model: connectionData.embeddingModel,
-    monthly_budget: parseFloat(removeCommasFromNumber(connectionData.monthlyBudget)),
-    warn_budget_threshold: parseInt(connectionData.warnBudget),
-    stop_budget_threshold: connectionData.disconnectOnBudgetExceed ? parseInt(connectionData.stopBudget) : 0,
-    disconnect_on_budget_exceed: connectionData.disconnectOnBudgetExceed,
-    deployment_environment: connectionData.deploymentEnvironment.toLowerCase(),
-    // Azure credentials
-    deployment_name: connectionData.deploymentName || "",
-    target_uri: connectionData.targetUri || "",
-    api_key: maskSensitiveKey(connectionData.apiKey) || "",
-    // AWS Bedrock credentials
-    secret_key: maskSensitiveKey(connectionData.secretKey) || "",
-    access_key: maskSensitiveKey(connectionData.accessKey) || "",
-    // Embedding model credentials
-    // Embedding AWS Bedrock credentials
-    embedding_access_key: maskSensitiveKey(connectionData.embeddingAccessKey) || "",
-    embedding_secret_key: maskSensitiveKey(connectionData.embeddingSecretKey) || "",
-    // Embedding Azure credentials
-    embedding_deployment_name: connectionData.embeddingDeploymentName || "",
-    embedding_target_uri: connectionData.embeddingTargetUri || "",
-    embedding_azure_api_key: maskSensitiveKey(connectionData.embeddingAzureApiKey) || "",
+    ...buildLLMConnectionPayload(connectionData, connectionData.deploymentEnvironment),
   });
 
   const connection = data?.response;
