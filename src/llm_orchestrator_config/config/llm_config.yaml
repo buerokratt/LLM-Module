@@ -13,9 +13,14 @@ llm:
       num_retries: 3
 
       # Multiple model configurations.
-      # Reasoning models (gpt-5*, o1/o3/o4/o5*) take reasoning_effort
-      # (minimal|low|medium|high, default medium); their temperature is forced to
-      # 1.0 and max_tokens raised to at least 16000 by the provider.
+      # Reasoning models (gpt-5*, o1/o3/o4/o5*): temperature is forced to 1.0 and
+      # max_tokens raised to at least 16000 by the provider. reasoning_effort
+      # values depend on the model:
+      #   gpt-5:           minimal|low|medium|high       (default medium)
+      #   gpt-5.1:         none|low|medium|high          (default none)
+      #   gpt-5.2, 5.4:    none|low|medium|high|xhigh    (default none)
+      #   o-series:        low|medium|high               (default medium)
+      # Unset or unsupported values use the model's default.
       models:
         gpt-4o-mini:
           model_type: "chat"
@@ -45,14 +50,14 @@ llm:
           model_type: "chat"
           max_tokens: 16000
           temperature: 1.0
-          reasoning_effort: "medium"
+          reasoning_effort: "none"
           deployment_name: "gpt-5.2"
 
         gpt-5.4:
           model_type: "chat"
           max_tokens: 16000
           temperature: 1.0
-          reasoning_effort: "medium"
+          reasoning_effort: "none"
           deployment_name: "gpt-5.4"
 
 

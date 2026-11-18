@@ -92,10 +92,21 @@ GPT-5.x models are reasoning models and accept fewer parameters than GPT-4.1. Th
 | --- | --- | --- |
 | `temperature` | from `llm_config.yaml` | always `1.0` (other values are rejected by the API) |
 | `max_tokens` | from `llm_config.yaml` | at least `16000` (reasoning tokens count towards the limit) |
-| `reasoning_effort` | not sent | from `llm_config.yaml`, default `medium` (`minimal`, `low`, `medium`, `high`) |
+| `reasoning_effort` | not sent | from `llm_config.yaml`, default `none` (`none`, `low`, `medium`, `high`, `xhigh`) |
 | `api_version` | `2025-01-01-preview` | `2025-01-01-preview` |
 
 The settings live under `llm.providers.azure_openai.models` in `src/llm_orchestrator_config/config/llm_config.yaml`.
+
+Accepted `reasoning_effort` values differ per model. An unset or unsupported value falls back to the model's default and logs a warning:
+
+| Model | Accepted values | Default |
+| --- | --- | --- |
+| `gpt-5` | `minimal`, `low`, `medium`, `high` | `medium` |
+| `gpt-5.1` | `none`, `low`, `medium`, `high` | `none` |
+| `gpt-5.2`, `gpt-5.4` | `none`, `low`, `medium`, `high`, `xhigh` | `none` |
+| o-series (`o1`, `o3`, `o4`, …) | `low`, `medium`, `high` | `medium` |
+
+`none` means no reasoning tokens are used, which is the cheapest and fastest setting.
 
 ### Deployment names
 

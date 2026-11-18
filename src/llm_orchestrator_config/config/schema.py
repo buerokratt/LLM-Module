@@ -42,7 +42,8 @@ class AzureOpenAIConfig(ProviderConfig):
     cache: bool = False
     num_retries: int = 3
     # Reasoning models only; ignored by standard chat models such as gpt-4.1.
-    reasoning_effort: str = "medium"
+    # None uses the model's API default (none for gpt-5.1+, see azure_openai.py).
+    reasoning_effort: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation."""

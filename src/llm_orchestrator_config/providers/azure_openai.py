@@ -1,13 +1,12 @@
 """Azure OpenAI provider implementation."""
 
 import re
-from typing import Any, Dict, List, Optional, Pattern, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Pattern, Tuple
 
 import dspy
 
 from src.loki_logger import LokiLogger
 
-from llm_orchestrator_config.config.schema import AzureOpenAIConfig
 from llm_orchestrator_config.providers.base import BaseLLMProvider
 from llm_orchestrator_config.exceptions import (
     InvalidConfigurationError,
@@ -16,7 +15,7 @@ from llm_orchestrator_config.exceptions import (
 
 logger = LokiLogger(service_name="azure-openai-provider")
 
-# API constraints, not defaults - defaults live on AzureOpenAIConfig.
+# API constraints of the reasoning model families.
 # Matched on the configured model key, never the operator-chosen deployment name.
 _REASONING_FAMILIES: Tuple[Tuple[Pattern[str], str], ...] = (
     (re.compile(r"^gpt-5"), "gpt5_series/"),
@@ -33,15 +32,21 @@ REASONING_TEMPERATURE = 1.0
 # DSPy refuses to build a reasoning LM below this.
 REASONING_MIN_MAX_TOKENS = 16000
 
-VALID_REASONING_EFFORTS = frozenset({"low", "medium", "high"})
+# Accepted reasoning_effort values and the API default, per model key.
+# "minimal" exists only for the original gpt-5, "none" from gpt-5.1 on, and
+# "xhigh" from gpt-5.2 on.
+_REASONING_EFFORTS: Dict[str, Tuple[FrozenSet[str], str]] = {
+    "gpt-5": (frozenset({"minimal", "low", "medium", "high"}), "medium"),
+    "gpt-5.1": (frozenset({"none", "low", "medium", "high"}), "none"),
+    "gpt-5.2": (frozenset({"none", "low", "medium", "high", "xhigh"}), "none"),
+    "gpt-5.4": (frozenset({"none", "low", "medium", "high", "xhigh"}), "none"),
+}
 
-# "minimal" is gpt-5 only; the o-series rejects it.
-GPT5_ONLY_REASONING_EFFORTS = frozenset({"minimal"})
-GPT5_ROUTE = "gpt5_series/"
-
-DEFAULT_REASONING_EFFORT: str = AzureOpenAIConfig.model_fields[
-    "reasoning_effort"
-].default
+# o-series and reasoning models not listed above.
+_FALLBACK_REASONING_EFFORTS: Tuple[FrozenSet[str], str] = (
+    frozenset({"low", "medium", "high"}),
+    "medium",
+)
 
 
 def strip_reasoning_route(model: str) -> str:
@@ -49,6 +54,20 @@ def strip_reasoning_route(model: str) -> str:
     for _, route in _REASONING_FAMILIES:
         model = model.replace(route, "")
     return model
+
+
+# DSPy model string ("azure/<route><deployment>") -> pricing model ("azure/<model key>").
+# Deployment names are chosen per client, so prices are looked up by model key.
+_PRICING_MODEL_BY_LM_MODEL: Dict[str, str] = {}
+
+
+def pricing_model_for(lm_model: str) -> str:
+    """Return the model name to look prices up by for a DSPy model string.
+
+    Falls back to the model string without its route prefix for LMs not built
+    by this provider.
+    """
+    return _PRICING_MODEL_BY_LM_MODEL.get(lm_model, strip_reasoning_route(lm_model))
 
 
 def is_reasoning_lm(lm: dspy.LM) -> bool:
@@ -94,6 +113,10 @@ class AzureOpenAIProvider(BaseLLMProvider):
                 return route
         return None
 
+    def _pricing_model(self) -> str:
+        """Return the model name prices are looked up by: the model key, not the deployment."""
+        return f"azure/{self.config['model']}"
+
     def _build_model_string(self) -> str:
         """Build the DSPy model string for the configured deployment."""
         route = self._reasoning_route() or ""
@@ -120,23 +143,29 @@ class AzureOpenAIProvider(BaseLLMProvider):
             f"deployment, or point this connection at the reasoning model."
         )
 
-    def _accepted_reasoning_efforts(self) -> frozenset[str]:
-        """Return the efforts the configured reasoning family accepts."""
-        if self._reasoning_route() == GPT5_ROUTE:
-            return VALID_REASONING_EFFORTS | GPT5_ONLY_REASONING_EFFORTS
-        return VALID_REASONING_EFFORTS
+    def _reasoning_efforts(self) -> Tuple[FrozenSet[str], str]:
+        """Return the accepted efforts and the API default for the configured model."""
+        model = str(self.config.get("model", "")).lower()
+        return _REASONING_EFFORTS.get(model, _FALLBACK_REASONING_EFFORTS)
 
     def _resolve_reasoning_effort(self, warn: bool = True) -> str:
-        """Return the configured reasoning effort, or the default if unusable."""
-        effort = self.config["reasoning_effort"]
-        if effort not in self._accepted_reasoning_efforts():
+        """Return the configured reasoning effort, or the model's API default.
+
+        Unset or unsupported values fall back to the model's own default, so
+        "none" stays usable on gpt-5.1+ and "minimal" never reaches gpt-5.1+.
+        """
+        accepted, default = self._reasoning_efforts()
+        effort = self.config.get("reasoning_effort")
+        if effort is None:
+            return default
+        if effort not in accepted:
             if warn:
                 logger.warning(
                     f"Unsupported reasoning_effort '{effort}' for model "
-                    f"{self.config.get('model')} - falling back to "
-                    f"'{DEFAULT_REASONING_EFFORT}'"
+                    f"{self.config.get('model')} (accepted: {sorted(accepted)}) - "
+                    f"falling back to the model default '{default}'"
                 )
-            return DEFAULT_REASONING_EFFORT
+            return default
         return str(effort)
 
     def _build_generation_params(self, warn: bool = True) -> Dict[str, Any]:
@@ -184,9 +213,12 @@ class AzureOpenAIProvider(BaseLLMProvider):
             self.validate_config()
             self._validate_deployment_name()
 
+            model_string = self._build_model_string()
+            pricing_model = self._pricing_model()
+
             # Initialize DSPY LM client with proper Azure OpenAI configuration
             self._client = dspy.LM(
-                model=self._build_model_string(),
+                model=model_string,
                 model_type=self.config["model_type"],
                 cache=self.config["cache"],
                 callbacks=None,
@@ -194,8 +226,12 @@ class AzureOpenAIProvider(BaseLLMProvider):
                 api_key=self.config["api_key"],
                 api_base=self.config["endpoint"],
                 api_version=self.config["api_version"],
+                # LiteLLM computes response_cost from this instead of the deployment name.
+                base_model=pricing_model,
                 **self._build_generation_params(),
             )
+            # Used by the cost fallback for calls without a response_cost (e.g. streaming).
+            _PRICING_MODEL_BY_LM_MODEL[model_string] = pricing_model
 
             self._initialized = True
 
