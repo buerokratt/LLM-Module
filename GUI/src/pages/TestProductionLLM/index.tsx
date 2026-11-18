@@ -55,7 +55,7 @@ const TestProductionLLM: FC = () => {
   const connectionOptions = useMemo(
     () =>
       connections?.map((connection: any) => ({
-        label: `${connection.llmPlatform} - ${connection.llmModel} (${connection.environment})`,
+        label: `${connection.connectionName} (${connection.llmPlatform} - ${connection.llmModel}, ${connection.environment})`,
         value: String(connection.id),
       })) || [],
     [connections]

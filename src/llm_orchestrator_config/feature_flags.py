@@ -68,6 +68,16 @@ class FeatureFlags:
     # This ensures service continues working even if classifier fails
     FALLBACK_TO_RAG_ON_ERROR = True
 
+    @staticmethod
+    def eval_mode_enabled() -> bool:
+        """True when the service runs with ``EVAL_MODE=true`` (deepeval stack).
+
+        Gates eval-only response fields (``workflow``, ``tool_calls``,
+        ``retrieval_context``). Read at call time, not import time, so tests
+        can toggle it with ``monkeypatch.setenv``.
+        """
+        return os.getenv("EVAL_MODE", "false").lower() == "true"
+
     @classmethod
     def log_configuration(cls) -> None:
         """Log current feature flag configuration (useful for debugging)."""

@@ -82,14 +82,20 @@ services:
     container_name: redis
     restart: always
     command: --requirepass myredissecret
-    ports:
-      - "127.0.0.1:6379:6379"
+    # No host port: only the orchestration service (same compose network) uses Redis,
+    # and publishing 6379 collides with any other local Redis.
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "myredissecret", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
     networks:
       - test-network
 
   # MinIO - S3-compatible storage for Langfuse
   minio:
-    image: minio/minio:latest
+    # Docker Hub's minio/minio is no longer pullable; quay.io hosts the same image.
+    image: quay.io/minio/minio:latest
     container_name: minio
     restart: always
     entrypoint: sh
@@ -258,14 +264,34 @@ services:
       - ENVIRONMENT=development
       - QDRANT_URL=http://qdrant:6333
       - EVAL_MODE=true
+      # Tool classifier + API Tool Calling workflow (needed by
+      # tests/deepeval_tests/api_tool_tests.py). Service workflow is off because
+      # no service intents are indexed in this stack and its dense search embeds
+      # queries against the production connection, which needs Resql (absent here).
+      - TOOL_CLASSIFIER_ENABLED=true
+      - SERVICE_WORKFLOW_ENABLED=false
+      - API_TOOL_CALLING_WORKFLOW_ENABLED=true
+      - MULTI_INTENT_ENABLED=true
+      # Redis session store — required for multi-turn agentic-loop state.
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_AUTH=myredissecret
+      - REDIS_SESSION_DB=1
     volumes:
       - ./src/llm_config_module/config:/app/src/llm_config_module/config:ro
       - ./test-vault/agent-out:/agent/llm-token:ro
       - test_llm_orchestration_logs:/app/logs
     depends_on:
-      - qdrant
-      - langfuse-web
-      - vault-agent-llm
+      qdrant:
+        condition: service_started
+      # The service pings Redis once at startup and runs without a session
+      # store if that fails, which silently breaks every multi-turn scenario.
+      redis:
+        condition: service_healthy
+      langfuse-web:
+        condition: service_started
+      vault-agent-llm:
+        condition: service_started
     networks:
       - test-network
 
