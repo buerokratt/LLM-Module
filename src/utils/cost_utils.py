@@ -2,6 +2,7 @@
 
 from typing import Dict, Any, List, Tuple
 from src.loki_logger import LokiLogger
+from llm_orchestrator_config.providers.azure_openai import strip_reasoning_route
 import dspy
 
 # Initialize Loki logger for cost tracking
@@ -46,7 +47,7 @@ def _extract_cost_with_fallback(
         from litellm.cost_calculator import cost_per_token
 
         input_cost, output_cost = cost_per_token(
-            model=model_name,
+            model=strip_reasoning_route(str(model_name)),
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
         )

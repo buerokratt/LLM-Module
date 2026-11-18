@@ -38,6 +38,11 @@ class AzureOpenAIConfig(ProviderConfig):
     api_key: str = ""
     api_version: str = "2025-01-01-preview"
     deployment_name: str = ""
+    model_type: str = "chat"
+    cache: bool = False
+    num_retries: int = 3
+    # Reasoning models only; ignored by standard chat models such as gpt-4.1.
+    reasoning_effort: str = "medium"
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation."""
@@ -48,6 +53,10 @@ class AzureOpenAIConfig(ProviderConfig):
                 "api_key": self.api_key,
                 "api_version": self.api_version,
                 "deployment_name": self.deployment_name,
+                "model_type": self.model_type,
+                "cache": self.cache,
+                "num_retries": self.num_retries,
+                "reasoning_effort": self.reasoning_effort,
             }
         )
         return base_dict

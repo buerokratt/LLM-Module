@@ -340,12 +340,15 @@ class ConfigurationLoader:
                     "enabled": True,
                 }
             )
-            # Merge model-specific config, with secret taking precedence for deployment_name
             if model_config:
-                # Add model-specific settings (max_tokens, temperature, etc.)
                 updated_config.update(model_config)
-                # Override deployment_name from secret if provided
-                updated_config["deployment_name"] = secret.deployment_name
+            else:
+                logger.warning(
+                    f"Model {model_name} has no entry under azure_openai.models - "
+                    f"falling back to the schema defaults"
+                )
+            # Set even without a YAML entry - the registered deployment always wins.
+            updated_config["deployment_name"] = secret.deployment_name
 
         elif hasattr(secret, "region"):  # AWS Bedrock
             updated_config.update(
@@ -404,9 +407,10 @@ class ConfigurationLoader:
             else:
                 # Provider available in vault but not in config template
                 # Create a minimal config for it
+                # Caching stays off - repeated questions return stale answers.
                 providers_to_process[provider_name] = {
                     "enabled": True,
-                    "cache": True,
+                    "cache": False,
                     "num_retries": 3,
                 }
                 logger.info(
@@ -595,15 +599,23 @@ class ConfigurationLoader:
                 )
 
         if provider_type == LLMProvider.AZURE_OPENAI:
+            # Keys absent from the YAML are omitted so the schema default applies.
+            azure_fields = [
+                "max_tokens",
+                "temperature",
+                "endpoint",
+                "api_key",
+                "api_version",
+                "deployment_name",
+                "model_type",
+                "cache",
+                "num_retries",
+                "reasoning_effort",
+            ]
             return AzureOpenAIConfig(
                 enabled=config["enabled"],
                 model=config["model"],
-                max_tokens=config.get("max_tokens", 4096),
-                temperature=config.get("temperature", 0.7),
-                endpoint=config.get("endpoint", ""),
-                api_key=config.get("api_key", ""),
-                api_version=config.get("api_version", "2024-02-15-preview"),
-                deployment_name=config.get("deployment_name", ""),
+                **{f: config[f] for f in azure_fields if config.get(f) is not None},
             )
         elif provider_type == LLMProvider.AWS_BEDROCK:
             return AWSBedrockConfig(
