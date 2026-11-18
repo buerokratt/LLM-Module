@@ -211,7 +211,7 @@ sequenceDiagram
 
 | Operation | File | Triggers `/cache/clear`? |
 |-----------|------|--------------------------|
-| Add new production connection (demotes existing) | `add.yml` | Yes |
+| Add new production connection (demotes existing) | `add.yml` | Yes. Not used by the GUI: it always creates connections as testing and promotes them via `edit.yml` (see [Adding a New Connection](#adding-a-new-connection-vault-write)) |
 | Edit connection to promote testing → production | `edit.yml` | Yes |
 | Delete a connection | `delete.yml` | No (not needed — deleted connections aren't cached) |
 | Edit without environment change | `edit.yml` | No (no swap happening) |
@@ -263,7 +263,9 @@ _cache: Dict[str, CachedSecret] = {}
 
 ## Adding a New Connection (Vault Write)
 
-Vault is only written to during **connection creation**, not during swaps:
+Vault is only written to during **connection creation** (and when credentials are changed on edit), not during swaps.
+
+The GUI (`createLLMConnection()` in `GUI/src/services/llmConnections.ts`) runs the steps below as separate requests. The connection is always created as **testing** and only promoted to production after its credentials are stored, so a failed create never leaves a connection without credentials or demotes the current production connection.
 
 ```mermaid
 sequenceDiagram
@@ -273,18 +275,31 @@ sequenceDiagram
     participant CronMgr as CronManager
     participant Vault
 
-    GUI->>Ruuter: POST /llm-connections/add
+    GUI->>Ruuter: POST /llm-connections/add (environment = testing)
     Ruuter->>Resql: INSERT into llm_connections (generates vault_uuid)
     Resql-->>Ruuter: {id, vaultUuid, ...}
+    Ruuter-->>GUI: {id, vaultUuid}
 
-    Note over Ruuter: If production: demote old, clear cache
+    GUI->>Vault: GET public key (via vault-agent-gui)
+    Note over GUI: Encrypt credentials (RSA-OAEP)
 
-    Ruuter->>CronMgr: POST /vault/secret/create {vaultUuid, platform, credentials}
-    CronMgr->>CronMgr: build_vault_path → "secret/llm/connections/{platform}/{vaultUuid}"
+    GUI->>Ruuter: POST /vault/secret/create {vaultUuid, platform, encrypted credentials}
+    Ruuter->>CronMgr: execute store_in_vault/store_secrets
+    CronMgr->>CronMgr: decrypt, build_vault_path → "secret/llm/connections/{platform}/{vaultUuid}"
     CronMgr->>Vault: Write credentials to path
-    Vault-->>CronMgr: OK
-    CronMgr-->>Ruuter: Success
+
+    alt Public key, encryption or /vault/secret/create failed
+        GUI->>Ruuter: POST /llm-connections/delete {connection_id}
+        Note over GUI: Show error, nothing is created
+    else Production was chosen
+        GUI->>Ruuter: POST /llm-connections/edit (environment = production)
+        Note over Ruuter: Demote old production, clear cache (see swap flow above)
+    end
 ```
+
+If the promotion to production fails, the connection stays as testing (with its credentials stored) and the GUI tells the user to switch it to production via edit.
+
+**Limitation:** CronManager runs `store_secrets` asynchronously, so `/vault/secret/create` returns success once the job is accepted. A failure inside the script itself (e.g. the Vault write) is only visible in the CronManager logs and is not rolled back.
 
 ## Key Design Decisions
 

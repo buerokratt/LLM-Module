@@ -247,6 +247,10 @@ class GuardrailsCoordinator:
                     questionOutOfLLMScope=False,
                     inputGuardFailed=False,
                     content=localized_msg,
+                    # EVAL_MODE only (None in production): the external tool
+                    # call already happened; keep it visible so evaluation
+                    # can score tool selection separately from the block.
+                    tool_calls=generated_response.tool_calls,
                 )
 
             logger.info("Output guardrails check passed")

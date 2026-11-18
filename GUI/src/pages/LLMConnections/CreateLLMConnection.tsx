@@ -4,7 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useDialog } from 'hooks/useDialog';
-import { createLLMConnection, getProductionConnection } from 'services/llmConnections';
+import { createLLMConnection, CreateLLMConnectionError, getProductionConnection } from 'services/llmConnections';
 import { llmConnectionsQueryKeys } from 'utils/queryKeys';
 import { ButtonAppearanceTypes } from 'enums/commonEnums';
 import { Button } from 'components';
@@ -44,17 +44,43 @@ const CreateLLMConnection = () => {
           ),
         });
       },
-      onError: (error: any) => {
+      onError: async (error: unknown) => {
         console.error('Error creating LLM connection:', error);
+
+        // A failed create can still have changed connections (e.g. created as testing), so refresh the lists
+        await queryClient.invalidateQueries({
+          queryKey: llmConnectionsQueryKeys.all()
+        });
+
+        const stage = error instanceof CreateLLMConnectionError ? error.stage : 'save';
+        const noProductionConnection = error instanceof CreateLLMConnectionError && error.noProductionConnection;
+
         openDialog({
-          title: t('llmConnectionForm.createConnection.errorDialogTitle') || 'Connection Failed',
-          content: <p>{t('llmConnectionForm.createConnection.errorDialogMessage') || 'The connection couldn\'t be established either due to invalid API credentials or misconfiguration in the deployment platform'}</p>,
+          title: stage === 'promote'
+            ? t('llmConnectionForm.createConnection.errors.promoteTitle')
+            : t('llmConnectionForm.createConnection.errorDialogTitle') || 'Connection Failed',
+          content: (
+            <div>
+              <p>{t(`llmConnectionForm.createConnection.errors.${stage}`)}</p>
+              {noProductionConnection && (
+                <p>{t('llmConnectionForm.createConnection.errors.noProductionConnection')}</p>
+              )}
+            </div>
+          ),
           footer: (
             <Button
               appearance={ButtonAppearanceTypes.PRIMARY}
-              onClick={closeDialog}
+              onClick={() => {
+                closeDialog();
+                // The connection exists as testing, so show it in the list
+                if (stage === 'promote') {
+                  navigate('/llm-connections');
+                }
+              }}
             >
-              {t('llmConnectionForm.createConnection.goBackButton') || 'Go Back'}
+              {stage === 'promote'
+                ? t('llmConnectionForm.createConnection.viewConnectionsButton') || 'View LLM Connections'
+                : t('llmConnectionForm.createConnection.goBackButton') || 'Go Back'}
             </Button>
           ),
         });
