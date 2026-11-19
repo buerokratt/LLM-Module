@@ -13,7 +13,7 @@ from tool_classifier.constants import (
     ATC_LAST_CALL_KEY_PREFIX,
     ATC_LAST_CALL_TTL_SECONDS,
 )
-from src.utils.redis_client import get_redis_client
+from src.utils.redis_client import get_redis_client, redis_key
 
 logger = LokiLogger(service_name="atc-cache-store")
 
@@ -72,11 +72,13 @@ class ATCCacheStore:
 
     @staticmethod
     def _l1_key(chat_id: str, api_name: str, params: dict[str, Any]) -> str:
-        return f"{ATC_CACHE_KEY_PREFIX}:{chat_id}:{api_name}:{ATCCacheStore._param_hash(params)}"
+        return redis_key(
+            f"{ATC_CACHE_KEY_PREFIX}:{chat_id}:{api_name}:{ATCCacheStore._param_hash(params)}"
+        )
 
     @staticmethod
     def _l2_key(chat_id: str) -> str:
-        return f"{ATC_LAST_CALL_KEY_PREFIX}:{chat_id}"
+        return redis_key(f"{ATC_LAST_CALL_KEY_PREFIX}:{chat_id}")
 
     # ------------------------------------------------------------------
     # L1 — Exact response cache

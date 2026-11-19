@@ -77,16 +77,20 @@ healthcheck:
 # Environment variables injected into the LLM container
 # Redis defaults match the in-cluster Redis service (see Redis chart)
 env:
-  REDIS_HOST: "redis"
+  REDIS_HOST: "dragonfly"
   REDIS_PORT: "6379"
-  REDIS_AUTH: "myredissecret"
-  REDIS_SESSION_DB: "0"
+  REDIS_SESSION_DB: "1"
   VAULT_AGENT_PROXY: "true"
   TOOL_CLASSIFIER_ENABLED: "true"
   SERVICE_WORKFLOW_ENABLED: "true"
   API_TOOL_CALLING_WORKFLOW_ENABLED: "true"
   CONTEXT_WORKFLOW_ENABLED: "true"
   MULTI_INTENT_ENABLED: "true"
+
+# Dragonfly password: read from the one shared secret (no plain text here)
+redisAuth:
+  secretName: "dragonfly-secrets"
+  secretKey: "REDIS_AUTH"
 
 # Service endpoint URLs, rendered into constants.ini ([DSL] section) and mounted
 # at /app/constants.ini. Defaults match the service names of the charts in this

@@ -318,6 +318,9 @@ async def health_check(request: Request) -> dict[str, str]:
         else "not_initialized"
     )
     redis_status = await check_redis_health()
+    if redis_status != "connected":
+        # Logged so the Grafana alert "redis-store-disconnected" can fire on it
+        logger.warning(f"Redis-compatible store health check: {redis_status}")
     return {
         "status": "healthy",
         "service": "llm-orchestration-service",

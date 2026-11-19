@@ -57,10 +57,18 @@ dependencies:
     version: 0.1.0
     repository: "file://./charts/minio"
     condition: minio.enabled
+  - name: seaweedfs
+    version: 0.1.0
+    repository: "file://./charts/seaweedfs"
+    condition: seaweedfs.enabled
   - name: Redis
     version: 0.1.0
     repository: "file://./charts/Redis"
     condition: Redis.enabled
+  - name: Dragonfly
+    version: 0.1.0
+    repository: "file://./charts/Dragonfly"
+    condition: Dragonfly.enabled
   - name: Qdrant
     version: 0.1.0
     repository: "file://./charts/Qdrant"

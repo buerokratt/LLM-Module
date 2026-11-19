@@ -7,7 +7,7 @@ from src.loki_logger import LokiLogger
 from redis import WatchError
 
 from models.session_models import APIToolSession
-from src.utils.redis_client import get_redis_client
+from src.utils.redis_client import get_redis_client, redis_key
 
 logger = LokiLogger(service_name="api-tool-session-store")
 
@@ -17,7 +17,7 @@ _UPDATE_MAX_RETRIES = 3
 
 
 def _key(chat_id: str) -> str:
-    return f"{_SESSION_KEY_PREFIX}{chat_id}"
+    return redis_key(f"{_SESSION_KEY_PREFIX}{chat_id}")
 
 
 _VALID_SESSION_FIELDS = frozenset(APIToolSession.model_fields)

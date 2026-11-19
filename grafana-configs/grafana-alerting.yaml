@@ -1,0 +1,381 @@
+apiVersion: 1
+
+# Grafana-managed alert rules for the Redis-compatible store (Dragonfly).
+# Firing alerts are listed under Alerting > Alert rules in Grafana.
+groups:
+  - orgId: 1
+    name: dragonfly-store
+    folder: RAG Module Alerts
+    interval: 1m
+    rules:
+      # Langfuse jobs normally leave the wait list within seconds. If the lowest
+      # waiting count over 5 minutes stays above 0 for 15 minutes, the Langfuse
+      # worker is not keeping up (e.g. the Lua lock under Option A).
+      - uid: langfuse-queue-backlog
+        title: Langfuse queue backlog not draining
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: loki-datasource
+            model:
+              refId: A
+              queryType: range
+              expr: >-
+                min_over_time({service="langfuse-queue-depth"} | json
+                | line_format "{{.message}}" | json | __error__=""
+                | unwrap waiting_total [5m])
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+        noDataState: NoData
+        execErrState: Error
+        for: 15m
+        labels:
+          severity: warning
+          component: dragonfly
+        annotations:
+          summary: Langfuse queue backlog has not drained for 15 minutes
+          description: >-
+            Waiting Langfuse jobs never dropped to 0. Check the langfuse-worker
+            logs and Dragonfly CPU/memory; see the langfuse-queue-depth logs in Loki
+            for the busy queues.
+
+      # The app's stores log every failed Redis/Dragonfly call and then fail open,
+      # so chats keep working but lose history/cache. Many failures = store trouble.
+      - uid: redis-store-errors
+        title: Redis-compatible store errors in the app
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: loki-datasource
+            model:
+              refId: A
+              queryType: range
+              expr: >-
+                sum(count_over_time({service=~"api-tool-session-store|conversation-history|atc-cache-store"}
+                |~ "failed|Redis unavailable" [5m]))
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [10]
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        labels:
+          severity: warning
+          component: dragonfly
+        annotations:
+          summary: More than 10 store errors in 5 minutes
+          description: >-
+            Session/history/cache calls to the Redis-compatible store are failing.
+            Chats still work but without history or cache. Check Dragonfly health
+            and the store logs in Loki.
+
+      # Optimistic-locking updates (WATCH/MULTI/EXEC) gave up after their retries:
+      # a session or history update was lost.
+      - uid: redis-watch-retries-exhausted
+        title: Store update retries exhausted
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: loki-datasource
+            model:
+              refId: A
+              queryType: range
+              expr: >-
+                sum(count_over_time({service=~"api-tool-session-store|conversation-history"}
+                |= "retries due to concurrent writes" [5m]))
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+        noDataState: OK
+        execErrState: Error
+        for: 0m
+        labels:
+          severity: warning
+          component: dragonfly
+        annotations:
+          summary: A session or history update was lost after all retries
+          description: >-
+            Concurrent writes to the same chat kept conflicting. Check for traffic
+            spikes on one chat or slow store responses.
+
+      # Dragonfly never evicts: when maxmemory is reached it refuses writes with an
+      # OOM error, which the stores log (risk R4).
+      - uid: redis-store-oom
+        title: Redis-compatible store is out of memory
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: loki-datasource
+            model:
+              refId: A
+              queryType: range
+              expr: >-
+                sum(count_over_time({service=~"api-tool-session-store|conversation-history|atc-cache-store"}
+                |~ "OOM|maxmemory" [5m]))
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+        noDataState: OK
+        execErrState: Error
+        for: 0m
+        labels:
+          severity: critical
+          component: dragonfly
+        annotations:
+          summary: Dragonfly is refusing writes (maxmemory reached)
+          description: >-
+            Writes are rejected until memory is freed. Langfuse ingestion is likely
+            failing too. Increase maxmemory/limits or investigate memory growth.
+
+      # The LLM service's /health (called by the healthcheck every 30s) logs a
+      # warning whenever the store is not connected.
+      - uid: redis-store-disconnected
+        title: LLM service lost its session store
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: loki-datasource
+            model:
+              refId: A
+              queryType: range
+              expr: >-
+                sum(count_over_time({service="llm-orchestration-api"}
+                |= "Redis-compatible store health check" [5m]))
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        labels:
+          severity: critical
+          component: dragonfly
+        annotations:
+          summary: /health reports the session store as not connected
+          description: >-
+            The LLM service runs without sessions, history or cache (fail-open).
+            Check that Dragonfly is running and the password matches.
+
+      # Dragonfly never evicts (noeviction): it refuses writes at maxmemory.
+      # Warn early so memory can be raised before anything fails (risk R4).
+      - uid: dragonfly-memory-warning
+        title: Dragonfly memory above 70%
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: loki-datasource
+            model:
+              refId: A
+              queryType: range
+              expr: >-
+                max_over_time({service="dragonfly-metrics"} | json
+                | line_format "{{.message}}" | json | __error__=""
+                | unwrap memory_used_pct [5m])
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [70]
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        labels:
+          severity: warning
+          component: dragonfly
+        annotations:
+          summary: Dragonfly memory is above 70% of maxmemory
+          description: >-
+            Memory is growing towards maxmemory, where writes are refused. Check the
+            Dragonfly dashboard and plan to raise maxmemory and the memory limit.
+
+      - uid: dragonfly-memory-critical
+        title: Dragonfly memory above 85%
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: loki-datasource
+            model:
+              refId: A
+              queryType: range
+              expr: >-
+                max_over_time({service="dragonfly-metrics"} | json
+                | line_format "{{.message}}" | json | __error__=""
+                | unwrap memory_used_pct [5m])
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [85]
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        labels:
+          severity: critical
+          component: dragonfly
+        annotations:
+          summary: Dragonfly memory is above 85% of maxmemory
+          description: >-
+            Writes will be refused soon (sessions, cache and Langfuse ingestion).
+            Raise maxmemory and the memory limit now.
+
+      # uptime_seconds resets when Dragonfly restarts (crash, OOM kill or redeploy).
+      - uid: dragonfly-restarted
+        title: Dragonfly restarted
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: loki-datasource
+            model:
+              refId: A
+              queryType: range
+              expr: >-
+                min_over_time({service="dragonfly-metrics"} | json
+                | line_format "{{.message}}" | json | __error__=""
+                | unwrap uptime_seconds [5m])
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: lt
+                    params: [300]
+        noDataState: OK
+        execErrState: Error
+        for: 0m
+        labels:
+          severity: warning
+          component: dragonfly
+        annotations:
+          summary: Dragonfly restarted in the last 5 minutes
+          description: >-
+            Uptime reset. If not a planned deploy, check for crashes or OOM kills
+            (docker/kubectl events) and the Dragonfly logs.

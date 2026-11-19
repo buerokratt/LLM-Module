@@ -9,6 +9,10 @@ The **Context Workflow (Layer 3)** intercepts user queries that can be answered 
 
 Conversation history is now sourced from a **Redis-backed store** (canonical source) rather than the GUI-provided `request.conversationHistory`. The store retains the most recent 10 rounds per session and maintains an incremental summary of evicted older rounds, enabling context detection to cover the full conversation lifetime.
 
+> **Note:** "Redis" in this document means the Redis-compatible store. Since the Dragonfly
+> migration that store is **Dragonfly**; the code still uses the redis-py client and the
+> `REDIS_*` settings. See [REDIS_SESSION_STORE.md](./REDIS_SESSION_STORE.md).
+
 When the context workflow can answer, a response is returned immediately, bypassing the RAG pipeline entirely. When it cannot answer, the query falls through to the RAG workflow (Layer 4).
 
 ---

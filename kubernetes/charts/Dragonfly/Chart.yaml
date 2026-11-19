@@ -1,0 +1,6 @@
+apiVersion: v2
+name: Dragonfly
+description: Dragonfly (Redis-compatible) store for RAG sessions, cache and Langfuse queues
+type: application
+version: 0.1.0
+appVersion: "v2.0.2"

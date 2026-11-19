@@ -1,0 +1,418 @@
+{
+  "id": null,
+  "uid": "dragonfly-store",
+  "title": "Dragonfly",
+  "tags": [
+    "rag-module",
+    "dragonfly",
+    "redis"
+  ],
+  "timezone": "browser",
+  "refresh": "1m",
+  "schemaVersion": 38,
+  "version": 1,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Memory used (% of maxmemory)",
+      "description": "Writes are refused at 100% (noeviction). Alerts fire at 70% and 85%.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki-datasource"
+      },
+      "interval": "1m",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki-datasource"
+          },
+          "queryType": "range",
+          "expr": "max_over_time({service=\"dragonfly-metrics\"} | json | line_format \"{{.message}}\" | json | __error__=\"\" | unwrap memory_used_pct [$__interval])",
+          "legendFormat": "memory used %"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 70
+              },
+              {
+                "color": "red",
+                "value": 85
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Memory used vs maxmemory",
+      "description": "RSS is the real process memory; it must stay below the container memory limit.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki-datasource"
+      },
+      "interval": "1m",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki-datasource"
+          },
+          "queryType": "range",
+          "expr": "max_over_time({service=\"dragonfly-metrics\"} | json | line_format \"{{.message}}\" | json | __error__=\"\" | unwrap used_memory [$__interval])",
+          "legendFormat": "used_memory"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki-datasource"
+          },
+          "queryType": "range",
+          "expr": "max_over_time({service=\"dragonfly-metrics\"} | json | line_format \"{{.message}}\" | json | __error__=\"\" | unwrap maxmemory [$__interval])",
+          "legendFormat": "maxmemory"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki-datasource"
+          },
+          "queryType": "range",
+          "expr": "max_over_time({service=\"dragonfly-metrics\"} | json | line_format \"{{.message}}\" | json | __error__=\"\" | unwrap used_memory_rss [$__interval])",
+          "legendFormat": "process RSS"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Connected clients",
+      "description": "",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki-datasource"
+      },
+      "interval": "1m",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki-datasource"
+          },
+          "queryType": "range",
+          "expr": "max_over_time({service=\"dragonfly-metrics\"} | json | line_format \"{{.message}}\" | json | __error__=\"\" | unwrap connected_clients [$__interval])",
+          "legendFormat": "clients"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Operations per second",
+      "description": "",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki-datasource"
+      },
+      "interval": "1m",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki-datasource"
+          },
+          "queryType": "range",
+          "expr": "max_over_time({service=\"dragonfly-metrics\"} | json | line_format \"{{.message}}\" | json | __error__=\"\" | unwrap ops_per_sec [$__interval])",
+          "legendFormat": "ops/sec"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Keys",
+      "description": "",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki-datasource"
+      },
+      "interval": "1m",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki-datasource"
+          },
+          "queryType": "range",
+          "expr": "max_over_time({service=\"dragonfly-metrics\"} | json | line_format \"{{.message}}\" | json | __error__=\"\" | unwrap keys [$__interval])",
+          "legendFormat": "keys"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Uptime",
+      "description": "Resets on every restart; the 'Dragonfly restarted' alert watches this.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki-datasource"
+      },
+      "interval": "1m",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 16
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki-datasource"
+          },
+          "queryType": "range",
+          "expr": "min_over_time({service=\"dragonfly-metrics\"} | json | line_format \"{{.message}}\" | json | __error__=\"\" | unwrap uptime_seconds [$__interval])",
+          "legendFormat": "uptime"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Langfuse queue backlog (waiting jobs)",
+      "description": "Should return to 0 within seconds. The backlog alert fires if it does not drain for 15 min.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki-datasource"
+      },
+      "interval": "1m",
+      "gridPos": {
+        "h": 6,
+        "w": 16,
+        "x": 8,
+        "y": 16
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki-datasource"
+          },
+          "queryType": "range",
+          "expr": "max_over_time({service=\"langfuse-queue-depth\"} | json | line_format \"{{.message}}\" | json | __error__=\"\" | unwrap waiting_total [$__interval])",
+          "legendFormat": "waiting"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki-datasource"
+          },
+          "queryType": "range",
+          "expr": "max_over_time({service=\"langfuse-queue-depth\"} | json | line_format \"{{.message}}\" | json | __error__=\"\" | unwrap active_total [$__interval])",
+          "legendFormat": "active"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    }
+  ]
+}

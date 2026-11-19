@@ -12,7 +12,7 @@ from src.models.conversation_history_models import (
     ConversationHistoryState,
     ConversationRound,
 )
-from src.utils.redis_client import get_redis_client
+from src.utils.redis_client import get_redis_client, redis_key
 
 if TYPE_CHECKING:
     from src.models.request_models import (
@@ -31,11 +31,11 @@ _APPEND_MAX_RETRIES = 3
 
 
 def _history_key(chat_id: str) -> str:
-    return f"{_HISTORY_KEY_PREFIX}{chat_id}"
+    return redis_key(f"{_HISTORY_KEY_PREFIX}{chat_id}")
 
 
 def _summary_key(chat_id: str) -> str:
-    return f"{_SUMMARY_KEY_PREFIX}{chat_id}"
+    return redis_key(f"{_SUMMARY_KEY_PREFIX}{chat_id}")
 
 
 class ConversationHistoryStore:

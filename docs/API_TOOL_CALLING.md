@@ -9,6 +9,10 @@ in response to user queries. Endpoints are registered, semantically indexed in Q
 and retrieved at query time using hybrid search. Once matched, a multi-turn agentic
 loop collects all required parameters from the user before the API call is made.
 
+> **Note:** "Redis" in this document means the Redis-compatible store. Since the Dragonfly
+> migration that store is **Dragonfly**; the code still uses the redis-py client and the
+> `REDIS_*` settings. See [REDIS_SESSION_STORE.md](./REDIS_SESSION_STORE.md).
+
 
 | Component | What it does | Status |
 |---|---|---|

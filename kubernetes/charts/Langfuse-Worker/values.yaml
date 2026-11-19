@@ -5,7 +5,7 @@ images:
   langfuse_worker:
     registry: "docker.io"
     repository: "langfuse/langfuse-worker"
-    tag: "3"
+    tag: "3.225.2"
 
 release_name: "langfuse-worker"
 
@@ -25,17 +25,17 @@ env:
   CLICKHOUSE_URL: "http://clickhouse:8123"
   CLICKHOUSE_CLUSTER_ENABLED: "false"
   
-  # S3/MinIO configuration (non-sensitive)
+  # S3 (SeaweedFS) configuration (non-sensitive)
   LANGFUSE_USE_AZURE_BLOB: "false"
   LANGFUSE_S3_EVENT_UPLOAD_BUCKET: "rag-search"
   LANGFUSE_S3_EVENT_UPLOAD_REGION: "auto"
-  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: "http://minio:9000"
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: "http://seaweedfs:8333"
   LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
   LANGFUSE_S3_EVENT_UPLOAD_PREFIX: "langfuse/events/"
   
   LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: "rag-search"
   LANGFUSE_S3_MEDIA_UPLOAD_REGION: "auto"
-  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: "http://minio:9000"
+  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: "http://seaweedfs:8333"
   LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
   LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: "langfuse/media/"
   
@@ -43,14 +43,14 @@ env:
   LANGFUSE_S3_BATCH_EXPORT_BUCKET: "rag-search"
   LANGFUSE_S3_BATCH_EXPORT_PREFIX: "langfuse/exports/"
   LANGFUSE_S3_BATCH_EXPORT_REGION: "auto"
-  LANGFUSE_S3_BATCH_EXPORT_ENDPOINT: "http://minio:9000"
-  LANGFUSE_S3_BATCH_EXPORT_EXTERNAL_ENDPOINT: "http://minio:9000"
+  LANGFUSE_S3_BATCH_EXPORT_ENDPOINT: "http://seaweedfs:8333"
+  LANGFUSE_S3_BATCH_EXPORT_EXTERNAL_ENDPOINT: "http://seaweedfs:8333"
   LANGFUSE_S3_BATCH_EXPORT_FORCE_PATH_STYLE: "true"
   LANGFUSE_INGESTION_QUEUE_DELAY_MS: ""
   LANGFUSE_INGESTION_CLICKHOUSE_WRITE_INTERVAL_MS: ""
   
   # Redis configuration (non-sensitive)
-  REDIS_HOST: "redis"
+  REDIS_HOST: "dragonfly"
   REDIS_PORT: "6379"
   REDIS_TLS_ENABLED: "false"
   REDIS_TLS_CA: "/certs/ca.crt"

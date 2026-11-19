@@ -17,6 +17,19 @@ spec:
         app: "{{ .Values.release_name }}"
         component: langfuse-worker
     spec:
+      initContainers:
+        - name: wait-for-redis-store
+          image: busybox:1.35
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for {{ .Values.env.REDIS_HOST }} on port {{ .Values.env.REDIS_PORT }}..."
+              until nc -z {{ .Values.env.REDIS_HOST }} {{ .Values.env.REDIS_PORT }} 2>/dev/null; do
+                echo "Redis-compatible store not ready yet, retrying in 5s..."
+                sleep 5
+              done
+              echo "Redis-compatible store is ready."
       containers:
         - name: "{{ .Values.release_name }}"
           image: "{{ .Values.images.langfuse_worker.registry }}/{{ .Values.images.langfuse_worker.repository }}:{{ .Values.images.langfuse_worker.tag }}"

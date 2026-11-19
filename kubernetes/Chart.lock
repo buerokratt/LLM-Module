@@ -38,8 +38,14 @@ dependencies:
 - name: minio
   repository: file://./charts/minio
   version: 0.1.0
+- name: seaweedfs
+  repository: file://./charts/seaweedfs
+  version: 0.1.0
 - name: Redis
   repository: file://./charts/Redis
+  version: 0.1.0
+- name: Dragonfly
+  repository: file://./charts/Dragonfly
   version: 0.1.0
 - name: Qdrant
   repository: file://./charts/Qdrant
@@ -77,5 +83,8 @@ dependencies:
 - name: Notifications-Node
   repository: file://./charts/Notifications-Node
   version: 0.1.0
-digest: sha256:48065436f01fcf7277161638c5fabe6c48afbcb1738e559ed03a921cd6a9d260
-generated: "2026-03-19T15:56:59.0549062+05:30"
+- name: OpenSearch
+  repository: file://./charts/OpenSearch
+  version: 0.1.0
+digest: sha256:2f8985f97eb444ad4cfe63da1791f99ee8612c3539ca098ae0275a5f0303c462
+generated: "2026-10-20T11:34:05.6861636+05:30"

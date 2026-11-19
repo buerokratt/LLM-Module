@@ -114,6 +114,14 @@ spec:
             - name: {{ $key }}
               value: "{{ $value }}"
             {{- end }}
+
+            #password for redis compatible store, from the shared secret
+            - name: REDIS_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{.Values.redisAuth.secretName | quote}}
+                  key: {{.Values.redisAuth.secretKey | quote}}
+                  optional: true
           
           {{- if .Values.healthcheck.enabled }}
           livenessProbe:

@@ -1,0 +1,92 @@
+{{- if .Values.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: "{{ .Values.release_name }}"
+  labels:
+    app: "{{ .Values.release_name }}"
+    component: dragonfly
+spec:
+  serviceName: "{{ .Values.release_name }}"
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      app: "{{ .Values.release_name }}"
+  template:
+    metadata:
+      labels:
+        app: "{{ .Values.release_name }}"
+        component: dragonfly
+      annotations:
+        # Restart the pod when the password Secret changes
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      containers:
+        - name: "{{ .Values.release_name }}"
+          image: "{{ .Values.images.dragonfly.registry }}/{{ .Values.images.dragonfly.repository }}:{{ .Values.images.dragonfly.tag }}"
+          imagePullPolicy: {{ .Values.pullPolicy }}
+          args:
+            - "--logtostderr"
+            - "--requirepass=$(REDIS_AUTH)"
+            - "--proactor_threads={{ required "Dragonfly.threads must be set explicitly (~256Mi of memory per thread)" .Values.threads }}"
+            - "--maxmemory={{ required "Dragonfly.maxmemory must be set (writes are refused above it)" .Values.maxmemory }}"
+            - "--dir=/data"
+            - "--dbfilename=dump"
+            - "--snapshot_cron={{ .Values.snapshotCron }}"
+            {{- range .Values.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          ports:
+            - name: dragonfly
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          # REDIS_AUTH from the shared Secret
+          envFrom:
+            - secretRef:
+                name: dragonfly-secrets
+          {{- if .Values.healthcheck.enabled }}
+          # Liveness: the process accepts connections
+          livenessProbe:
+            tcpSocket:
+              port: dragonfly
+            initialDelaySeconds: {{ .Values.healthcheck.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthcheck.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthcheck.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthcheck.failureThreshold }}
+          # Readiness: an authenticated PING works (catches a wrong password)
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - redis-cli -a "$REDIS_AUTH" --no-auth-warning ping | grep -q PONG
+            initialDelaySeconds: {{ .Values.healthcheck.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthcheck.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthcheck.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthcheck.failureThreshold }}
+            successThreshold: {{ .Values.healthcheck.successThreshold }}
+          {{- end }}
+          resources:
+            requests:
+              memory: "{{ .Values.resources.requests.memory }}"
+              cpu: "{{ .Values.threads }}"
+            limits:
+              memory: "{{ .Values.resources.limits.memory }}"
+              cpu: "{{ .Values.resources.limits.cpu }}"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      restartPolicy: Always
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        {{- if .Values.persistence.storageClass }}
+        storageClassName: "{{ .Values.persistence.storageClass }}"
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}
+{{- end }}
