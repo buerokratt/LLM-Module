@@ -115,11 +115,6 @@ spec:
           env:
             - name: PYTHONPATH
               value: {{ .Values.cronmanager.environment.pythonPath | quote }}
-            {{- if .Values.vaultAgent.enabled }}
-            # Vault Agent proxy URL (localhost sidecar)
-            - name: vaultAgentUrl
-              value: "http://localhost:8203"
-            {{- end }}
             - name: RAG_MODULE_RUUTER_PRIVATE
               value: {{ .Values.constants.RAG_MODULE_RUUTER_PRIVATE | quote }}
             - name: RAG_MODULE_RESQL

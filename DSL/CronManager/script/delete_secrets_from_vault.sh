@@ -8,18 +8,10 @@ set -e  # Exit on any error
 # Configuration
 source /app/scripts/load_constants.sh
 
-# Resolve Vault Agent URL:
-# 1. vaultAgentUrl, if passed as a CronManager request parameter (allowedEnvs).
-# 2. VAULT_AGENT_URL from constants.ini — vault-agent-cron:8203 under compose,
-#    localhost:8203 in k8s where the agent is a sidecar in this same pod.
-# Container environment variables are NOT an option here: CronManager execs job
-# scripts with an explicit empty envp, so nothing from `environment:` arrives.
-if [ -n "$vaultAgentUrl" ]; then
-    VAULT_ADDR="$vaultAgentUrl"
-elif [ -n "$VAULT_AGENT_URL" ]; then
-    VAULT_ADDR="$VAULT_AGENT_URL"
-else
-    echo "[ERROR] VAULT_AGENT_URL is not set in $RAG_SEARCH_CONSTANTS and no vaultAgentUrl parameter was given"
+# VAULT_AGENT_CRON_URL comes from constants.ini — vault-agent-cron:8203 under
+# compose, localhost:8203 in k8s. Env vars can't reach here (empty envp).
+if [ -z "$VAULT_AGENT_CRON_URL" ]; then
+    echo "[ERROR] VAULT_AGENT_CRON_URL is not set in $RAG_SEARCH_CONSTANTS"
     exit 1
 fi
 
@@ -51,7 +43,7 @@ log "  llmPlatform: $llmPlatform"
 log "  llmModel: $llmModel"
 log "  embeddingModel: $embeddingModel"
 log "  embeddingPlatform: $embeddingPlatform"
-log "  Vault Address: $VAULT_ADDR"
+log "  Vault Agent URL: $VAULT_AGENT_CRON_URL"
 
 # Validate required vaultUuid parameter
 if [ -z "$vaultUuid" ]; then
@@ -101,8 +93,8 @@ delete_vault_secret() {
     local data_path=$(echo "$vault_path" | sed 's|^secret/|secret/data/|')
     local metadata_path=$(echo "$vault_path" | sed 's|^secret/|secret/metadata/|')
     
-    log "Data API URL: $VAULT_ADDR/v1/$data_path"
-    log "Metadata API URL: $VAULT_ADDR/v1/$metadata_path"
+    log "Data API URL: $VAULT_AGENT_CRON_URL/v1/$data_path"
+    log "Metadata API URL: $VAULT_AGENT_CRON_URL/v1/$metadata_path"
     
     local success=true
     
@@ -111,7 +103,7 @@ delete_vault_secret() {
     # No X-Vault-Token header needed - vault agent proxy auto-injects it
     local data_response=$(curl -s -w "HTTPSTATUS:%{http_code}" \
         -X DELETE \
-        "$VAULT_ADDR/v1/$data_path")
+        "$VAULT_AGENT_CRON_URL/v1/$data_path")
     
     local data_http_code=$(echo "$data_response" | grep -o "HTTPSTATUS:[0-9]*" | cut -d: -f2)
     local data_body=$(echo "$data_response" | sed -E 's/HTTPSTATUS:[0-9]*$//')
@@ -129,7 +121,7 @@ delete_vault_secret() {
     # No X-Vault-Token header needed - vault agent proxy auto-injects it
     local metadata_response=$(curl -s -w "HTTPSTATUS:%{http_code}" \
         -X DELETE \
-        "$VAULT_ADDR/v1/$metadata_path")
+        "$VAULT_AGENT_CRON_URL/v1/$metadata_path")
     
     local metadata_http_code=$(echo "$metadata_response" | grep -o "HTTPSTATUS:[0-9]*" | cut -d: -f2)
     local metadata_body=$(echo "$metadata_response" | sed -E 's/HTTPSTATUS:[0-9]*$//')
