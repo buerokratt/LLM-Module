@@ -101,14 +101,7 @@ spec:
             - name: PORT
               value: "{{ .Values.service.targetPort }}"
 
-            # Vault configuration
-            {{- if .Values.vaultAgent.enabled }}
-            # Vault Agent proxy URL (localhost sidecar)
-            # WHY: LLM reads encrypted API keys through agent, not Vault directly
-            - name: VAULT_ADDR
-              value: "http://localhost:8201"
-            {{- end }}
-            
+
             # Additional environment variables from values
             {{- range $key, $value := .Values.env }}
             - name: {{ $key }}
@@ -155,12 +148,9 @@ spec:
             - name: logs-volume
               mountPath: {{ .Values.volumes.logs.mountPath }}
             {{- end }}
-            {{- if .Values.vaultAgent.enabled }}
-            - name: vault-agent-llm-token
-              mountPath: /agent/llm-token
-              readOnly: true
-            {{- end }}
-          
+            # No token mount: the service authenticates through the agent's
+            # api_proxy, which injects the token. Only the sidecar needs the sink.
+
           resources:
             requests:
               memory: "{{ .Values.resources.requests.memory }}"

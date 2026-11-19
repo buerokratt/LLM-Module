@@ -24,7 +24,8 @@ data:
         }
       }
 
-      # Keep: the orchestration service reads this token file directly.
+      # Agent-internal: auto_auth needs a sink. The orchestration service does
+      # not read it -- it authenticates through api_proxy below.
       sink "file" {
         config = {
           path = "{{ .Values.agent.tokenPath }}/token"

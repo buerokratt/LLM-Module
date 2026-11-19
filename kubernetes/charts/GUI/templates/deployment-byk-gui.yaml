@@ -97,11 +97,8 @@ spec:
         - name: REACT_APP_VAULT_PATH_PREFIX
           value: {{ .Values.global.vaultPathPrefix | default "" | quote }}
         
-        {{- if .Values.vaultAgent.enabled }}
-        # Vault Agent proxy URL (localhost sidecar)
-        - name: VAULT_AGENT_URL
-          value: "http://localhost:8202"
-        {{- end }}
+        # No agent URL env: the GUI calls /vault-agent-gui/, which nginx proxies
+        # to the localhost:8202 sidecar (GUI/nginx/http-nginx.conf).
 
         # Vite development server configuration
         - name: VITE_HOST

@@ -85,7 +85,6 @@ env:
   REDIS_PORT: "6379"
   REDIS_AUTH: "myredissecret"
   REDIS_SESSION_DB: "0"
-  VAULT_AGENT_PROXY: "true"
   TOOL_CLASSIFIER_ENABLED: "true"
   SERVICE_WORKFLOW_ENABLED: "true"
   API_TOOL_CALLING_WORKFLOW_ENABLED: "true"
@@ -106,6 +105,7 @@ constants:
   QDRANT_URL: "http://qdrant:6333"
   LOKI_URL: "http://loki:3100"
   LANGFUSE_URL: "http://langfuse-web:3000"
+  VAULT_AGENT_LLM_URL: "http://localhost:8201"  # vault agent sidecar in this pod
 
 # Vault Agent sidecar configuration
 # WHY: LLM Orchestration needs read access to encrypted LLM API keys
