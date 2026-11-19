@@ -138,8 +138,6 @@ class VaultAgentClient:
 
         if self.use_token_file:
             self._load_token()
-        else:
-            logger.info("No VAULT_TOKEN_FILE set - Vault Agent will supply the token")
 
         logger.info(f"Vault Agent client initialized: {self.vault_endpoint}")
 
