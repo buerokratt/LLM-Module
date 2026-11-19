@@ -23,6 +23,20 @@ else
     exit 1
 fi
 
+# KV path prefix, from constants.ini (empty for the module-owned Vault,
+# "llm-module" for the shared central Vault). Must match the writer exactly or
+# deletes will silently target a path that does not exist.
+VAULT_PATH_PREFIX="$(echo "${VAULT_PATH_PREFIX:-}" | sed 's|^/*||; s|/*$||')"
+
+# Build a logical (pre-KV-v2) Vault path: secret/<prefix>/<suffix>.
+prefixed_vault_path() {
+    if [ -n "$VAULT_PATH_PREFIX" ]; then
+        echo "secret/$VAULT_PATH_PREFIX/$1"
+    else
+        echo "secret/$1"
+    fi
+}
+
 # Logging function
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
@@ -71,9 +85,9 @@ get_model_name() {
 build_vault_path() {
     local secret_type=$1  # "llm" or "embeddings"
     local platform_name=$2
-    
+
     # UUID-based path: no environment in path, swap is DB-only
-    echo "secret/$secret_type/connections/$platform_name/$vaultUuid"
+    prefixed_vault_path "$secret_type/connections/$platform_name/$vaultUuid"
 }
 
 # Function to delete vault secret (both data and metadata)

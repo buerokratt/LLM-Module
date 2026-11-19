@@ -21,6 +21,25 @@ from loguru import logger
 TEST_VAULT_UUID = "00000000-0000-0000-0000-000000000001"
 
 
+# KV path prefix under test. Empty reproduces the module-owned Vault layout.
+# Set VAULT_PATH_PREFIX=llm-module to exercise the shared central Vault layout:
+# the fixtures then seed and grant on prefixed paths, while the application code
+# resolves the prefix itself through VaultAgentClient. Both sides must agree or
+# every lookup misses.
+TEST_VAULT_PATH_PREFIX = os.getenv("VAULT_PATH_PREFIX", "").strip().strip("/")
+
+
+def vault_path(suffix: str) -> str:
+    """Mount-relative path with the configured prefix applied."""
+    suffix = suffix.strip("/")
+    return f"{TEST_VAULT_PATH_PREFIX}/{suffix}" if TEST_VAULT_PATH_PREFIX else suffix
+
+
+def policy_glob(tree: str, suffix: str) -> str:
+    """Full policy path, e.g. secret/data/<prefix>/llm/*."""
+    return f"secret/{tree}/{vault_path(suffix)}"
+
+
 # ===================== VaultAgentClient =====================
 class VaultAgentClient:
     """Client for interacting with Vault using a token written by Vault Agent"""
@@ -225,18 +244,21 @@ class RAGStackTestContainers:
             logger.info("AppRole enabled")
 
         # Create policy with permissions for all secret paths (updated with correct embedding paths)
-        policy = """
-path "secret/metadata/llm/*" { capabilities = ["list"] }
-path "secret/data/llm/*"     { capabilities = ["read"] }
-path "secret/metadata/langfuse/*" { capabilities = ["list"] }
-path "secret/data/langfuse/*"     { capabilities = ["read"] }
-path "secret/metadata/embeddings/*" { capabilities = ["list"] }
-path "secret/data/embeddings/*"     { capabilities = ["read"] }
-path "secret/metadata/guardrails/*" { capabilities = ["list"] }
-path "secret/data/guardrails/*"     { capabilities = ["read"] }
-path "auth/token/lookup-self" { capabilities = ["read"] }
-path "auth/token/renew-self" { capabilities = ["update"] }
-"""
+        # Grants mirror the production llm-orchestration-policy: read on data,
+        # list on metadata (listing is a metadata operation, and a missing grant
+        # fails silently by returning an empty list).
+        policy = "\n".join(
+            [
+                f'path "{policy_glob("metadata", "llm/*")}" {{ capabilities = ["list"] }}',
+                f'path "{policy_glob("data", "llm/*")}" {{ capabilities = ["read"] }}',
+                f'path "{policy_glob("metadata", "langfuse/*")}" {{ capabilities = ["list"] }}',
+                f'path "{policy_glob("data", "langfuse/*")}" {{ capabilities = ["read"] }}',
+                f'path "{policy_glob("metadata", "embeddings/*")}" {{ capabilities = ["list"] }}',
+                f'path "{policy_glob("data", "embeddings/*")}" {{ capabilities = ["read"] }}',
+                'path "auth/token/lookup-self" { capabilities = ["read"] }',
+                'path "auth/token/renew-self" { capabilities = ["update"] }',
+            ]
+        )
         client.sys.create_or_update_policy("llm-orchestration", policy)
         logger.info("Policy 'llm-orchestration' created")
 
@@ -316,8 +338,10 @@ path "auth/token/renew-self" { capabilities = ["update"] }
         # this UUID in ensure_testing_connection, and inference/test.yml forwards it
         # to /orchestrate/test. The LLM, embedding and guardrails resolvers all read
         # the secret using this UUID as the connection_id.
-        llm_vault_path = f"llm/connections/azure_openai/{TEST_VAULT_UUID}"
-        embedding_vault_path = f"embeddings/connections/azure_openai/{TEST_VAULT_UUID}"
+        llm_vault_path = vault_path(f"llm/connections/azure_openai/{TEST_VAULT_UUID}")
+        embedding_vault_path = vault_path(
+            f"embeddings/connections/azure_openai/{TEST_VAULT_UUID}"
+        )
 
         # ============================================================
         # CHAT MODEL SECRET (LLM path)
@@ -434,7 +458,9 @@ path "auth/token/renew-self" { capabilities = ["update"] }
             "host": "http://langfuse-web:3000",
         }
         client.secrets.kv.v2.create_or_update_secret(
-            mount_point="secret", path="langfuse/config", secret=langfuse_secret
+            mount_point="secret",
+            path=vault_path("langfuse/config"),
+            secret=langfuse_secret,
         )
         logger.info("Langfuse configuration secret written")
 
@@ -674,7 +700,7 @@ path "auth/token/renew-self" { capabilities = ["update"] }
         """Verify the token has correct permissions to read secrets"""
         try:
             client.secrets.kv.v2.read_secret_version(
-                path=f"llm/connections/azure_openai/{TEST_VAULT_UUID}",
+                path=vault_path(f"llm/connections/azure_openai/{TEST_VAULT_UUID}"),
                 mount_point="secret",
             )
             logger.info("Token has correct permissions to read secrets")

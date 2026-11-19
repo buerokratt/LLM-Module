@@ -4,6 +4,7 @@ import os
 import threading
 from pathlib import Path
 from typing import Optional, Dict, Any, cast
+from src.constants_loader import get_optional_constant
 from src.loki_logger import LokiLogger
 import hvac
 from hvac.exceptions import InvalidPath, Forbidden
@@ -20,6 +21,19 @@ logger = LokiLogger(service_name="vault-client")
 # Global singleton instance
 _vault_client_instance: Optional["VaultAgentClient"] = None
 _vault_client_lock = threading.Lock()
+
+
+def _resolve_path_prefix() -> str:
+    """Resolve the KV path prefix, normalized without surrounding slashes.
+
+    constants.ini is the source of truth so that Python and the CronManager
+    shell scripts read the same value; VAULT_PATH_PREFIX in the environment
+    overrides it for ad-hoc runs and tests. Empty means no prefix.
+    """
+    raw = os.getenv("VAULT_PATH_PREFIX")
+    if raw is None:
+        raw = get_optional_constant("VAULT_PATH_PREFIX")
+    return raw.strip().strip("/")
 
 
 def get_vault_client(
@@ -86,6 +100,13 @@ class VaultAgentClient:
         self.mount_point = mount_point
         self.timeout = timeout
         self.use_token_file = use_token_file
+
+        # Applied here, at the single chokepoint for every Vault read. Callers
+        # (SecretResolver, the Langfuse lookup) pass unprefixed logical paths
+        # and must not prefix them again.
+        self.path_prefix = _resolve_path_prefix()
+        if self.path_prefix:
+            logger.info(f"Vault path prefix active: {self.path_prefix}/")
 
         # Auto-detect proxy mode: if URL points to vault-agent, don't use token file
         if "vault-agent" in self.vault_url.lower():
@@ -202,11 +223,25 @@ class VaultAgentClient:
             logger.warning(f"Vault not available: {e}")
             return False
 
+    def _apply_prefix(self, path: str) -> str:
+        """Prepend the configured KV path prefix to a logical secret path.
+
+        Mount-relative in, mount-relative out: "llm/connections/azure_openai/x"
+        becomes "llm-module/llm/connections/azure_openai/x". hvac still adds the
+        mount and the data/ or metadata/ segment on top.
+        """
+        clean = path.strip("/")
+        if not self.path_prefix:
+            return clean
+        return f"{self.path_prefix}/{clean}"
+
     def get_secret(self, path: str) -> Optional[Dict[str, Any]]:
         """Retrieve secret from Vault KV v2 store.
 
         Args:
-            path: Secret path (e.g., "llm/connections/azure_openai/production/gpt-4o")
+            path: Mount-relative logical path WITHOUT the configured prefix,
+                e.g. "llm/connections/azure_openai/<vault_uuid>". The prefix is
+                applied internally.
 
         Returns:
             Secret data or None if not found
@@ -224,28 +259,32 @@ class VaultAgentClient:
             if not self.is_authenticated():
                 raise VaultConnectionError("Vault authentication failed")
 
+        full_path = self._apply_prefix(path)
+
         try:
             # Use KV v2 API
             response = self.client.secrets.kv.v2.read_secret_version(
-                path=path,
+                path=full_path,
                 mount_point=self.mount_point,
             )
 
             if response and "data" in response:
                 secret_data = response["data"]["data"]
-                logger.debug(f"Successfully retrieved secret from path: {path}")
+                logger.debug(f"Successfully retrieved secret from path: {full_path}")
                 return secret_data
             else:
-                logger.debug(f"Secret not found at path: {path}")
+                logger.debug(f"Secret not found at path: {full_path}")
                 return None
 
         except InvalidPath:
-            logger.debug(f"Secret not found at path: {path}")
+            logger.debug(f"Secret not found at path: {full_path}")
             return None
         except Forbidden as e:
-            raise VaultSecretError(f"Access denied to secret path {path}: {e}") from e
+            raise VaultSecretError(
+                f"Access denied to secret path {full_path}: {e}"
+            ) from e
         except Exception as e:
-            logger.error(f"Error retrieving secret from path {path}: {e}")
+            logger.error(f"Error retrieving secret from path {full_path}: {e}")
             raise VaultSecretError(f"Failed to retrieve secret: {e}") from e
 
     def list_secrets(self, path: str) -> Optional[list[str]]:
@@ -269,25 +308,27 @@ class VaultAgentClient:
             if not self.is_authenticated():
                 raise VaultConnectionError("Vault authentication failed")
 
+        full_path = self._apply_prefix(path)
+
         try:
             response = self.client.secrets.kv.v2.list_secrets(
-                path=path,
+                path=full_path,
                 mount_point=self.mount_point,
             )
 
             if response and "data" in response:
                 keys = response["data"].get("keys", [])
-                logger.debug(f"Listed {len(keys)} secrets at path: {path}")
+                logger.debug(f"Listed {len(keys)} secrets at path: {full_path}")
                 return keys
             else:
-                logger.debug(f"No secrets found at path: {path}")
+                logger.debug(f"No secrets found at path: {full_path}")
                 return None
 
         except InvalidPath:
-            logger.debug(f"Path not found: {path}")
+            logger.debug(f"Path not found: {full_path}")
             return None
         except Exception as e:
-            logger.error(f"Error listing secrets at path {path}: {e}")
+            logger.error(f"Error listing secrets at path {full_path}: {e}")
             raise VaultSecretError(f"Failed to list secrets: {e}") from e
 
     def refresh_token(self) -> bool:

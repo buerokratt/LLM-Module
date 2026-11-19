@@ -25,9 +25,24 @@ fi
 
 echo "DEBUG: VAULT_ADDR=$VAULT_ADDR (source: ${vaultAgentUrl:+request parameter}${vaultAgentUrl:-$RAG_SEARCH_CONSTANTS})"
 
+# KV path prefix, from constants.ini (empty for the module-owned Vault,
+# "llm-module" for the shared central Vault). Normalized without slashes so the
+# joins below cannot produce "secret//..." or a doubled separator.
+VAULT_PATH_PREFIX="$(echo "${VAULT_PATH_PREFIX:-}" | sed 's|^/*||; s|/*$||')"
+
+# Build a logical (pre-KV-v2) Vault path: secret/<prefix>/<suffix>.
+# The data/ and metadata/ rewrites happen later and are prefix-agnostic.
+prefixed_vault_path() {
+    if [ -n "$VAULT_PATH_PREFIX" ]; then
+        echo "secret/$VAULT_PATH_PREFIX/$1"
+    else
+        echo "secret/$1"
+    fi
+}
+
 # Decryption Configuration
 PRIVATE_KEY_CACHE=""
-PRIVATE_KEY_PATH="secret/encryption/private_key"
+PRIVATE_KEY_PATH="$(prefixed_vault_path "encryption/private_key")"
 
 # Python decryption script path
 DECRYPT_SCRIPT="/app/src/utils/decrypt_vault_secrets.py"
@@ -232,9 +247,9 @@ get_model_name() {
 build_vault_path() {
     local secret_type=$1  # "llm" or "embeddings"
     local platform=$(get_platform_name)
-    
+
     # UUID-based path: no environment in path, swap is DB-only
-    echo "secret/$secret_type/connections/$platform/$vaultUuid"
+    prefixed_vault_path "$secret_type/connections/$platform/$vaultUuid"
 }
 
 # Function to store LLM secrets
