@@ -1,3 +1,7 @@
+# Fallback for the umbrella chart's global block when rendered standalone.
+global:
+  vaultPathPrefix: ""
+
 replicas: 1
 enabled: true
 
@@ -108,3 +112,5 @@ constants:
 # Security: Agent enforces policy - read-only access to LLM secrets
 vaultAgent:
   enabled: true
+  # Secret created by the central Vault bootstrap; keys role_id, secret_id.
+  approleSecretName: "llm-module-llm-approle"
