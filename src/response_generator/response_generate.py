@@ -15,6 +15,7 @@ from src.utils.observation_utils import (
 from src.llm_orchestrator_config.llm_ochestrator_constants import OUT_OF_SCOPE_MESSAGE
 from src.utils.cost_utils import get_lm_usage_since
 from src.optimization.optimized_module_loader import get_module_loader
+from llm_orchestrator_config.providers.azure_openai import is_reasoning_lm
 from src.vector_indexer.constants import ResponseGenerationConstants
 
 # Initialize Loki logger for response generator
@@ -537,11 +538,16 @@ class ResponseGeneratorAgent(dspy.Module):
             attempts += 1
             logger.warning(f"Retry attempt {attempts}/{self._max_retries}")
 
+            retry_config: Dict[str, Any] = {"rollout_id": attempts}
+            # Reasoning models (GPT-5.x) reject any temperature other than 1
+            if not is_reasoning_lm(lm):
+                retry_config["temperature"] = 0.1
+
             pred = self._predictor(
                 question=augmented_question,
                 context_blocks=context_blocks,
                 citations=citation_labels,
-                config={"rollout_id": attempts, "temperature": 0.1},
+                config=retry_config,
             )
             valid = self._validate_prediction(pred)
 

@@ -8,11 +8,19 @@ llm:
   providers:
     # Azure OpenAI Configuration
     azure_openai:
-      api_version: "2024-02-15-preview"
-      cache: true
+      api_version: "2025-01-01-preview"
+      cache: false  # Repeated questions return stale answers when DSPy caches completions
       num_retries: 3
-      
-      # Multiple model configurations
+
+      # Multiple model configurations.
+      # Reasoning models (gpt-5*, o1/o3/o4/o5*): temperature is forced to 1.0 and
+      # max_tokens raised to at least 16000 by the provider. reasoning_effort
+      # values depend on the model:
+      #   gpt-5:           minimal|low|medium|high       (default medium)
+      #   gpt-5.1:         none|low|medium|high          (default none)
+      #   gpt-5.2, 5.4:    none|low|medium|high|xhigh    (default none)
+      #   o-series:        low|medium|high               (default medium)
+      # Unset or unsupported values use the model's default.
       models:
         gpt-4o-mini:
           model_type: "chat"
@@ -37,6 +45,20 @@ llm:
           max_tokens: 13107
           temperature: 0.6
           deployment_name: "gpt-4.1"
+
+        gpt-5.2:
+          model_type: "chat"
+          max_tokens: 16000
+          temperature: 1.0
+          reasoning_effort: "none"
+          deployment_name: "gpt-5.2"
+
+        gpt-5.4:
+          model_type: "chat"
+          max_tokens: 16000
+          temperature: 1.0
+          reasoning_effort: "none"
+          deployment_name: "gpt-5.4"
 
 
     # AWS Bedrock Configuration

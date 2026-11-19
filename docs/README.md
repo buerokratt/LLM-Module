@@ -41,6 +41,7 @@ the areas below.
 | [VAULT_SETUP_AND_USAGE.md](./VAULT_SETUP_AND_USAGE.md) | Operational guide: dual-network topology, vault-agents, bootstrap flow, AppRole auth, and credential reconciliation. |
 | [VAULT_SECURITY_ARCHITECTURE.md](./VAULT_SECURITY_ARCHITECTURE.md) | Security model: threat model, network isolation, AppRole authentication, and the per-policy access-control matrix. |
 | [CONNECTION_SWAP_FLOW.md](./CONNECTION_SWAP_FLOW.md) | UUID-based Vault path design enabling zero-I/O environment swaps (promote/demote) between LLM connections. |
+| [SWITCH_CONNECTION_TO_GPT_5_4.md](./SWITCH_CONNECTION_TO_GPT_5_4.md) | How to switch an existing Azure OpenAI connection to GPT-5.4: Azure deployment, new vs edited connection, restart and verification, and reasoning-model settings. |
 | [CUSTOM_PROMPT_CONFIGURATION.md](./CUSTOM_PROMPT_CONFIGURATION.md) | Admin-facing prompt management: database → Ruuter DSL → Python loader with TTL cache and invalidation. |
 
 ## Data & Sessions
