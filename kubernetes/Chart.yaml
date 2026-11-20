@@ -53,10 +53,6 @@ dependencies:
     version: 0.1.0
     repository: "file://./charts/S3-Ferry"
     condition: S3-Ferry.enabled
-  - name: minio
-    version: 0.1.0
-    repository: "file://./charts/minio"
-    condition: minio.enabled
   - name: seaweedfs
     version: 0.1.0
     repository: "file://./charts/seaweedfs"

@@ -38,10 +38,6 @@ Grafana:
 S3-Ferry:
   enabled: true
 
-# Replaced by seaweedfs; chart kept for one release as rollback
-minio:
-  enabled: false
-
 seaweedfs:
   enabled: true
 
