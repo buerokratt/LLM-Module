@@ -50,6 +50,7 @@ the areas below.
 | --- | --- |
 | [DRAGONFLY_SESSION_STORE.md](./DRAGONFLY_SESSION_STORE.md) | Dragonfly session store: keyspace, keys and TTLs, client settings, fail-open behaviour, and CRUD for agentic-loop state. |
 | [DRAGONFLY_OPERATIONS.md](./DRAGONFLY_OPERATIONS.md) | Dragonfly runbook: flags, sizing, monitoring and alert responses, common commands, snapshots/backup, upgrades, troubleshooting. |
+| [STAGING_DEPLOYMENT_DRAGONFLY_SEAWEEDFS.md](./STAGING_DEPLOYMENT_DRAGONFLY_SEAWEEDFS.md) | Staging (Kubernetes) rollout of the Redis → Dragonfly and MinIO → SeaweedFS migration: secrets, MinIO backup, Langfuse drain, gated rollout, hypercare, rollback, decommission. |
 
 ## API Reference
 
