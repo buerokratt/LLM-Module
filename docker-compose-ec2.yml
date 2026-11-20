@@ -190,7 +190,7 @@ services:
     environment:
       - server.port=9010
       - PYTHONPATH=/app:/app/src:/app/src/vector_indexer:/app/src/intent_data_enrichment:/app/src/api_tool_indexer
-      # NOTE: the vault scripts read VAULT_AGENT_URL from constants.ini, not from
+      # NOTE: the vault scripts read VAULT_AGENT_CRON_URL from constants.ini, not from
       # here - CronManager execs job scripts with an empty environment, so nothing
       # set in this block ever reaches them.
     ports:
@@ -634,8 +634,6 @@ services:
       - .env
     environment:
       - ENVIRONMENT=production
-      - VAULT_ADDR=http://vault-agent-llm:8201
-      # VAULT_TOKEN not set - vault-agent-llm proxy handles authentication
       - REDIS_HOST=${REDIS_HOST}
       - REDIS_PORT=${REDIS_PORT}
       - REDIS_AUTH=${REDIS_AUTH}

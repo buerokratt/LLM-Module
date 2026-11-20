@@ -1,3 +1,7 @@
+# Fallback for the umbrella chart's global block when rendered standalone.
+global:
+  vaultPathPrefix: ""
+
 replicas: 1
 enabled: true
 release_name: "cron-manager"
@@ -12,7 +16,6 @@ cronmanager:
   environment:
     containerPort: "8080"
     pythonPath: "/app:/app/src:/app/src/vector_indexer:/app/src/intent_data_enrichment:/app/src/api_tool_indexer"
-    VAULT_ADDR: "http://vault:8200"
 
 service:
   type: ClusterIP
@@ -44,7 +47,7 @@ dslConstants:
   RAG_SEARCH_LLM_SERVICE: "http://llm-orchestration-service:8100"
   QDRANT_URL: "http://qdrant:6333"
   LOKI_URL: "http://loki:3100"
-  VAULT_AGENT_URL: "http://localhost:8203"  # vault agent sidecar in this pod
+  VAULT_AGENT_CRON_URL: "http://localhost:8203"  # vault agent sidecar in this pod
 
 resources:
   requests:
@@ -60,3 +63,5 @@ podAnnotations:
 # Vault Agent sidecar configuration
 vaultAgent:
   enabled: true
+  # Secret created by the central Vault bootstrap; keys role_id, secret_id.
+  approleSecretName: "llm-module-cron-approle"

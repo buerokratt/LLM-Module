@@ -124,6 +124,9 @@ services:
       - DEBUG_ENABLED=true
       - CHOKIDAR_USEPOLLING=true
       - PORT=3001
+      # Vault KV path prefix used when fetching the public encryption key.
+      # Must match VAULT_PATH_PREFIX in constants.ini.
+      - REACT_APP_VAULT_PATH_PREFIX=${VAULT_PATH_PREFIX:-}
       - REACT_APP_SERVICE_ID=settings,services,training,rag-search,knowledge-center
       - REACT_APP_ENABLE_HIDDEN_FEATURES=TRUE
       - REACT_APP_ENABLE_MULTI_DOMAIN=FALSE
@@ -189,7 +192,7 @@ services:
     environment:
       - server.port=9010
       - PYTHONPATH=/app:/app/src:/app/src/vector_indexer:/app/src/intent_data_enrichment:/app/src/api_tool_indexer
-      # NOTE: the vault scripts read VAULT_AGENT_URL from constants.ini, not from
+      # NOTE: the vault scripts read VAULT_AGENT_CRON_URL from constants.ini, not from
       # here - CronManager execs job scripts with an empty environment, so nothing
       # set in this block ever reaches them.
     ports:
@@ -474,6 +477,10 @@ services:
         condition: service_healthy
     environment:
       VAULT_ADDR: http://rag-vault:8200
+      # KV path prefix for the policies and keypair this script writes. Keep in
+      # sync with VAULT_PATH_PREFIX in constants.ini and REACT_APP_VAULT_PATH_PREFIX
+      # below — a mismatch grants policies on paths nothing reads.
+      VAULT_PATH_PREFIX: ${VAULT_PATH_PREFIX:-}
     volumes:
       - vault-data:/vault/data
       - vault-agent-creds:/agent/credentials
@@ -581,8 +588,6 @@ services:
       - .env
     environment:
       - ENVIRONMENT=production
-      - VAULT_ADDR=http://vault-agent-llm:8201
-      # VAULT_TOKEN not set - vault-agent-llm proxy handles authentication
       - REDIS_HOST=${REDIS_HOST}
       - REDIS_PORT=${REDIS_PORT}
       - REDIS_AUTH=${REDIS_AUTH}

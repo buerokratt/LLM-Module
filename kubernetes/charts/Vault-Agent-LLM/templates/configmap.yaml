@@ -8,7 +8,7 @@ metadata:
 data:
   agent.hcl: |
     vault {
-      address = "http://vault:8200"
+      address = "{{ .Values.agent.vaultAddress }}"
       retry {
         num_retries = 5
       }
@@ -18,26 +18,28 @@ data:
       method "approle" {
         mount_path = "auth/approle"
         config = {
-          role_id_file_path   = "/agent/credentials/llm_role_id"
-          secret_id_file_path = "/agent/credentials/llm_secret_id"
+          role_id_file_path   = "{{ .Values.agent.credentialsPath }}/{{ .Values.agent.roleIdFile }}"
+          secret_id_file_path = "{{ .Values.agent.credentialsPath }}/{{ .Values.agent.secretIdFile }}"
           remove_secret_id_file_after_reading = false
         }
       }
 
+      # Agent-internal: auto_auth needs a sink. The orchestration service does
+      # not read it -- it authenticates through api_proxy below.
       sink "file" {
         config = {
-          path = "/agent/llm-token/token"
+          path = "{{ .Values.agent.tokenPath }}/token"
           mode = 0640
         }
       }
     }
 
     cache {
-      default_lease_duration = "1h"  # Longer TTL for LLM service
+      default_lease_duration = "{{ .Values.agent.tokenTTL }}"  # Longer TTL for LLM service
     }
 
     listener "tcp" {
-      address     = "0.0.0.0:8201"  # Listen on all interfaces
+      address     = "0.0.0.0:{{ .Values.agent.port }}"  # Listen on all interfaces
       tls_disable = true
     }
 

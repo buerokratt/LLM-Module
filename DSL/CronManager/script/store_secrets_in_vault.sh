@@ -8,26 +8,33 @@ set -e  # Exit on any error
 # Configuration
 source /app/scripts/load_constants.sh
 
-# Resolve Vault Agent URL:
-# 1. vaultAgentUrl, if passed as a CronManager request parameter (allowedEnvs).
-# 2. VAULT_AGENT_URL from constants.ini — vault-agent-cron:8203 under compose,
-#    localhost:8203 in k8s where the agent is a sidecar in this same pod.
-# Container environment variables are NOT an option here: CronManager execs job
-# scripts with an explicit empty envp, so nothing from `environment:` arrives.
-if [ -n "$vaultAgentUrl" ]; then
-    VAULT_ADDR="$vaultAgentUrl"
-elif [ -n "$VAULT_AGENT_URL" ]; then
-    VAULT_ADDR="$VAULT_AGENT_URL"
-else
-    echo "[ERROR] VAULT_AGENT_URL is not set in $RAG_SEARCH_CONSTANTS and no vaultAgentUrl parameter was given"
+# VAULT_AGENT_CRON_URL comes from constants.ini — vault-agent-cron:8203 under
+# compose, localhost:8203 in k8s. Env vars can't reach here (empty envp).
+if [ -z "$VAULT_AGENT_CRON_URL" ]; then
+    echo "[ERROR] VAULT_AGENT_CRON_URL is not set in $RAG_SEARCH_CONSTANTS"
     exit 1
 fi
 
-echo "DEBUG: VAULT_ADDR=$VAULT_ADDR (source: ${vaultAgentUrl:+request parameter}${vaultAgentUrl:-$RAG_SEARCH_CONSTANTS})"
+echo "DEBUG: VAULT_AGENT_CRON_URL=$VAULT_AGENT_CRON_URL (source: $RAG_SEARCH_CONSTANTS)"
+
+# KV path prefix, from constants.ini (empty for the module-owned Vault,
+# "llm-module" for the shared central Vault). Normalized without slashes so the
+# joins below cannot produce "secret//..." or a doubled separator.
+VAULT_PATH_PREFIX="$(echo "${VAULT_PATH_PREFIX:-}" | sed 's|^/*||; s|/*$||')"
+
+# Build a logical (pre-KV-v2) Vault path: secret/<prefix>/<suffix>.
+# The data/ and metadata/ rewrites happen later and are prefix-agnostic.
+prefixed_vault_path() {
+    if [ -n "$VAULT_PATH_PREFIX" ]; then
+        echo "secret/$VAULT_PATH_PREFIX/$1"
+    else
+        echo "secret/$1"
+    fi
+}
 
 # Decryption Configuration
 PRIVATE_KEY_CACHE=""
-PRIVATE_KEY_PATH="secret/encryption/private_key"
+PRIVATE_KEY_PATH="$(prefixed_vault_path "encryption/private_key")"
 
 # Python decryption script path
 DECRYPT_SCRIPT="/app/src/utils/decrypt_vault_secrets.py"
@@ -56,7 +63,7 @@ fetch_private_key() {
     # Fetch private key from Vault
     local response=$(curl -s --max-time 10 -w "HTTPSTATUS:%{http_code}" \
         -X GET \
-        "$VAULT_ADDR/v1/$api_path")
+        "$VAULT_AGENT_CRON_URL/v1/$api_path")
     
     local http_code=$(echo "$response" | grep -o "HTTPSTATUS:[0-9]*" | cut -d: -f2)
     local body=$(echo "$response" | sed -E 's/HTTPSTATUS:[0-9]*$//')
@@ -190,7 +197,7 @@ log "  vaultUuid: $vaultUuid"
 log "  llmPlatform: $llmPlatform"
 log "  llmModel: $llmModel"
 log "  deploymentEnvironment: $deploymentEnvironment"
-log "  Vault Address: $VAULT_ADDR"
+log "  Vault Agent URL: $VAULT_AGENT_CRON_URL"
 
 # Validate required vaultUuid parameter
 if [ -z "$vaultUuid" ]; then
@@ -232,9 +239,9 @@ get_model_name() {
 build_vault_path() {
     local secret_type=$1  # "llm" or "embeddings"
     local platform=$(get_platform_name)
-    
+
     # UUID-based path: no environment in path, swap is DB-only
-    echo "secret/$secret_type/connections/$platform/$vaultUuid"
+    prefixed_vault_path "$secret_type/connections/$platform/$vaultUuid"
 }
 
 # Function to store LLM secrets
@@ -308,7 +315,7 @@ store_aws_llm_secrets() {
     
     # Convert path for KV v2 API (secret/path -> secret/data/path)
     local api_path=$(echo "$vault_path" | sed 's|^secret/|secret/data/|')
-    log "API URL: $VAULT_ADDR/v1/$api_path"
+    log "API URL: $VAULT_AGENT_CRON_URL/v1/$api_path"
     
     # Execute HTTP API call
     # No X-Vault-Token header needed - vault agent proxy auto-injects it
@@ -316,7 +323,7 @@ store_aws_llm_secrets() {
         -X POST \
         -H "Content-Type: application/json" \
         -d "$json_payload" \
-        "$VAULT_ADDR/v1/$api_path")
+        "$VAULT_AGENT_CRON_URL/v1/$api_path")
     
     local http_code=$(echo "$response" | grep -o "HTTPSTATUS:[0-9]*" | cut -d: -f2)
     local body=$(echo "$response" | sed -E 's/HTTPSTATUS:[0-9]*$//')
@@ -370,7 +377,7 @@ store_azure_llm_secrets() {
     
     # Convert path for KV v2 API (secret/path -> secret/data/path)
     local api_path=$(echo "$vault_path" | sed 's|^secret/|secret/data/|')
-    log "API URL: $VAULT_ADDR/v1/$api_path"
+    log "API URL: $VAULT_AGENT_CRON_URL/v1/$api_path"
     
     # Execute HTTP API call
     # No X-Vault-Token header needed - vault agent proxy auto-injects it
@@ -378,7 +385,7 @@ store_azure_llm_secrets() {
         -X POST \
         -H "Content-Type: application/json" \
         -d "$json_payload" \
-        "$VAULT_ADDR/v1/$api_path")
+        "$VAULT_AGENT_CRON_URL/v1/$api_path")
     
     local http_code=$(echo "$response" | grep -o "HTTPSTATUS:[0-9]*" | cut -d: -f2)
     local body=$(echo "$response" | sed -E 's/HTTPSTATUS:[0-9]*$//')
@@ -434,7 +441,7 @@ store_aws_embedding_secrets() {
     
     # Convert path for KV v2 API (secret/path -> secret/data/path)
     local api_path=$(echo "$vault_path" | sed 's|^secret/|secret/data/|')
-    log "API URL: $VAULT_ADDR/v1/$api_path"
+    log "API URL: $VAULT_AGENT_CRON_URL/v1/$api_path"
     
     # Execute HTTP API call
     # No X-Vault-Token header needed - vault agent proxy auto-injects it
@@ -442,7 +449,7 @@ store_aws_embedding_secrets() {
         -X POST \
         -H "Content-Type: application/json" \
         -d "$json_payload" \
-        "$VAULT_ADDR/v1/$api_path")
+        "$VAULT_AGENT_CRON_URL/v1/$api_path")
     
     local http_code=$(echo "$response" | grep -o "HTTPSTATUS:[0-9]*" | cut -d: -f2)
     local body=$(echo "$response" | sed -E 's/HTTPSTATUS:[0-9]*$//')
@@ -495,7 +502,7 @@ store_azure_embedding_secrets() {
     
     # Convert path for KV v2 API (secret/path -> secret/data/path)
     local api_path=$(echo "$vault_path" | sed 's|^secret/|secret/data/|')
-    log "API URL: $VAULT_ADDR/v1/$api_path"
+    log "API URL: $VAULT_AGENT_CRON_URL/v1/$api_path"
     
     # Execute HTTP API call
     # No X-Vault-Token header needed - vault agent proxy auto-injects it
@@ -503,7 +510,7 @@ store_azure_embedding_secrets() {
         -X POST \
         -H "Content-Type: application/json" \
         -d "$json_payload" \
-        "$VAULT_ADDR/v1/$api_path")
+        "$VAULT_AGENT_CRON_URL/v1/$api_path")
     
     local http_code=$(echo "$response" | grep -o "HTTPSTATUS:[0-9]*" | cut -d: -f2)
     local body=$(echo "$response" | sed -E 's/HTTPSTATUS:[0-9]*$//')
