@@ -144,15 +144,15 @@ class LLMOrchestrationService:
         # This allows components to be initialized per-request with proper context
         self.tool_classifier = None
 
-        # Redis-backed session store for API Tool Calling agentic loop.
+        # Dragonfly-backed session store for API Tool Calling agentic loop.
         # Set to None here; the FastAPI lifespan injects the live store after
-        # Redis initialises (app.state.orchestration_service.session_store = ...).
+        # Dragonfly initialises (app.state.orchestration_service.session_store = ...).
         # Workflow executors access it via self.orchestration_service.session_store.
         self.session_store: Any = None
 
-        # Redis-backed conversation history store.
+        # Dragonfly-backed conversation history store.
         # Set to None here; the FastAPI lifespan injects the live store after
-        # Redis initialises (app.state.orchestration_service.conversation_history_store = ...).
+        # Dragonfly initialises (app.state.orchestration_service.conversation_history_store = ...).
         self.conversation_history_store: Any = None
 
         # Shared BM25 search index pre-warmed at startup.
@@ -727,7 +727,7 @@ class LLMOrchestrationService:
                         # Tracks whether an excluded marker (OOS / guardrail violation /
                         # error) was observed at any point during the stream.  When True
                         # the entire accumulated buffer is discarded so no partial content
-                        # from before the blocked marker is ever written to Redis.
+                        # from before the blocked marker is ever written to Dragonfly.
                         _history_blocked = False
 
                         async for sse_chunk in stream_result:

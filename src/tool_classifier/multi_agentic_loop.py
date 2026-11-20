@@ -96,7 +96,7 @@ class MultiEndpointAgenticLoop:
         """Initialise the loop with injected session store and param extractor.
 
         Args:
-            session_store: Redis-backed store used to persist loop state between
+            session_store: Dragonfly-backed store used to persist loop state between
                 HTTP requests. Injected to allow easy mocking in tests. May be
                 ``None`` in environments where session persistence is unavailable.
             param_extractor: DSPy module that extracts parameter values from a
@@ -137,7 +137,7 @@ class MultiEndpointAgenticLoop:
         8. Otherwise → save session, return NEEDS_INPUT with the clarifying question.
 
         Args:
-            chat_id: Unique conversation identifier used as the Redis session key.
+            chat_id: Unique conversation identifier used as the Dragonfly session key.
             user_message: The user's latest message for this turn.
             conversation_history: Recent conversation turns as a list of
                 ``{"authorRole": str, "message": str}`` dicts.
@@ -1389,7 +1389,7 @@ class MultiEndpointAgenticLoop:
         turn_count: int,
         awaiting_continuation: bool = False,
     ) -> None:
-        """Persist updated loop state to the Redis session store.
+        """Persist updated loop state to the Dragonfly session store.
 
         Only updates fields owned by the loop (parallel_endpoints, turn_count,
         awaiting_continuation).  Workflow-owned fields are preserved.

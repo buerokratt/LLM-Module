@@ -26,7 +26,7 @@ REFERENCES_SECTION_HEADER = "\n\n**References:**\n"
 
 # Set of content strings that must NOT be persisted in conversation history.
 # Covers all multilingual error / OOS / guardrail-violation messages so that
-# failed or blocked exchanges are never written to Redis.
+# failed or blocked exchanges are never written to Dragonfly.
 _HISTORY_EXCLUDED_MESSAGES: frozenset[str] = frozenset(
     {
         *OUT_OF_SCOPE_MESSAGES.values(),

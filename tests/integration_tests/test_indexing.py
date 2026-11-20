@@ -2,7 +2,7 @@
 Integration tests for the vector indexing pipeline.
 
 These tests verify the full flow:
-1. Upload document to MinIO
+1. Upload document to S3 (SeaweedFS)
 2. Generate presigned URL
 3. Run VectorIndexer
 4. Verify embeddings in Qdrant
@@ -22,10 +22,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 
 class TestIndexingPipeline:
-    """Test the complete indexing pipeline from MinIO to Qdrant."""
+    """Test the complete indexing pipeline from S3 (SeaweedFS) to Qdrant."""
 
     def test_minio_connection(self, minio_client: Minio):
-        """Verify MinIO is accessible."""
+        """Verify the S3 store (SeaweedFS) is accessible."""
         # List buckets to verify connection
         buckets = minio_client.list_buckets()
         assert buckets is not None
@@ -37,7 +37,7 @@ class TestIndexingPipeline:
         assert collections is not None
 
     def test_create_and_upload_document(self, minio_client: Minio, test_bucket: str):
-        """Test document upload to MinIO."""
+        """Test document upload to S3 (SeaweedFS)."""
         # Verify bucket was created
         assert minio_client.bucket_exists(test_bucket)
 
@@ -56,7 +56,9 @@ class TestIndexingPipeline:
         finally:
             Path(temp_path).unlink()
 
-    def test_presigned_url_generation(self, minio_client: Minio, test_document):
+    def test_presigned_url_generation(
+        self, minio_client: Minio, test_document, s3_endpoint: str
+    ):
         """Test presigned URL generation."""
         bucket_name, object_prefix, _ = test_document
 
@@ -66,7 +68,7 @@ class TestIndexingPipeline:
         )
 
         assert url is not None
-        assert "localhost:9000" in url
+        assert s3_endpoint in url
         assert bucket_name in url
 
     def test_document_structure(self, minio_client: Minio, test_document):

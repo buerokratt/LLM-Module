@@ -53,14 +53,14 @@ dependencies:
     version: 0.1.0
     repository: "file://./charts/S3-Ferry"
     condition: S3-Ferry.enabled
-  - name: minio
+  - name: seaweedfs
     version: 0.1.0
-    repository: "file://./charts/minio"
-    condition: minio.enabled
-  - name: Redis
+    repository: "file://./charts/seaweedfs"
+    condition: seaweedfs.enabled
+  - name: Dragonfly
     version: 0.1.0
-    repository: "file://./charts/Redis"
-    condition: Redis.enabled
+    repository: "file://./charts/Dragonfly"
+    condition: Dragonfly.enabled
   - name: Qdrant
     version: 0.1.0
     repository: "file://./charts/Qdrant"

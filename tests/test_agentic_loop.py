@@ -468,10 +468,10 @@ class TestSessionPersistence:
             _extraction({}, ["countryIsoCode"], "Which country?")
         )
         store_mock = _make_session_store_mock()
-        store_mock.update.side_effect = RuntimeError("Redis unavailable")
+        store_mock.update.side_effect = RuntimeError("Dragonfly unavailable")
         loop = _make_loop(extractor_mock, store_mock)
 
-        # Should not raise even if Redis save fails
+        # Should not raise even if Dragonfly save fails
         result = await loop.run_turn(
             chat_id=_CHAT_ID,
             user_message="hi",

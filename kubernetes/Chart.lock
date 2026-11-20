@@ -35,11 +35,11 @@ dependencies:
 - name: S3-Ferry
   repository: file://./charts/S3-Ferry
   version: 0.1.0
-- name: minio
-  repository: file://./charts/minio
+- name: seaweedfs
+  repository: file://./charts/seaweedfs
   version: 0.1.0
-- name: Redis
-  repository: file://./charts/Redis
+- name: Dragonfly
+  repository: file://./charts/Dragonfly
   version: 0.1.0
 - name: Qdrant
   repository: file://./charts/Qdrant
@@ -77,5 +77,8 @@ dependencies:
 - name: Notifications-Node
   repository: file://./charts/Notifications-Node
   version: 0.1.0
-digest: sha256:48065436f01fcf7277161638c5fabe6c48afbcb1738e559ed03a921cd6a9d260
-generated: "2026-03-19T15:56:59.0549062+05:30"
+- name: OpenSearch
+  repository: file://./charts/OpenSearch
+  version: 0.1.0
+digest: sha256:c979ca914813d8ebbb63e70fe4fc0ad7842fa1db84e0f2b16f768591b35152fa
+generated: "2026-11-20T15:10:38.7046531+05:30"

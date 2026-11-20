@@ -43,9 +43,9 @@ The container diagram zooms into the deployable units of the system and the data
 | **LLM Orchestration Service** | FastAPI service (port `8100`) — the core that runs the workflows. |
 | **Notification Server** | Node service pushing real-time updates (e.g. cost alerts, streaming relay). |
 | **Qdrant** | Vector database for knowledge-base and API-tool embeddings. |
-| **Redis** | Conversation history, session state, and rate-limit counters. |
+| **Dragonfly** | In-memory store: conversation history, API-tool sessions and the API response cache (db 1), plus Langfuse's job queues (db 0). |
 | **PostgreSQL + ClickHouse** | Relational + columnar stores backing Langfuse analytics. |
-| **MinIO (S3)** | Object storage for datasets and documents. |
+| **SeaweedFS (S3)** | Object storage for datasets and documents. |
 | **HashiCorp Vault** | Encrypted storage for LLM provider credentials. |
 
 For how requests traverse the gateway and the orchestration service, see
@@ -69,7 +69,7 @@ guardrails.
 3. **Workflow execution** — one of:
    - **Service** — maps the query to a backend service/intent.
      See [TOOL_CLASSIFIER_AND_SERVICE_WORKFLOW.md](./TOOL_CLASSIFIER_AND_SERVICE_WORKFLOW.md).
-   - **Context** — greeting/conversation handling with Redis-backed history.
+   - **Context** — greeting/conversation handling with history kept in Dragonfly.
      See [CONTEXT_WORKFLOW_GREETING_DETECTION.md](./CONTEXT_WORKFLOW_GREETING_DETECTION.md).
    - **RAG** — contextual retrieval (hybrid search + RRF fusion) then grounded generation.
      See [CONTEXTUAL_RETRIEVAL_FLOW.md](./CONTEXTUAL_RETRIEVAL_FLOW.md).
@@ -88,7 +88,8 @@ guardrails.
 | Contextual retrieval (RAG) | [CONTEXTUAL_RETRIEVAL_FLOW.md](./CONTEXTUAL_RETRIEVAL_FLOW.md) |
 | API tool calling | [API_TOOL_CALLING.md](./API_TOOL_CALLING.md) |
 | Service workflow (UI trace) | [TESTPRODUCTIONLLM_SERVICE_WORKFLOW.md](./TESTPRODUCTIONLLM_SERVICE_WORKFLOW.md) |
-| Conversation history & sessions | [REDIS_SESSION_STORE.md](./REDIS_SESSION_STORE.md), [CONTEXT_WORKFLOW_GREETING_DETECTION.md](./CONTEXT_WORKFLOW_GREETING_DETECTION.md) |
+| Conversation history & sessions | [DRAGONFLY_SESSION_STORE.md](./DRAGONFLY_SESSION_STORE.md), [CONTEXT_WORKFLOW_GREETING_DETECTION.md](./CONTEXT_WORKFLOW_GREETING_DETECTION.md) |
+| Dragonfly operations | [DRAGONFLY_OPERATIONS.md](./DRAGONFLY_OPERATIONS.md) |
 | LLM credentials & Vault | [LLM_CONFIG_VAULT_INTEGRATION.md](./LLM_CONFIG_VAULT_INTEGRATION.md), [VAULT_SETUP_AND_USAGE.md](./VAULT_SETUP_AND_USAGE.md), [VAULT_SECURITY_ARCHITECTURE.md](./VAULT_SECURITY_ARCHITECTURE.md) |
 | Connection swapping | [CONNECTION_SWAP_FLOW.md](./CONNECTION_SWAP_FLOW.md) |
 | Prompt configuration | [CUSTOM_PROMPT_CONFIGURATION.md](./CUSTOM_PROMPT_CONFIGURATION.md) |
