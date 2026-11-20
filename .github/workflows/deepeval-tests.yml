@@ -20,7 +20,14 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
+      # Random per-run Dragonfly password for docker-compose-eval.yml (no secret in the repo)
+      - name: Generate Dragonfly test password
+        run: |
+          DRAGONFLY_PASSWORD=$(openssl rand -hex 24)
+          echo "::add-mask::$DRAGONFLY_PASSWORD"
+          echo "DRAGONFLY_PASSWORD=$DRAGONFLY_PASSWORD" >> "$GITHUB_ENV"
+
       - name: Validate required secrets
         id: validate_secrets
         run: |
