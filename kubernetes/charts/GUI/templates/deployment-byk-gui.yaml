@@ -84,7 +84,9 @@ spec:
         - name: REACT_APP_EXTERNAL_API_URL
           value: {{ .Values.gui.services.datasetGenerator | quote }}
         - name: REACT_APP_NOTIFICATION_NODE_URL
-          value: {{ .Values.gui.services.notificationNode | quote }}
+          value: {{ .Values.gui.notifications.apiUrl | quote }}
+        - name: REACT_APP_NOTIFICATIONS_VAPID_PUBLIC_KEY
+          value: {{ .Values.gui.notifications.vapidPublicKey | quote }}
         - name: REACT_APP_CSP
           value: {{ .Values.gui.csp | quote }}
         - name: REACT_APP_SERVICE_ID

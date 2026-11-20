@@ -4,11 +4,13 @@ import tsconfigPaths from 'vite-tsconfig-paths';
 import svgr from 'vite-plugin-svgr';
 import path from 'path';
 import { removeHiddenMenuItems } from './vitePlugin';
+import { notificationsServiceWorker } from '@buerokratt-ria/notifications/vite';
 
 // https://vitejs.dev/config/
 export default defineConfig({
   envPrefix: 'REACT_APP_',
   plugins: [
+    notificationsServiceWorker(),
     react(),
     tsconfigPaths(),
     svgr(),
