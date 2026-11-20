@@ -2,6 +2,7 @@
 
 from typing import Dict, Any, List, Tuple
 from src.loki_logger import LokiLogger
+from llm_orchestrator_config.providers.azure_openai import pricing_model_for
 import dspy
 
 # Initialize Loki logger for cost tracking
@@ -42,18 +43,25 @@ def _extract_cost_with_fallback(
     if not model_name or (prompt_tokens == 0 and completion_tokens == 0):
         return 0.0, "missing_model_or_tokens"
 
+    # Price by the configured model key, not the client-chosen deployment name.
+    pricing_model = pricing_model_for(str(model_name))
+
     try:
         from litellm.cost_calculator import cost_per_token
 
         input_cost, output_cost = cost_per_token(
-            model=model_name,
+            model=pricing_model,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
         )
         estimated_cost = input_cost + output_cost
         return _to_float(estimated_cost), "litellm.cost_per_token"
     except Exception as e:
-        logger.debug(f"Cost fallback failed for model '{model_name}': {e}")
+        # Warning, not debug: a missing price silently records the call as free.
+        logger.warning(
+            f"No price found for model '{pricing_model}' (LM '{model_name}'); "
+            f"recording cost as 0: {e}"
+        )
         return 0.0, "fallback_error"
 
 

@@ -7,6 +7,7 @@ import dspy
 from pydantic import BaseModel, Field
 
 from llm_orchestrator_config import LLMManager, LLMProvider
+from llm_orchestrator_config.providers.azure_openai import is_reasoning_lm
 from src.utils.cost_utils import get_lm_usage_since
 from src.optimization.optimized_module_loader import get_module_loader
 
@@ -276,11 +277,15 @@ class PromptRefinerAgent(dspy.Module):
             with self._get_adapter_context():
                 with self._manager.use_task_local(self._provider):
                     # Use a fresh rollout to bypass cache
+                    retry_config: Dict[str, Any] = {"rollout_id": 1}
+                    # Reasoning models (GPT-5.x) reject any temperature other than 1
+                    if not is_reasoning_lm(dspy.settings.lm):
+                        retry_config["temperature"] = 0.8
                     retry_result = self._predictor(
                         history=history_str,
                         question=question,
                         n=k,
-                        config={"rollout_id": 1, "temperature": 0.8},
+                        config=retry_config,
                     )
 
             retry_rewrites = cast(list[str], getattr(retry_result, "rewrites", []))

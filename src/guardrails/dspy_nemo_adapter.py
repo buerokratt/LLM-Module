@@ -19,6 +19,7 @@ from langchain_core.language_models.llms import LLM
 from langchain_core.outputs import GenerationChunk
 from src.guardrails.guardrails_llm_configs import TEMPERATURE, MAX_TOKENS, MODEL_NAME
 from src.utils.cost_utils import get_lm_usage_since
+from llm_orchestrator_config.providers.azure_openai import is_reasoning_lm
 
 # Initialize Loki logger
 logger = LokiLogger(service_name="dspy-nemo-adapter")
@@ -66,6 +67,49 @@ class DSPyNeMoLLM(LLM):
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
             "streaming": self.streaming,
+        }
+
+    def _build_call_kwargs(
+        self,
+        lm: dspy.LM,
+        kwargs: Dict[str, Any],
+        stop: Optional[List[str]] = None,
+        stream: bool = False,
+    ) -> Dict[str, Any]:
+        """Build per-call kwargs the active model will accept.
+
+        DSPy merges these over the LM's own kwargs, so the guardrail defaults
+        would otherwise undo the constraints applied when the LM was built.
+        Reasoning models reject temperature != 1 and stop, and starve on the
+        small guardrail token budget - for those, defer to the LM entirely.
+        """
+        call_kwargs: Dict[str, Any] = {
+            "temperature": kwargs.get("temperature", self.temperature),
+            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
+        }
+        if stream:
+            call_kwargs["stream"] = True
+        if stop:
+            call_kwargs["stop"] = stop
+
+        if is_reasoning_lm(lm):
+            call_kwargs.pop("temperature", None)
+            call_kwargs.pop("stop", None)
+            call_kwargs.pop("max_tokens", None)
+
+        return call_kwargs
+
+    @staticmethod
+    def _effective_params(lm: dspy.LM, call_kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Resolve the params the call really used, for telemetry.
+
+        Anything dropped for a reasoning model comes from the LM's own kwargs,
+        so observations record real values rather than null.
+        """
+        merged = {**(getattr(lm, "kwargs", None) or {}), **call_kwargs}
+        return {
+            "max_tokens": merged.get("max_tokens", merged.get("max_completion_tokens")),
+            "temperature": merged.get("temperature"),
         }
 
     def _get_dspy_lm(self) -> dspy.LM:
@@ -150,13 +194,7 @@ class DSPyNeMoLLM(LLM):
         try:
             lm = self._get_dspy_lm()
 
-            # Prepare kwargs
-            call_kwargs = {
-                "temperature": kwargs.get("temperature", self.temperature),
-                "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-            }
-            if stop:
-                call_kwargs["stop"] = stop
+            call_kwargs = self._build_call_kwargs(lm, kwargs, stop)
 
             # DSPy LM call - returns text directly
             response = lm(prompt, **call_kwargs)
@@ -166,8 +204,7 @@ class DSPyNeMoLLM(LLM):
             update_observation_safe(
                 input_data={
                     "prompt_preview": prompt[:500],
-                    "max_tokens": call_kwargs["max_tokens"],
-                    "temperature": call_kwargs["temperature"],
+                    **self._effective_params(lm, call_kwargs),
                 },
                 output_data={"response_preview": response_text[:500]},
                 metadata={
@@ -207,13 +244,7 @@ class DSPyNeMoLLM(LLM):
         try:
             lm = self._get_dspy_lm()
 
-            # Prepare kwargs
-            call_kwargs = {
-                "temperature": kwargs.get("temperature", self.temperature),
-                "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-            }
-            if stop:
-                call_kwargs["stop"] = stop
+            call_kwargs = self._build_call_kwargs(lm, kwargs, stop)
 
             # Run in thread to avoid blocking
             response = await asyncio.to_thread(lm, prompt, **call_kwargs)
@@ -223,8 +254,7 @@ class DSPyNeMoLLM(LLM):
             update_observation_safe(
                 input_data={
                     "prompt_preview": prompt[:500],
-                    "max_tokens": call_kwargs["max_tokens"],
-                    "temperature": call_kwargs["temperature"],
+                    **self._effective_params(lm, call_kwargs),
                 },
                 output_data={"response_preview": response_text[:500]},
                 metadata={
@@ -265,14 +295,8 @@ class DSPyNeMoLLM(LLM):
         try:
             lm = self._get_dspy_lm()
 
-            # Prepare kwargs with streaming enabled
-            call_kwargs = {
-                "stream": True,  # This triggers LiteLLM streaming
-                "temperature": kwargs.get("temperature", self.temperature),
-                "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-            }
-            if stop:
-                call_kwargs["stop"] = stop
+            # stream=True triggers LiteLLM streaming
+            call_kwargs = self._build_call_kwargs(lm, kwargs, stop, stream=True)
 
             # Get streaming generator from DSPy LM
             # DSPy's LM will call LiteLLM with stream=True
@@ -328,14 +352,7 @@ class DSPyNeMoLLM(LLM):
             Calls DSPy's LM with stream=True and pushes chunks to queue.
             """
             try:
-                # Prepare kwargs with streaming
-                call_kwargs = {
-                    "stream": True,
-                    "temperature": kwargs.get("temperature", self.temperature),
-                    "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-                }
-                if stop:
-                    call_kwargs["stop"] = stop
+                call_kwargs = self._build_call_kwargs(lm, kwargs, stop, stream=True)
 
                 # Get streaming generator
                 stream_generator = lm(prompt, **call_kwargs)
