@@ -1,4 +1,4 @@
-"""Log Langfuse (BullMQ) queue depth from the Redis-compatible store to Loki.
+"""Log Langfuse (BullMQ) queue depth from Dragonfly to Loki.
 
 Runs every minute from CronManager. Langfuse keeps its job queues in db 0 under
 ``bull:<queue>:*``; jobs normally leave the wait list within seconds, so a waiting
@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import cast
 
-import redis
+from redis import Redis as DragonflyClient, RedisError as DragonflyError
 
 # /app holds the mounted src package (src/__init__.py, src/loki_logger.py)
 sys.path.insert(0, "/app")
@@ -38,7 +38,7 @@ def load_env_file(path: Path) -> dict[str, str]:
     return values
 
 
-def queue_depths(client: redis.Redis) -> dict[str, dict[str, int]]:
+def queue_depths(client: DragonflyClient) -> dict[str, dict[str, int]]:
     """Return waiting/active/delayed job counts for every BullMQ queue."""
     depths: dict[str, dict[str, int]] = {}
     for meta_key in client.scan_iter(match="bull:*:meta", count=200):
@@ -60,10 +60,10 @@ def main() -> int:
     def setting(name: str, default: str) -> str:
         return os.getenv(name) or env.get(name) or default
 
-    client = redis.Redis(
-        host=setting("REDIS_HOST", "dragonfly"),
-        port=int(setting("REDIS_PORT", "6379")),
-        password=setting("REDIS_AUTH", "") or None,
+    client = DragonflyClient(
+        host=setting("DRAGONFLY_HOST", "dragonfly"),
+        port=int(setting("DRAGONFLY_PORT", "6379")),
+        password=setting("DRAGONFLY_PASSWORD", "") or None,
         db=LANGFUSE_DB,
         decode_responses=True,
         socket_connect_timeout=5,
@@ -72,7 +72,7 @@ def main() -> int:
 
     try:
         depths = queue_depths(client)
-    except redis.RedisError as exc:
+    except DragonflyError as exc:
         logger.error(f"Langfuse queue depth check failed: {exc}")
         logger.log_queue.join()
         return 1

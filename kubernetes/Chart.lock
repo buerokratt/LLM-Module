@@ -41,9 +41,6 @@ dependencies:
 - name: seaweedfs
   repository: file://./charts/seaweedfs
   version: 0.1.0
-- name: Redis
-  repository: file://./charts/Redis
-  version: 0.1.0
 - name: Dragonfly
   repository: file://./charts/Dragonfly
   version: 0.1.0
@@ -86,5 +83,5 @@ dependencies:
 - name: OpenSearch
   repository: file://./charts/OpenSearch
   version: 0.1.0
-digest: sha256:2f8985f97eb444ad4cfe63da1791f99ee8612c3539ca098ae0275a5f0303c462
+digest: sha256:3e4af62ca61cfb0d06c53111a93acd0611574c20e6069229745307588ca2d22f
 generated: "2026-10-20T11:34:05.6861636+05:30"

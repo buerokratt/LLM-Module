@@ -466,7 +466,7 @@ class ContextAnalyzer:
         Implements a 3-step flow:
         1. Check the last 10 turns via detect_context().
         2. If cannot answer AND (total history > 10 turns OR a pre-computed summary
-           is available from Redis):
+           is available from Dragonfly):
            - Use *pre_computed_summary* directly when provided (skips the expensive
              LLM summarisation call).
            - Otherwise generate a concise summary of the older turns.
@@ -483,10 +483,10 @@ class ContextAnalyzer:
         Args:
             query: User query to classify
             conversation_history: Full conversation history
-            pre_computed_summary: Running conversation summary retrieved from Redis.
+            pre_computed_summary: Running conversation summary retrieved from Dragonfly.
                 When provided the LLM summary-generation step is skipped and this
                 value is used directly.  The summary path is also attempted even
-                when ``total_turns <= 10`` because evicted rounds may exist in Redis
+                when ``total_turns <= 10`` because evicted rounds may exist in Dragonfly
                 beyond what is currently in *conversation_history*.
 
         Returns:
@@ -503,16 +503,16 @@ class ContextAnalyzer:
         if result.is_greeting or result.can_answer_from_context:
             return result, cost_dict
 
-        # Step 2 & 3: try summary-based detection when history is long *or* Redis
+        # Step 2 & 3: try summary-based detection when history is long *or* Dragonfly
         # has a pre-computed summary (which may cover evicted rounds beyond what is
         # currently in memory).
         if total_turns > 10 or pre_computed_summary is not None:
             try:
                 if pre_computed_summary is not None:
-                    # Redis path: reuse the incremental summary, skip LLM generation.
+                    # Dragonfly path: reuse the incremental summary, skip LLM generation.
                     logger.info(
                         "Pre-computed summary available | "
-                        "Skipping LLM summary generation, using Redis summary directly"
+                        "Skipping LLM summary generation, using Dragonfly summary directly"
                     )
                     summary = pre_computed_summary
                     summary_cost: Dict[str, Any] = {

@@ -45,10 +45,6 @@ minio:
 seaweedfs:
   enabled: true
 
-# Replaced by Dragonfly; chart kept for one release as rollback
-Redis:
-  enabled: false
-
 Dragonfly:
   enabled: true
 

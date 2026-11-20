@@ -14,14 +14,14 @@ All of the following must be `Running` or `Completed` — Langfuse will not star
 |---|---|
 | `rag-search-db-0` | PostgreSQL (hosts `rag-search` and `langfuse-db`) |
 | `seaweedfs-*` | Object storage for Langfuse events/media |
-| `dragonfly-0` | Queue backend for Langfuse worker (Redis-compatible) |
+| `dragonfly-0` | Queue backend for Langfuse worker |
 | `clickhouse-*` | Analytics DB for Langfuse ingestion |
 | `langfuse-worker-*` | Must be `Running` before web starts |
 | `langfuse-web-*` | UI + runs DB migrations on first boot |
 | `vault` | Secret storage |
 | `vault-Init`  | unseal vault | 
 
-> **Note:** Langfuse's own `REDIS_AUTH` secret must hold the same password as `REDIS_AUTH`
+> **Note:** Langfuse's own `REDIS_AUTH` secret must hold the same password as `DRAGONFLY_PASSWORD`
 > in the `dragonfly-secrets` Secret, otherwise Langfuse starts but fails with auth errors.
 
 ## 2. Wait for DB Migrations

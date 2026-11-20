@@ -1,11 +1,11 @@
 # Dragonfly Operations Runbook
 
-Day-to-day operation of **Dragonfly**, the Redis-compatible store behind the LLM
+Day-to-day operation of **Dragonfly**, the in-memory store behind the LLM
 service's sessions, conversation history and API response cache (db 1) and Langfuse's
 job queues (db 0).
 
-**Related:** [REDIS_SESSION_STORE.md](./REDIS_SESSION_STORE.md) (keys, client settings,
-fail-open) · [DRAGONFLY_ROLLBACK.md](./DRAGONFLY_ROLLBACK.md) (switch back to Redis)
+**Related:** [DRAGONFLY_SESSION_STORE.md](./DRAGONFLY_SESSION_STORE.md) (keys, client settings,
+fail-open)
 
 ---
 
@@ -24,7 +24,7 @@ Langfuse is pinned to `3.225.2`, the version tested on Dragonfly.
 
 | Flag | Value | Why |
 |---|---|---|
-| `--requirepass` | `REDIS_AUTH` | Password for every client |
+| `--requirepass` | `DRAGONFLY_PASSWORD` | Password for every client |
 | `--proactor_threads` | `DRAGONFLY_THREADS` / `threads` (**required**) | Without it Dragonfly starts one thread per CPU it sees, which can be the whole host, and run out of memory |
 | `--maxmemory` | `DRAGONFLY_MAXMEMORY` / `maxmemory` (**required**) | Data limit. Dragonfly never evicts (`noeviction`): above it, writes are refused |
 | `--default_lua_flags=allow-undeclared-keys` | — | "Option A": Langfuse's BullMQ Lua scripts use keys they don't declare. Every script then takes a global lock, which is safe but slower under heavy load |
@@ -55,7 +55,7 @@ Current values: local Compose 2 threads / `1gb` / `1280m`; Kubernetes chart 2 th
 | Langfuse queue depth | Loki: `{service="langfuse-queue-depth"}` (every minute, CronManager job `langfuse_queue_depth`) |
 | Alerts | Grafana → Alerting → Alert rules → *RAG Module Alerts* (`grafana-configs/grafana-alerting.yaml`) |
 
-The CronManager jobs read `REDIS_HOST`/`REDIS_AUTH` from the mounted `.env`. Langfuse's
+The CronManager jobs read `DRAGONFLY_HOST`/`DRAGONFLY_PASSWORD` from the mounted `.env`. Langfuse's
 own container logs are **not** shipped to Loki, so Langfuse Lua errors only show up
 indirectly through the queue-backlog alert.
 
@@ -64,17 +64,19 @@ indirectly through the queue-backlog alert.
 | Alert | First steps |
 |---|---|
 | **Dragonfly memory above 70% / 85%** | Check the dashboard for steady growth vs a spike. Raise `maxmemory` **and** the memory limit together (keep the 80% rule), then restart Dragonfly. At 85% act now: writes fail at 100%. |
-| **Dragonfly restarted** | If not a deploy: check for OOM kills (`docker inspect dragonfly --format '{{.State.OOMKilled}}'` / `kubectl describe pod dragonfly-0`) and the Dragonfly logs. Repeated restarts → [rollback](./DRAGONFLY_ROLLBACK.md). |
-| **Langfuse queue backlog not draining** | Check `langfuse-worker` is running and its logs; check Dragonfly CPU. Restart the worker. If it persists, suspect the Lua lock under load → rollback, or move Langfuse to its own Redis. |
-| **Redis-compatible store errors in the app** | Check Dragonfly is up and healthy and the password matches. The app keeps answering without history/cache. |
-| **Store update retries exhausted** | Concurrent writes to one chat kept conflicting; usually a client retrying the same chat rapidly or a slow store. Check store latency. |
-| **Redis-compatible store is out of memory** | Dragonfly reached `maxmemory` and refuses writes: raise memory (see above) immediately. |
-| **LLM service lost its session store** | `curl localhost:8100/health`; check Dragonfly is running, `REDIS_HOST`/`REDIS_AUTH`. The app reconnects by itself once Dragonfly is back. |
+| **Dragonfly restarted** | If not a deploy: check for OOM kills (`docker inspect dragonfly --format '{{.State.OOMKilled}}'` / `kubectl describe pod dragonfly-0`) and the Dragonfly logs. Repeated OOM kills mean the memory limit is too low for the thread count: see **Sizing rule**. |
+| **Langfuse queue backlog not draining** | Check `langfuse-worker` is running and its logs; check Dragonfly CPU. Restart the worker. If it persists, suspect the global Lua lock under load (see `--default_lua_flags` above) and raise it with the team. |
+| **Dragonfly errors in the app** | Check Dragonfly is up and healthy and the password matches. The app keeps answering without history/cache. |
+| **Dragonfly update retries exhausted** | Concurrent writes to one chat kept conflicting; usually a client retrying the same chat rapidly or a slow store. Check store latency. |
+| **Dragonfly is out of memory** | Dragonfly reached `maxmemory` and refuses writes: raise memory (see above) immediately. |
+| **LLM service lost its Dragonfly connection** | `curl localhost:8100/health`; check Dragonfly is running, `DRAGONFLY_HOST`/`DRAGONFLY_PASSWORD`. The app reconnects by itself once Dragonfly is back. |
 
 ## Common commands (Compose)
 
+`redis-cli` is the command-line client that ships inside the Dragonfly image.
+
 ```bash
-PW=$(grep '^REDIS_AUTH=' .env | cut -d= -f2-)
+PW=$(grep '^DRAGONFLY_PASSWORD=' .env | cut -d= -f2-)
 DF="docker compose exec -T dragonfly redis-cli --no-auth-warning -a $PW"
 
 $DF ping                                   # PONG = up and password correct
@@ -121,7 +123,8 @@ and `charts/Dragonfly/values.yaml`.
 | Symptom | Cause / fix |
 |---|---|
 | `docker compose` fails: `DRAGONFLY_MAXMEMORY must be set in .env` | `.env` is missing the new settings: copy them from `env.example` |
-| Dragonfly won't start: port 6379 already in use | An old `redis` container is still running: `docker stop` and `docker rm` it |
-| App keys appear in db0 next to `bull:*` | `REDIS_SESSION_DB` is set to `0`; it must be `1` (empty also falls back to 1) |
-| Langfuse can't connect (auth errors) | Kubernetes: Langfuse's own secrets (`REDIS_AUTH`) must match `dragonfly-secrets` |
+| `docker compose` fails: `DRAGONFLY_PASSWORD must be set in .env` | `.env` still uses the old `REDIS_*` names: rename them to the `DRAGONFLY_*` names in `env.example` |
+| Dragonfly won't start: port 6379 already in use | Another container is using the port: find it with `docker ps`, then `docker stop` and `docker rm` it |
+| App keys appear in db0 next to `bull:*` | `DRAGONFLY_SESSION_DB` is set to `0`; it must be `1` (empty also falls back to 1) |
+| Langfuse can't connect (auth errors) | Kubernetes: Langfuse's own secrets (`REDIS_AUTH`, Langfuse's setting name) must hold the same value as `DRAGONFLY_PASSWORD` in `dragonfly-secrets` |
 | `/health` shows `not_configured` | The store was unreachable at startup; the app is running without sessions. Fix Dragonfly, then restart the LLM service. |

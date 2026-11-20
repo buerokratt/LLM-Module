@@ -1,4 +1,4 @@
-"""Two-tier Redis response cache for the ATC workflow."""
+"""Two-tier Dragonfly response cache for the ATC workflow."""
 
 import hashlib
 import json
@@ -13,7 +13,7 @@ from tool_classifier.constants import (
     ATC_LAST_CALL_KEY_PREFIX,
     ATC_LAST_CALL_TTL_SECONDS,
 )
-from src.utils.redis_client import get_redis_client, redis_key
+from src.utils.dragonfly_client import get_dragonfly_client, dragonfly_key
 
 logger = LokiLogger(service_name="atc-cache-store")
 
@@ -31,7 +31,7 @@ class ATCCacheStore:
         Value: JSON ``list[LastCallContext]``
         TTL:   ``ATC_LAST_CALL_TTL_SECONDS`` (sliding — reset on every write)
 
-    All public methods are async and fail-open: a Redis unavailability or
+    All public methods are async and fail-open: a Dragonfly unavailability or
     serialisation error is logged as a warning and the caller receives
     ``None`` / silent no-op rather than an exception.
     """
@@ -72,13 +72,13 @@ class ATCCacheStore:
 
     @staticmethod
     def _l1_key(chat_id: str, api_name: str, params: dict[str, Any]) -> str:
-        return redis_key(
+        return dragonfly_key(
             f"{ATC_CACHE_KEY_PREFIX}:{chat_id}:{api_name}:{ATCCacheStore._param_hash(params)}"
         )
 
     @staticmethod
     def _l2_key(chat_id: str) -> str:
-        return redis_key(f"{ATC_LAST_CALL_KEY_PREFIX}:{chat_id}")
+        return dragonfly_key(f"{ATC_LAST_CALL_KEY_PREFIX}:{chat_id}")
 
     # ------------------------------------------------------------------
     # L1 — Exact response cache
@@ -88,7 +88,7 @@ class ATCCacheStore:
         self, chat_id: str, api_name: str, params: dict[str, Any]
     ) -> Any | None:
         """Return the cached raw API response, or ``None`` on cache miss or error."""
-        client = get_redis_client()
+        client = get_dragonfly_client()
         if client is None:
             return None
         try:
@@ -119,7 +119,7 @@ class ATCCacheStore:
             raw_response: Parsed API JSON (dict or list).
             ttl: Cache TTL in seconds. Defaults to ``ATC_CACHE_DEFAULT_TTL_SECONDS``.
         """
-        client = get_redis_client()
+        client = get_dragonfly_client()
         if client is None:
             return
         try:
@@ -142,7 +142,7 @@ class ATCCacheStore:
 
     async def get_l2(self, chat_id: str) -> list[LastCallContext] | None:
         """Return the last-call context list, or ``None`` on miss or error."""
-        client = get_redis_client()
+        client = get_dragonfly_client()
         if client is None:
             return None
         try:
@@ -164,7 +164,7 @@ class ATCCacheStore:
         For single-intent calls pass a one-element list; for multi-intent calls
         pass one ``LastCallContext`` per succeeded endpoint.
         """
-        client = get_redis_client()
+        client = get_dragonfly_client()
         if client is None:
             return
         try:
@@ -187,7 +187,7 @@ class ATCCacheStore:
         context into a brand-new query. L1 entries are **not** deleted — they
         are param-hash scoped and expire on their own TTL.
         """
-        client = get_redis_client()
+        client = get_dragonfly_client()
         if client is None:
             return
         try:

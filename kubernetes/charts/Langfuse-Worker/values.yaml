@@ -49,13 +49,13 @@ env:
   LANGFUSE_INGESTION_QUEUE_DELAY_MS: ""
   LANGFUSE_INGESTION_CLICKHOUSE_WRITE_INTERVAL_MS: ""
   
-  # Redis configuration (non-sensitive)
+  # Dragonfly connection. These are Langfuse's own setting names (REDIS_*), not ours.
   REDIS_HOST: "dragonfly"
   REDIS_PORT: "6379"
   REDIS_TLS_ENABLED: "false"
   REDIS_TLS_CA: "/certs/ca.crt"
-  REDIS_TLS_CERT: "/certs/redis.crt"
-  REDIS_TLS_KEY: "/certs/redis.key"
+  REDIS_TLS_CERT: "/certs/dragonfly.crt"
+  REDIS_TLS_KEY: "/certs/dragonfly.key"
   
   # Email configuration
   EMAIL_FROM_ADDRESS: ""

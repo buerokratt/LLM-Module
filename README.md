@@ -51,7 +51,7 @@ For the full picture — container and component (C4) diagrams plus the request 
 | LLM pipelines | DSPy |
 | Safety | NeMo Guardrails |
 | Vector database | Qdrant |
-| Sessions, history & cache | Dragonfly (Redis-compatible) |
+| Sessions, history & cache | Dragonfly |
 | Analytics store | PostgreSQL + ClickHouse (Langfuse) |
 | Object storage | SeaweedFS (S3-compatible) |
 | Secrets | HashiCorp Vault |
@@ -132,7 +132,7 @@ The orchestration service lives under `src/`. The main packages:
 | Guardrails | NeMo Guardrails input/output safety | `src/guardrails/` |
 | LLM configuration | Provider management, Vault credentials, feature flags | `src/llm_orchestrator_config/` |
 | Optimization | DSPy-based tuning of guardrails, refiner, generator | `src/optimization/` |
-| Utilities | Store client (Redis protocol), sessions, rate limiting, streaming, cost, logging | `src/utils/` |
+| Utilities | Dragonfly client, sessions, rate limiting, streaming, cost, logging | `src/utils/` |
 
 ## Core Workflows
 
@@ -223,7 +223,7 @@ For Kubernetes, see [kubernetes/LANGFUSE_SETUP.md](./kubernetes/LANGFUSE_SETUP.m
 | --- | --- |
 | Service unhealthy | `curl http://localhost:8100/health`; `docker compose ps`; `docker compose logs llm-orchestration-service` |
 | Vault / credential errors | [docs/VAULT_SETUP_AND_USAGE.md](./docs/VAULT_SETUP_AND_USAGE.md) and [docs/VAULT_SECURITY_ARCHITECTURE.md](./docs/VAULT_SECURITY_ARCHITECTURE.md) |
-| Missing conversation history | `/health` → `redis_session_store`; Dragonfly running and `REDIS_HOST`/`REDIS_AUTH` correct; [docs/REDIS_SESSION_STORE.md](./docs/REDIS_SESSION_STORE.md), [docs/DRAGONFLY_OPERATIONS.md](./docs/DRAGONFLY_OPERATIONS.md) |
+| Missing conversation history | `/health` → `dragonfly_session_store`; Dragonfly running and `DRAGONFLY_HOST`/`DRAGONFLY_PASSWORD` correct; [docs/DRAGONFLY_SESSION_STORE.md](./docs/DRAGONFLY_SESSION_STORE.md), [docs/DRAGONFLY_OPERATIONS.md](./docs/DRAGONFLY_OPERATIONS.md) |
 | Retrieval returns nothing | Qdrant availability (port `6333`) and that indexing has run |
 | Logs & traces | Grafana/Loki for logs; Langfuse for request traces and cost |
 

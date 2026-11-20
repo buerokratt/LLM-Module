@@ -9,9 +9,8 @@ in response to user queries. Endpoints are registered, semantically indexed in Q
 and retrieved at query time using hybrid search. Once matched, a multi-turn agentic
 loop collects all required parameters from the user before the API call is made.
 
-> **Note:** "Redis" in this document means the Redis-compatible store. Since the Dragonfly
-> migration that store is **Dragonfly**; the code still uses the redis-py client and the
-> `REDIS_*` settings. See [REDIS_SESSION_STORE.md](./REDIS_SESSION_STORE.md).
+> **Note:** Agentic-loop sessions and the API response cache are kept in Dragonfly. See
+> [DRAGONFLY_SESSION_STORE.md](./DRAGONFLY_SESSION_STORE.md) for keys, TTLs and settings.
 
 
 | Component | What it does | Status |
@@ -26,7 +25,7 @@ loop collects all required parameters from the user before the API call is made.
 | **Parallel API caller** | Fires all completed endpoint calls concurrently via `asyncio.gather` with batch timeout and partial-failure handling |  Phase 4 Complete |
 | **Multi-response formatter** | DSPy module that synthesises N API results into a single coherent natural-language answer; supports streaming and blocking execution |  Phase 5 Complete |
 | **Full wiring** | `APIToolWorkflowExecutor` routes parallel sessions through `MultiEndpointAgenticLoop` → `MultiAPICaller` → `MultiResponseFormatterModule` with output guardrails |  Phase 6 Complete |
-| **ATC Response Cache** | Two-tier Redis cache (L1 exact-match + L2 follow-up context) that eliminates redundant API calls and enables intelligent follow-up handling without re-running the agentic loop |  Complete |
+| **ATC Response Cache** | Two-tier Dragonfly cache (L1 exact-match + L2 follow-up context) that eliminates redundant API calls and enables intelligent follow-up handling without re-running the agentic loop |  Complete |
 
 ---
 
@@ -61,7 +60,7 @@ APIToolWorkflowExecutor  (src/tool_classifier/workflows/api_tool_workflow.py)
         └─ execution_mode=parallel → MultiEndpointAgenticLoop
                ↓  merged schema; one clarifying question per turn
                ↓  distributes extracted values back per endpoint
-APIToolSessionStore  (Redis, keyed by chat_id, 30-min TTL)
+APIToolSessionStore  (Dragonfly, keyed by chat_id, 30-min TTL)
         ↓  all endpoints completed
         ├─ single  → APICaller
         └─ parallel → MultiAPICaller → asyncio.gather per endpoint
@@ -443,8 +442,8 @@ Handles `WorkflowType.API_TOOL_CALLING` after `ToolClassifier.classify()` has se
 **Responsibilities:**
 
 - **Turn 1 (new session):** reads `context["matched_endpoint"]`, creates a new
-  `APIToolSession` in Redis, runs the first agentic loop turn.
-- **Turn 2-N (resume):** loads the existing session from Redis, runs the next turn.
+  `APIToolSession` in Dragonfly, runs the first agentic loop turn.
+- **Turn 2-N (resume):** loads the existing session from Dragonfly, runs the next turn.
 - **Fast path:** if the endpoint has no required params, immediately calls the API
   without starting a session.
 - **Clarifying question:** when params are still missing, streams the LLM-generated
@@ -480,14 +479,14 @@ handles each case:
 Defined in [src/tool_classifier/agentic_loop.py](../src/tool_classifier/agentic_loop.py).
 
 `AgenticLoop` is **stateless** — it carries no internal state between HTTP requests.
-All state is passed in as arguments (loaded from Redis by the workflow executor before
-calling `run_turn`) and saved back to Redis inside `run_turn` before returning.
+All state is passed in as arguments (loaded from Dragonfly by the workflow executor before
+calling `run_turn`) and saved back to Dragonfly inside `run_turn` before returning.
 
 ### Session Model: `APIToolSession`
 
 Defined in [src/models/session_models.py](../src/models/session_models.py).
 
-Stored in Redis keyed by `chat_id` with a **30-minute sliding TTL**.
+Stored in Dragonfly keyed by `chat_id` with a **30-minute sliding TTL**.
 
 | Field | Type | Description |
 |---|---|---|
@@ -506,7 +505,7 @@ Stored in Redis keyed by `chat_id` with a **30-minute sliding TTL**.
 ```
 APIToolWorkflowExecutor._run()
     │
-    ├─ Load session from Redis (or create new)
+    ├─ Load session from Dragonfly (or create new)
     │
     └─ AgenticLoop.run_turn(
            user_message, conversation_history,
@@ -535,7 +534,7 @@ APIToolWorkflowExecutor._run()
            └─ else → generate clarifying question for next missing param
                    → return NEEDS_INPUT
            │
-           └─ Save updated session to Redis
+           └─ Save updated session to Dragonfly
 ```
 
 ### Key Behaviours
@@ -663,7 +662,7 @@ Supports both blocking (`forward`) and streaming (`stream_forward`) execution.
 
 Defined in [src/utils/api_tool_session_store.py](../src/utils/api_tool_session_store.py).
 
-Redis-backed store. Key format: `session:{chat_id}`. TTL resets on every `update()`.
+Dragonfly-backed store. Key format: `session:{chat_id}`. TTL resets on every `update()`.
 
 Operations: `save()`, `get()`, `update()`, `delete()`.
 
@@ -710,7 +709,7 @@ The test endpoint hardcodes `chatId="test-session"` for all requests. Because ev
 test user shares this ID, any incomplete session would be resumed by the next
 unrelated test query.
 
-**Fix:** the test endpoint deletes `"test-session"` from Redis at the **start** of
+**Fix:** the test endpoint deletes `"test-session"` from Dragonfly at the **start** of
 every request, before classification runs. This makes each test query a fresh
 single-turn request.
 
@@ -729,7 +728,7 @@ Turn 1 — User: "What are the public holidays in Estonia?"
     ▼
 ToolClassifier.classify()
     │
-    ├─ No active session in Redis for this chat_id
+    ├─ No active session in Dragonfly for this chat_id
     ├─ Dense search (intent_collections) → low cosine → below threshold
     └─ _try_api_tool_classification()
            └─ APISemanticSearcher.search()
@@ -746,7 +745,7 @@ APIToolWorkflowExecutor._run()
            ├─ Missing: validFrom, validTo
            └─ NEEDS_INPUT → "Which date range would you like? (validFrom, validTo)"
     │
-    Session saved to Redis
+    Session saved to Dragonfly
     ▼
 Bot: "Which date range would you like? Please provide validFrom and validTo (YYYY-MM-DD)."
 
@@ -768,7 +767,7 @@ APIToolWorkflowExecutor._run()
            ├─ All required params present
            └─ COMPLETED
     │
-    Session DELETED from Redis
+    Session DELETED from Dragonfly
     ▼
 APIToolWorkflowExecutor._stream_api_and_format()
     ├─ user_query = session.original_query → "What are the public holidays in Estonia?"
@@ -930,7 +929,7 @@ Tracks per-endpoint collection state within a parallel session:
 
 #### Extended `APIToolSession` fields
 
-Three new fields added — all optional with safe defaults so **existing Redis sessions deserialize without error**:
+Three new fields added — all optional with safe defaults so **existing Dragonfly sessions deserialize without error**:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
@@ -1152,7 +1151,7 @@ APIToolWorkflowExecutor._compute_loop_step()
           → missing: [address, regNr, calculationYear]
           → NEEDS_INPUT → clarifying question
     │
-    Session saved to Redis, _LoopStep(kind="question")
+    Session saved to Dragonfly, _LoopStep(kind="question")
     ▼
 Bot: "To help you, I need a few details: the address you'd like to look up,
       your vehicle registration number (regNr), and the calculation year for the vehicle tax."
@@ -1190,7 +1189,7 @@ MultiEndpointAgenticLoop.stream_run_turn(turn_count=2)
     → get_vehicle_tax_info now has [regNr, calculationYear] → completed=True
     → ALL endpoints completed → AgenticLoopStatus.COMPLETED
     │
-    Session DELETED from Redis
+    Session DELETED from Dragonfly
     _LoopStep(kind="multi_api_call", parallel_endpoints=[...])
     ▼
 APIToolWorkflowExecutor._stream_multi_api_and_format()
@@ -1232,7 +1231,7 @@ Bot: "Here's what I found: The address Viru tn 4 is located in Tallinn city cent
 
 ### Overview
 
-The ATC Response Cache is a two-tier Redis cache that sits inside `_compute_loop_step()` in
+The ATC Response Cache is a two-tier Dragonfly cache that sits inside `_compute_loop_step()` in
 [src/tool_classifier/workflows/api_tool_workflow.py](../src/tool_classifier/workflows/api_tool_workflow.py).
 It is checked on every **new request** (no active session) before the agentic loop is created.
 
@@ -1323,7 +1322,7 @@ set_l2(chat_id, contexts_list)   ← one write for all endpoints
 ### Cache Read Logic in `_compute_loop_step`
 
 The cache block runs only when:
-- No active Redis session exists (fresh request, not mid-loop)
+- No active Dragonfly session exists (fresh request, not mid-loop)
 - Not a parallel multi-intent query (`not all_matched`)
 - `endpoint.cacheable == True`
 - `ATC_RESPONSE_CACHE_ENABLED == True`
@@ -1426,7 +1425,7 @@ if turn_count == 0 and seeded_params:
 
 The merge order means existing `collected_params` win — seeds cannot overwrite values
 that were already explicitly provided. The seeds are also stored directly in the new
-Redis session (`APIToolSession.collected_params = seeded_params`) so they survive
+Dragonfly session (`APIToolSession.collected_params = seeded_params`) so they survive
 across HTTP requests.
 
 **Effect:** the agentic loop starts with inherited values already populated and only
@@ -1459,8 +1458,8 @@ Defined in [src/tool_classifier/constants.py](../src/tool_classifier/constants.p
 
 | Name | Value | Description |
 |---|---|---|
-| `ATC_CACHE_KEY_PREFIX` | `atc:cache` | Redis key prefix for L1 entries |
-| `ATC_LAST_CALL_KEY_PREFIX` | `atc:last` | Redis key prefix for L2 entries |
+| `ATC_CACHE_KEY_PREFIX` | `atc:cache` | Dragonfly key prefix for L1 entries |
+| `ATC_LAST_CALL_KEY_PREFIX` | `atc:last` | Dragonfly key prefix for L2 entries |
 | `ATC_CACHE_DEFAULT_TTL_SECONDS` | `1800` | Default L1 TTL (30 min); overridable per endpoint via `cache_ttl_seconds` |
 | `ATC_LAST_CALL_TTL_SECONDS` | `1800` | L2 TTL (30 min, sliding) |
 | `ATC_RESPONSE_CACHE_ENABLED` | `true` (env) | Master kill-switch — disables all reads and writes when `false` |
@@ -1471,7 +1470,7 @@ Defined in [src/tool_classifier/constants.py](../src/tool_classifier/constants.p
 
 | Class / File | Responsibility |
 |---|---|
-| `ATCCacheStore` ([src/utils/atc_cache_store.py](../src/utils/atc_cache_store.py)) | All Redis operations for L1 and L2; param normalisation and hashing |
+| `ATCCacheStore` ([src/utils/atc_cache_store.py](../src/utils/atc_cache_store.py)) | All Dragonfly operations for L1 and L2; param normalisation and hashing |
 | `FollowUpDetectorModule` ([src/tool_classifier/follow_up_detector.py](../src/tool_classifier/follow_up_detector.py)) | DSPy classifier for follow-up type detection |
 | `LastCallContext` ([src/models/session_models.py](../src/models/session_models.py)) | Pydantic model stored in L2 |
 | `_compute_loop_step` ([src/tool_classifier/workflows/api_tool_workflow.py](../src/tool_classifier/workflows/api_tool_workflow.py)) | Where L1 + L2 are read and routing decisions are made |

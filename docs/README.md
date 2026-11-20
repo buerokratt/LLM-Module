@@ -48,9 +48,8 @@ the areas below.
 
 | Document | What it covers |
 | --- | --- |
-| [REDIS_SESSION_STORE.md](./REDIS_SESSION_STORE.md) | Session store (Dragonfly, Redis-compatible): keyspace, keys and TTLs, client settings, fail-open behaviour, and CRUD for agentic-loop state. |
+| [DRAGONFLY_SESSION_STORE.md](./DRAGONFLY_SESSION_STORE.md) | Dragonfly session store: keyspace, keys and TTLs, client settings, fail-open behaviour, and CRUD for agentic-loop state. |
 | [DRAGONFLY_OPERATIONS.md](./DRAGONFLY_OPERATIONS.md) | Dragonfly runbook: flags, sizing, monitoring and alert responses, common commands, snapshots/backup, upgrades, troubleshooting. |
-| [DRAGONFLY_ROLLBACK.md](./DRAGONFLY_ROLLBACK.md) | Switching the store back from Dragonfly to Redis (Docker Compose and Kubernetes). |
 
 ## API Reference
 

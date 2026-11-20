@@ -72,7 +72,7 @@ def refine_user_prompt(
         original_message: The original user message to refine
         conversation_history: Previous conversation context
         conversation_summary: Optional summary of earlier conversation rounds
-            that were evicted from Redis.
+            that were evicted from Dragonfly.
         langfuse_client: Optional Langfuse client for generation tracking.
 
     Returns:

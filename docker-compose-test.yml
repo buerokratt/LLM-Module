@@ -171,14 +171,14 @@ services:
 
   # === Langfuse Observability Stack ===
   
-  # Dragonfly - Redis-compatible store: Langfuse queues (db 0) and app sessions (db 1)
+  # Dragonfly: Langfuse queues (db 0) and app sessions (db 1)
   dragonfly:
     image: ghcr.io/dragonflydb/dragonfly:v2.0.2
     container_name: dragonfly
     restart: always
     command:
       - --logtostderr
-      - --requirepass=myredissecret
+      - --requirepass=mydragonflysecret
       - --maxmemory=512mb
       - --proactor_threads=2
       # Option A: Langfuse's BullMQ Lua scripts use keys they don't declare
@@ -188,7 +188,7 @@ services:
     ports:
       - "127.0.0.1:6379:6379"
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a myredissecret --no-auth-warning ping | grep -q PONG"]
+      test: ["CMD-SHELL", "redis-cli -a mydragonflysecret --no-auth-warning ping | grep -q PONG"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -310,10 +310,10 @@ services:
       LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://seaweedfs:8333
       LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
       
-      # Redis
+      # Langfuse's own setting names (REDIS_*), pointed at Dragonfly
       REDIS_HOST: dragonfly
       REDIS_PORT: "6379"
-      REDIS_AUTH: myredissecret
+      REDIS_AUTH: mydragonflysecret
     networks:
       - test-network
 
@@ -366,10 +366,10 @@ services:
       LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://seaweedfs:8333
       LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
       
-      # Redis
+      # Langfuse's own setting names (REDIS_*), pointed at Dragonfly
       REDIS_HOST: dragonfly
       REDIS_PORT: "6379"
-      REDIS_AUTH: myredissecret
+      REDIS_AUTH: mydragonflysecret
       
       # Initialize test project with known credentials
       LANGFUSE_INIT_PROJECT_PUBLIC_KEY: pk-lf-test
@@ -398,10 +398,10 @@ services:
       # Disable OpenTelemetry tracing in test environment
       - OTEL_SDK_DISABLED=true
       # Session store: Dragonfly db 1 (Langfuse uses db 0)
-      - REDIS_HOST=dragonfly
-      - REDIS_PORT=6379
-      - REDIS_AUTH=myredissecret
-      - REDIS_SESSION_DB=1
+      - DRAGONFLY_HOST=dragonfly
+      - DRAGONFLY_PORT=6379
+      - DRAGONFLY_PASSWORD=mydragonflysecret
+      - DRAGONFLY_SESSION_DB=1
     volumes:
       - ./src/llm_config_module/config:/app/src/llm_config_module/config:ro
       - ./test-vault/agent-out:/agent/llm-token:ro

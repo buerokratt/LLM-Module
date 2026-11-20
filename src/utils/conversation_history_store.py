@@ -1,4 +1,4 @@
-"""Redis-backed conversation history store."""
+"""Dragonfly-backed conversation history store."""
 
 import asyncio
 import json
@@ -6,13 +6,12 @@ import weakref
 from typing import TYPE_CHECKING, Optional, Union, cast
 
 from src.loki_logger import LokiLogger
-from redis import WatchError
 
 from src.models.conversation_history_models import (
     ConversationHistoryState,
     ConversationRound,
 )
-from src.utils.redis_client import get_redis_client, redis_key
+from src.utils.dragonfly_client import WatchError, get_dragonfly_client, dragonfly_key
 
 if TYPE_CHECKING:
     from src.models.request_models import (
@@ -31,15 +30,15 @@ _APPEND_MAX_RETRIES = 3
 
 
 def _history_key(chat_id: str) -> str:
-    return redis_key(f"{_HISTORY_KEY_PREFIX}{chat_id}")
+    return dragonfly_key(f"{_HISTORY_KEY_PREFIX}{chat_id}")
 
 
 def _summary_key(chat_id: str) -> str:
-    return redis_key(f"{_SUMMARY_KEY_PREFIX}{chat_id}")
+    return dragonfly_key(f"{_SUMMARY_KEY_PREFIX}{chat_id}")
 
 
 class ConversationHistoryStore:
-    """CRUD store for per-session conversation history backed by Redis.
+    """CRUD store for per-session conversation history backed by Dragonfly.
 
     All operations are async and safe to call from FastAPI handlers.
     The TTL is reset (sliding expiry) on every write that touches a key.
@@ -91,10 +90,10 @@ class ConversationHistoryStore:
             chat_id: The conversation identifier.
             round: The completed user+bot exchange to persist.
         """
-        client = get_redis_client()
+        client = get_dragonfly_client()
         if client is None:
             logger.warning(
-                f"[ConversationHistoryStore] Redis unavailable - save_round({chat_id}) skipped"
+                f"[ConversationHistoryStore] Dragonfly unavailable - save_round({chat_id}) skipped"
             )
             return
 
@@ -212,12 +211,12 @@ class ConversationHistoryStore:
 
         Returns:
             Ordered list of ``ConversationRound`` objects (newest last),
-            or an empty list if the key is missing or Redis is unavailable.
+            or an empty list if the key is missing or Dragonfly is unavailable.
         """
-        client = get_redis_client()
+        client = get_dragonfly_client()
         if client is None:
             logger.warning(
-                f"[ConversationHistoryStore] Redis unavailable - get_history({chat_id}) skipped"
+                f"[ConversationHistoryStore] Dragonfly unavailable - get_history({chat_id}) skipped"
             )
             return []
 
@@ -236,12 +235,12 @@ class ConversationHistoryStore:
         """Retrieve the optional summary for a conversation.
 
         Returns:
-            The summary string, or None if not set or Redis is unavailable.
+            The summary string, or None if not set or Dragonfly is unavailable.
         """
-        client = get_redis_client()
+        client = get_dragonfly_client()
         if client is None:
             logger.warning(
-                f"[ConversationHistoryStore] Redis unavailable - get_summary({chat_id}) skipped"
+                f"[ConversationHistoryStore] Dragonfly unavailable - get_summary({chat_id}) skipped"
             )
             return None
 
@@ -261,10 +260,10 @@ class ConversationHistoryStore:
             chat_id: The conversation identifier.
             summary: The condensed text to store.
         """
-        client = get_redis_client()
+        client = get_dragonfly_client()
         if client is None:
             logger.warning(
-                f"[ConversationHistoryStore] Redis unavailable - save_summary({chat_id}) skipped"
+                f"[ConversationHistoryStore] Dragonfly unavailable - save_summary({chat_id}) skipped"
             )
             return
 
@@ -292,7 +291,7 @@ class ConversationHistoryStore:
 
         Returns:
             A ``ConversationHistoryState`` instance. Always succeeds — both
-            fields fall back to safe defaults if Redis is unavailable.
+            fields fall back to safe defaults if Dragonfly is unavailable.
         """
         rounds, summary = await asyncio.gather(
             self.get_history(chat_id),
@@ -313,7 +312,7 @@ def should_save_history(
     """Return True when a successful exchange should be persisted to history.
 
     Args:
-        conversation_history_store: The active store instance, or None when Redis is unavailable.
+        conversation_history_store: The active store instance, or None when Dragonfly is unavailable.
         response: The response produced by the orchestration pipeline.
         excluded_messages: Set of content strings that must never be persisted (OOS, error, etc.).
     """
@@ -343,7 +342,7 @@ async def save_history_round(
     user_message: str,
     bot_message: str,
 ) -> None:
-    """Persist a completed user+bot exchange to Redis. Never raises.
+    """Persist a completed user+bot exchange to Dragonfly. Never raises.
 
     Args:
         store: The active ConversationHistoryStore.

@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any, cast
 
-import redis
+from redis import Redis as DragonflyClient, RedisError as DragonflyError
 
 # /app holds the mounted src package (src/__init__.py, src/loki_logger.py)
 sys.path.insert(0, "/app")
@@ -64,10 +64,10 @@ def main() -> int:
     def setting(name: str, default: str) -> str:
         return os.getenv(name) or env.get(name) or default
 
-    client = redis.Redis(
-        host=setting("REDIS_HOST", "dragonfly"),
-        port=int(setting("REDIS_PORT", "6379")),
-        password=setting("REDIS_AUTH", "") or None,
+    client = DragonflyClient(
+        host=setting("DRAGONFLY_HOST", "dragonfly"),
+        port=int(setting("DRAGONFLY_PORT", "6379")),
+        password=setting("DRAGONFLY_PASSWORD", "") or None,
         decode_responses=True,
         socket_connect_timeout=5,
         socket_timeout=5,
@@ -76,7 +76,7 @@ def main() -> int:
     try:
         # Sync client: info() returns a plain dict (the stubs also allow an awaitable)
         metrics = collect_metrics(cast(dict[str, Any], client.info()))
-    except redis.RedisError as exc:
+    except DragonflyError as exc:
         logger.error(f"Dragonfly metrics check failed: {exc}")
         logger.log_queue.join()
         return 1

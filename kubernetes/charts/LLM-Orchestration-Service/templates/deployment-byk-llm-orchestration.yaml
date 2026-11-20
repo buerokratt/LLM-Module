@@ -115,12 +115,12 @@ spec:
               value: "{{ $value }}"
             {{- end }}
 
-            #password for redis compatible store, from the shared secret
-            - name: REDIS_AUTH
+            # Dragonfly password, from the shared secret
+            - name: DRAGONFLY_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{.Values.redisAuth.secretName | quote}}
-                  key: {{.Values.redisAuth.secretKey | quote}}
+                  name: {{.Values.dragonflyAuth.secretName | quote}}
+                  key: {{.Values.dragonflyAuth.secretKey | quote}}
                   optional: true
           
           {{- if .Values.healthcheck.enabled }}

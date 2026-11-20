@@ -255,8 +255,6 @@ services:
     depends_on: &langfuse-depends-on
       rag-search-db:
         condition: service_healthy
-      # minio:
-      #   condition: service_healthy
       seaweedfs-init:
         condition: service_completed_successfully
       dragonfly:
@@ -305,13 +303,14 @@ services:
       LANGFUSE_S3_BATCH_EXPORT_FORCE_PATH_STYLE: ${LANGFUSE_S3_BATCH_EXPORT_FORCE_PATH_STYLE}
       LANGFUSE_INGESTION_QUEUE_DELAY_MS: ${LANGFUSE_INGESTION_QUEUE_DELAY_MS}
       LANGFUSE_INGESTION_CLICKHOUSE_WRITE_INTERVAL_MS: ${LANGFUSE_INGESTION_CLICKHOUSE_WRITE_INTERVAL_MS}
-      REDIS_HOST: ${REDIS_HOST}
-      REDIS_PORT: ${REDIS_PORT}
-      REDIS_AUTH: ${REDIS_AUTH}
-      REDIS_TLS_ENABLED: ${REDIS_TLS_ENABLED}
-      REDIS_TLS_CA: ${REDIS_TLS_CA}
-      REDIS_TLS_CERT: ${REDIS_TLS_CERT}
-      REDIS_TLS_KEY: ${REDIS_TLS_KEY}
+      # Langfuse's own setting names (REDIS_*), pointed at Dragonfly
+      REDIS_HOST: ${DRAGONFLY_HOST}
+      REDIS_PORT: ${DRAGONFLY_PORT}
+      REDIS_AUTH: ${DRAGONFLY_PASSWORD}
+      REDIS_TLS_ENABLED: ${DRAGONFLY_TLS_ENABLED}
+      REDIS_TLS_CA: ${DRAGONFLY_TLS_CA}
+      REDIS_TLS_CERT: ${DRAGONFLY_TLS_CERT}
+      REDIS_TLS_KEY: ${DRAGONFLY_TLS_KEY}
       EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS}
       SMTP_CONNECTION_URL: ${SMTP_CONNECTION_URL}
     networks:
@@ -367,38 +366,6 @@ services:
     networks:
       - bykstack
 
-  minio:
-    image: minio/minio:latest
-    container_name: minio
-    restart: always
-    env_file:
-      - .env
-    entrypoint: sh
-    command: -c "
-      export MINIO_ROOT_USER=$${S3_ACCESS_KEY_ID:-minio} && \
-      export MINIO_ROOT_PASSWORD=$${S3_SECRET_ACCESS_KEY:-miniosecret} && \
-      export MINIO_BROWSER_REDIRECT_URL=$${MINIO_BROWSER_REDIRECT_URL:-http://localhost:9091} && \
-      mkdir -p /data/rag-search/resources/langfuse && \
-      mkdir -p /data/rag-search/resources/models && \
-      mkdir -p /data/rag-search/resources/datasets && \
-      mkdir -p /data/rag-search/resources/qdrant && \
-      mkdir -p /data/rag-search/resources/system && \
-      minio server /data --address \":9000\" --console-address \":9001\"
-      "
-    ports:
-      - 9090:9000
-      - 9091:9001
-    volumes:
-      - minio_data:/data
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 1s
-      timeout: 5s
-      retries: 5
-      start_period: 1s
-    networks:
-      - bykstack
-
   seaweedfs:
     image: chrislusf/seaweedfs:4.47
     container_name: seaweedfs
@@ -438,7 +405,7 @@ services:
     networks:
       - bykstack
 
-  # Redis-compatible store for app sessions/history/cache (db 1) and Langfuse queues (db 0).
+  # Dragonfly: app sessions/history/cache (db 1) and Langfuse queues (db 0).
   # Sizing is required: Dragonfly needs ~256MiB per thread and never evicts data.
   dragonfly:
     image: ghcr.io/dragonflydb/dragonfly:v2.0.2
@@ -448,7 +415,7 @@ services:
       - .env
     command:
       - --logtostderr
-      - --requirepass=${REDIS_AUTH:?REDIS_AUTH must be set in .env}
+      - --requirepass=${DRAGONFLY_PASSWORD:?DRAGONFLY_PASSWORD must be set in .env}
       - --maxmemory=${DRAGONFLY_MAXMEMORY:?DRAGONFLY_MAXMEMORY must be set in .env}
       - --proactor_threads=${DRAGONFLY_THREADS:?DRAGONFLY_THREADS must be set in .env}
       # Option A: Langfuse's BullMQ Lua scripts use keys they don't declare
@@ -464,32 +431,13 @@ services:
     volumes:
       - dragonfly_data:/data
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_AUTH\" --no-auth-warning ping | grep -q PONG"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$DRAGONFLY_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
       interval: 5s
       timeout: 5s
       retries: 10
       start_period: 5s
     networks:
       - bykstack
-
-  # Old Redis service, kept for one release as rollback (DF-7.6 removes it).
-  # To roll back: uncomment, set REDIS_HOST back to redis, and point depends_on at redis.
-  # redis:
-  #   image: docker.io/redis:7
-  #   restart: always
-  #   env_file:
-  #     - .env
-  #   command: >
-  #     --requirepass ${REDIS_AUTH:-myredissecret}
-  #   ports:
-  #     - 6379:6379
-  #   healthcheck:
-  #     test: ["CMD", "redis-cli", "ping"]
-  #     interval: 3s
-  #     timeout: 10s
-  #     retries: 10
-  #   networks:
-  #     - bykstack
 
   rag-search-db:
     container_name: rag-search-db
@@ -662,10 +610,10 @@ services:
       - ENVIRONMENT=production
       - VAULT_ADDR=http://vault-agent-llm:8201
       # VAULT_TOKEN not set - vault-agent-llm proxy handles authentication
-      - REDIS_HOST=${REDIS_HOST}
-      - REDIS_PORT=${REDIS_PORT}
-      - REDIS_AUTH=${REDIS_AUTH}
-      - REDIS_SESSION_DB=${REDIS_SESSION_DB}
+      - DRAGONFLY_HOST=${DRAGONFLY_HOST}
+      - DRAGONFLY_PORT=${DRAGONFLY_PORT}
+      - DRAGONFLY_PASSWORD=${DRAGONFLY_PASSWORD}
+      - DRAGONFLY_SESSION_DB=${DRAGONFLY_SESSION_DB}
     volumes:
       - ./constants.ini:/app/constants.ini:ro  # service endpoint URLs
       - ./src/llm_config_module/config:/app/src/llm_config_module/config:ro
@@ -752,8 +700,6 @@ volumes:
     name: langfuse_clickhouse_data
   langfuse_clickhouse_logs:
     name: langfuse_clickhouse_logs
-  minio_data:
-    name: minio_data
   seaweedfs_data:
     name: seaweedfs_data
   dragonfly_data:

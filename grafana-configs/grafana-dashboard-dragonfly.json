@@ -4,8 +4,7 @@
   "title": "Dragonfly",
   "tags": [
     "rag-module",
-    "dragonfly",
-    "redis"
+    "dragonfly"
   ],
   "timezone": "browser",
   "refresh": "1m",

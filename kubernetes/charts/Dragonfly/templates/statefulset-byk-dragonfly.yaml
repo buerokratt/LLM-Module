@@ -27,7 +27,7 @@ spec:
           imagePullPolicy: {{ .Values.pullPolicy }}
           args:
             - "--logtostderr"
-            - "--requirepass=$(REDIS_AUTH)"
+            - "--requirepass=$(DRAGONFLY_PASSWORD)"
             - "--proactor_threads={{ required "Dragonfly.threads must be set explicitly (~256Mi of memory per thread)" .Values.threads }}"
             - "--maxmemory={{ required "Dragonfly.maxmemory must be set (writes are refused above it)" .Values.maxmemory }}"
             - "--dir=/data"
@@ -40,7 +40,7 @@ spec:
             - name: dragonfly
               containerPort: {{ .Values.service.port }}
               protocol: TCP
-          # REDIS_AUTH from the shared Secret
+          # DRAGONFLY_PASSWORD from the shared Secret
           envFrom:
             - secretRef:
                 name: dragonfly-secrets
@@ -59,7 +59,7 @@ spec:
               command:
                 - sh
                 - -c
-                - redis-cli -a "$REDIS_AUTH" --no-auth-warning ping | grep -q PONG
+                - redis-cli -a "$DRAGONFLY_PASSWORD" --no-auth-warning ping | grep -q PONG
             initialDelaySeconds: {{ .Values.healthcheck.initialDelaySeconds }}
             periodSeconds: {{ .Values.healthcheck.periodSeconds }}
             timeoutSeconds: {{ .Values.healthcheck.timeoutSeconds }}

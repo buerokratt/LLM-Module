@@ -828,7 +828,7 @@ class ParamExtractionModule(dspy.Module):
             # Whitespace-only (or empty) values are never a legitimate param value.
             # Without this, a short run of blank spaces would strip to "" and be
             # accepted as a valid string — satisfying the required-param check and
-            # reaching Redis and the outbound API call as an empty value.
+            # reaching Dragonfly and the outbound API call as an empty value.
             logger.warning(
                 "ParamExtractionModule: param value empty after strip"
                 " | event_type=param_value_empty_after_strip"

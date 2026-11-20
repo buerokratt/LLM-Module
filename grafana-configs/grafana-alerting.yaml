@@ -1,6 +1,6 @@
 apiVersion: 1
 
-# Grafana-managed alert rules for the Redis-compatible store (Dragonfly).
+# Grafana-managed alert rules for Dragonfly.
 # Firing alerts are listed under Alerting > Alert rules in Grafana.
 groups:
   - orgId: 1
@@ -57,10 +57,10 @@ groups:
             logs and Dragonfly CPU/memory; see the langfuse-queue-depth logs in Loki
             for the busy queues.
 
-      # The app's stores log every failed Redis/Dragonfly call and then fail open,
+      # The app's stores log every failed Dragonfly call and then fail open,
       # so chats keep working but lose history/cache. Many failures = store trouble.
-      - uid: redis-store-errors
-        title: Redis-compatible store errors in the app
+      - uid: dragonfly-store-errors
+        title: Dragonfly errors in the app
         condition: C
         data:
           - refId: A
@@ -73,7 +73,7 @@ groups:
               queryType: range
               expr: >-
                 sum(count_over_time({service=~"api-tool-session-store|conversation-history|atc-cache-store"}
-                |~ "failed|Redis unavailable" [5m]))
+                |~ "failed|Dragonfly unavailable" [5m]))
           - refId: B
             datasourceUid: __expr__
             model:
@@ -100,14 +100,14 @@ groups:
         annotations:
           summary: More than 10 store errors in 5 minutes
           description: >-
-            Session/history/cache calls to the Redis-compatible store are failing.
+            Session/history/cache calls to Dragonfly are failing.
             Chats still work but without history or cache. Check Dragonfly health
             and the store logs in Loki.
 
       # Optimistic-locking updates (WATCH/MULTI/EXEC) gave up after their retries:
       # a session or history update was lost.
-      - uid: redis-watch-retries-exhausted
-        title: Store update retries exhausted
+      - uid: dragonfly-watch-retries-exhausted
+        title: Dragonfly update retries exhausted
         condition: C
         data:
           - refId: A
@@ -152,8 +152,8 @@ groups:
 
       # Dragonfly never evicts: when maxmemory is reached it refuses writes with an
       # OOM error, which the stores log (risk R4).
-      - uid: redis-store-oom
-        title: Redis-compatible store is out of memory
+      - uid: dragonfly-store-oom
+        title: Dragonfly is out of memory
         condition: C
         data:
           - refId: A
@@ -198,8 +198,8 @@ groups:
 
       # The LLM service's /health (called by the healthcheck every 30s) logs a
       # warning whenever the store is not connected.
-      - uid: redis-store-disconnected
-        title: LLM service lost its session store
+      - uid: dragonfly-store-disconnected
+        title: LLM service lost its Dragonfly connection
         condition: C
         data:
           - refId: A
@@ -212,7 +212,7 @@ groups:
               queryType: range
               expr: >-
                 sum(count_over_time({service="llm-orchestration-api"}
-                |= "Redis-compatible store health check" [5m]))
+                |= "Dragonfly health check" [5m]))
           - refId: B
             datasourceUid: __expr__
             model:
@@ -379,3 +379,16 @@ groups:
           description: >-
             Uptime reset. If not a planned deploy, check for crashes or OOM kills
             (docker/kubectl events) and the Dragonfly logs.
+
+# Rules under the UIDs used before the Dragonfly rename. Grafana keeps provisioned
+# rules that are dropped from this file, so they are deleted here. Can be removed
+# once every deployment has started Grafana with this file.
+deleteRules:
+  - orgId: 1
+    uid: redis-store-errors
+  - orgId: 1
+    uid: redis-watch-retries-exhausted
+  - orgId: 1
+    uid: redis-store-oom
+  - orgId: 1
+    uid: redis-store-disconnected

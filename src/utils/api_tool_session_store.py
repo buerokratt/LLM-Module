@@ -1,13 +1,12 @@
-"""Redis-backed session store for the API Tool Calling agentic loop."""
+"""Dragonfly-backed session store for the API Tool Calling agentic loop."""
 
 from typing import Any, Optional
 
 from fastapi import HTTPException, Request, status
 from src.loki_logger import LokiLogger
-from redis import WatchError
 
 from models.session_models import APIToolSession
-from src.utils.redis_client import get_redis_client, redis_key
+from src.utils.dragonfly_client import WatchError, get_dragonfly_client, dragonfly_key
 
 logger = LokiLogger(service_name="api-tool-session-store")
 
@@ -17,14 +16,14 @@ _UPDATE_MAX_RETRIES = 3
 
 
 def _key(chat_id: str) -> str:
-    return redis_key(f"{_SESSION_KEY_PREFIX}{chat_id}")
+    return dragonfly_key(f"{_SESSION_KEY_PREFIX}{chat_id}")
 
 
 _VALID_SESSION_FIELDS = frozenset(APIToolSession.model_fields)
 
 
 class APIToolSessionStore:
-    """CRUD store for API tool agentic-loop sessions backed by Redis.
+    """CRUD store for API tool agentic-loop sessions backed by Dragonfly.
 
     All operations are async and safe to call from FastAPI handlers.
     The TTL is reset (sliding expiry) on every save() and update().
@@ -34,11 +33,13 @@ class APIToolSessionStore:
         """Retrieve a session by chat_id.
 
         Returns:
-            The deserialized session, or None if not found / Redis unavailable.
+            The deserialized session, or None if not found / Dragonfly unavailable.
         """
-        client = get_redis_client()
+        client = get_dragonfly_client()
         if client is None:
-            logger.warning(f"[SessionStore] Redis unavailable - get({chat_id}) skipped")
+            logger.warning(
+                f"[SessionStore] Dragonfly unavailable - get({chat_id}) skipped"
+            )
             return None
 
         try:
@@ -56,10 +57,10 @@ class APIToolSessionStore:
         Args:
             session: The session object to persist.
         """
-        client = get_redis_client()
+        client = get_dragonfly_client()
         if client is None:
             logger.warning(
-                f"[SessionStore] Redis unavailable - save({session.chat_id}) skipped"
+                f"[SessionStore] Dragonfly unavailable - save({session.chat_id}) skipped"
             )
             return
 
@@ -76,7 +77,7 @@ class APIToolSessionStore:
     async def update(self, chat_id: str, **fields: Any) -> Optional[APIToolSession]:
         """Atomically update a session using optimistic locking (WATCH/MULTI/EXEC).
 
-        Uses Redis WATCH to detect concurrent modifications. If a conflicting
+        Uses WATCH to detect concurrent modifications. If a conflicting
         write is detected, the operation retries up to ``_UPDATE_MAX_RETRIES`` times.
 
         Args:
@@ -84,7 +85,7 @@ class APIToolSessionStore:
             **fields: Field names and new values to merge into the session.
 
         Returns:
-            The updated session, or None if the session does not exist or Redis is unavailable.
+            The updated session, or None if the session does not exist or Dragonfly is unavailable.
 
         Raises:
             ValueError: If any of the provided field names are not valid
@@ -94,10 +95,10 @@ class APIToolSessionStore:
         if unknown:
             raise ValueError(f"Unknown session fields: {unknown}")
 
-        client = get_redis_client()
+        client = get_dragonfly_client()
         if client is None:
             logger.warning(
-                f"[SessionStore] Redis unavailable - update({chat_id}) skipped"
+                f"[SessionStore] Dragonfly unavailable - update({chat_id}) skipped"
             )
             return None
 
@@ -144,15 +145,15 @@ class APIToolSessionStore:
         return None
 
     async def delete(self, chat_id: str) -> None:
-        """Remove a session from Redis.
+        """Remove a session from Dragonfly.
 
         Args:
             chat_id: The conversation whose session should be deleted.
         """
-        client = get_redis_client()
+        client = get_dragonfly_client()
         if client is None:
             logger.warning(
-                f"[SessionStore] Redis unavailable - delete({chat_id}) skipped"
+                f"[SessionStore] Dragonfly unavailable - delete({chat_id}) skipped"
             )
             return
 
@@ -166,9 +167,9 @@ class APIToolSessionStore:
         """Check whether a session exists for the given chat_id.
 
         Returns:
-            True if the session key exists in Redis, False otherwise.
+            True if the session key exists in Dragonfly, False otherwise.
         """
-        client = get_redis_client()
+        client = get_dragonfly_client()
         if client is None:
             return False
 
@@ -183,7 +184,7 @@ def require_session_store(request: Request) -> APIToolSessionStore:
     """FastAPI dependency that guarantees a live session store.
 
     Use as a dependency on any endpoint that requires multi-turn session
-    state.  Returns HTTP 503 immediately when Redis is unavailable instead
+    state.  Returns HTTP 503 immediately when Dragonfly is unavailable instead
     of letting the request silently degrade.
     """
     store: Optional[APIToolSessionStore] = getattr(
