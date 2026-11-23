@@ -9,6 +9,7 @@ import './TestProductionLLM.scss';
 import MessageContent from 'components/MessageContent';
 import { llmConnectionsQueryKeys } from 'utils/queryKeys';
 import { fetchAllLLMConnectionsPaginated } from 'services/llmConnections';
+import { v4 as uuidv4 } from 'uuid';
 
 
 interface Message {
@@ -34,8 +35,8 @@ const TestProductionLLM: FC = () => {
   });
 
   // Generate a unique channel ID for this session
-  const channelId = useMemo(() => `channel-${Math.random().toString(36).substring(2, 15)}`, []);
-  const { startStreaming, stopStreaming, isStreaming } = useStreamingResponse(channelId);
+  const chatUuid = useMemo(() => uuidv4(), []);
+  const { startStreaming, stopStreaming, isStreaming } = useStreamingResponse(chatUuid);
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
 
    // Fetch LLM connections for dropdown - using the working legacy endpoint for now
@@ -251,6 +252,8 @@ const TestProductionLLM: FC = () => {
       authorId: 'test-user-456',
       conversationHistory,
       url: 'opensearch-dashboard-test',
+      environment: selectedConnection?.environment || 'production',
+      connection_id: selectedConnection?.vaultUuid || undefined,
     };
 
     const onToken = (token: string) => {
@@ -288,6 +291,7 @@ const TestProductionLLM: FC = () => {
   const clearChat = () => {
     setMessages([]);
     stopStreaming();
+    setIsLoading(false);
     toast.open({
       type: 'info',
       title: t('testProductionLLM.chatClearedTitle'),

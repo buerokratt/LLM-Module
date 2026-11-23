@@ -1,0 +1,113 @@
+declaration:
+  call: declare
+  version: 0.1
+  description: "Start an LLM stream delivered through the notifications node"
+  method: post
+  accepts: json
+  returns: json
+  namespace: rag-search
+  allowlist:
+    headers:
+      - field: cookie
+        type: string
+        description: "Authenticated session cookie"
+    body:
+      - field: chatUuid
+        type: string
+        description: "Chat UUID"
+      - field: message
+        type: string
+        description: "User message"
+      - field: conversationHistory
+        type: array
+        description: "Conversation history"
+      - field: environment
+        type: string
+        description: "Connection environment"
+      - field: connectionId
+        type: string
+        description: "Connection Vault UUID"
+
+get_user:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_TIM]/jwt/custom-jwt-userinfo"
+    contentType: plaintext
+    headers:
+      cookie: ${incoming.headers.cookie}
+    plaintext: "customJwtCookie"
+  result: user_result
+  next: check_user
+
+check_user:
+  switch:
+    - condition: ${user_result.response.statusCodeValue == 200 && user_result.response.body != null && (user_result.response.body.authorities.includes('ROLE_ADMINISTRATOR') || user_result.response.body.authorities.includes('ROLE_MODEL_TRAINER'))}
+      next: call_stream_notify
+  next: unauthorized
+
+call_stream_notify:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_LLM_ORCHESTRATOR]/stream/notify"
+    headers:
+      Content-Type: "application/json"
+      cookie: ${incoming.headers.cookie}
+    body:
+      chatId: ${incoming.body.chatUuid}
+      message: ${incoming.body.message}
+      authorId: ${user_result.response.body.idCode}
+      conversationHistory: ${incoming.body.conversationHistory}
+      url: "test-llm"
+      environment: ${incoming.body.environment ?? 'production'}
+      connection_id: ${incoming.body.connectionId ?? ''}
+  result: stream_result
+  next: check_stream_result
+
+check_stream_result:
+  switch:
+    - condition: ${stream_result.response.statusCodeValue == 202}
+      next: accepted
+    - condition: ${stream_result.response.statusCodeValue == 429}
+      next: rate_limited
+    - condition: ${stream_result.response.statusCodeValue == 409}
+      next: conflict
+    - condition: ${stream_result.response.statusCodeValue == 422}
+      next: invalid_request
+    - condition: ${stream_result.response.statusCodeValue == 503}
+      next: unavailable
+  next: upstream_error
+
+accepted:
+  status: 202
+  return: ${stream_result.response.body}
+  next: end
+
+unauthorized:
+  status: 401
+  return: "Authentication required"
+  next: end
+
+rate_limited:
+  status: 429
+  return: "Rate limit exceeded"
+  next: end
+
+conflict:
+  status: 409
+  return: "A stream is already active for this chat"
+  next: end
+
+invalid_request:
+  status: 422
+  return: "Invalid streaming request"
+  next: end
+
+unavailable:
+  status: 503
+  return: "Notifications service is unavailable"
+  next: end
+
+upstream_error:
+  status: 500
+  return: "Unable to start stream"
+  next: end

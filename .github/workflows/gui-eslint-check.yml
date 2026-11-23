@@ -30,3 +30,7 @@ jobs:
       - name: Lint code
         working-directory: ./GUI
         run: npx eslint "src/**/*.{ts,tsx}" --quiet
+
+      - name: Run GUI tests
+        working-directory: ./GUI
+        run: npm test

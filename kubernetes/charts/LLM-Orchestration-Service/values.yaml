@@ -102,6 +102,7 @@ constants:
   QDRANT_URL: "http://qdrant:6333"
   LOKI_URL: "http://loki:3100"
   LANGFUSE_URL: "http://langfuse-web:3000"
+  RAG_SEARCH_NOTIFICATIONS_NODE_PRIVATE: "http://notifications-node:3001"
 
 # Vault Agent sidecar configuration
 # WHY: LLM Orchestration needs read access to encrypted LLM API keys
