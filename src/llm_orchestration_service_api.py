@@ -108,7 +108,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await init_redis_client()
         app.state.session_store = APIToolSessionStore()
 
-        # Wire an incremental summarizer if the LLM manager singleton is available.
+        # Wire an incremental summarizer if the production LLM connection loads.
+        # Inside a request it uses that request's connection (use_task_local).
         summarizer = None
         try:
             summarizer = create_incremental_summarizer(LLMManager())
