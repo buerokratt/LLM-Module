@@ -146,7 +146,7 @@ class APIToolWorkflowExecutor(BaseWorkflow):
 
     On the first turn for a chat_id the matched endpoint is read from context
     (populated by ToolClassifier.classify()).  Subsequent turns resume from the
-    persisted Redis session — context["matched_endpoint"] is ignored once a
+    persisted Dragonfly session — context["matched_endpoint"] is ignored once a
     session exists.
 
     The executor manages the agentic loop lifecycle:
@@ -1015,7 +1015,7 @@ class APIToolWorkflowExecutor(BaseWorkflow):
                 session = new_session
             else:
                 logger.warning(
-                    f"[{chat_id}] APIToolWorkflow: Redis unavailable — "
+                    f"[{chat_id}] APIToolWorkflow: Dragonfly unavailable — "
                     f"running loop without session persistence"
                 )
                 session = APIToolSession(
@@ -1058,18 +1058,21 @@ class APIToolWorkflowExecutor(BaseWorkflow):
             # On the first ATC turn there is no prior ATC exchange to pass.
             conversation_history_for_loop = []
         else:
-            # On subsequent turns prefer Redis as the authoritative history source.
-            _redis_history, _atc_conversation_summary = await get_conversation_history(
+            # On subsequent turns prefer Dragonfly as the authoritative history source.
+            (
+                _dragonfly_history,
+                _atc_conversation_summary,
+            ) = await get_conversation_history(
                 chat_id=chat_id,
                 store=self._get_conversation_history_store(),
                 fallback=list(request.conversationHistory or []),
             )
             conversation_history_for_loop = [
                 {"authorRole": item.authorRole, "message": item.message}
-                for item in _redis_history
+                for item in _dragonfly_history
             ]
 
-        # Incorporate any Redis-supplied conversation summary into custom_instructions
+        # Incorporate any Dragonfly-supplied conversation summary into custom_instructions
         # so the param extractor and response formatter have full conversational context.
         if _atc_conversation_summary:
             _summary_prefix = (

@@ -1067,7 +1067,7 @@ class TestSessionPersistence:
             _extraction({}, ["languageIsoCode"], "Which language code?")
         )
         store_mock = _make_session_store_mock()
-        store_mock.update.side_effect = RuntimeError("Redis unavailable")
+        store_mock.update.side_effect = RuntimeError("Dragonfly unavailable")
         states = [_make_state(_ENDPOINT_A)]
         loop = _make_loop(extractor_mock, store_mock)
 
@@ -1105,7 +1105,7 @@ class TestSessionPersistence:
 
     @pytest.mark.asyncio
     async def test_session_saved_on_extractor_error(self) -> None:
-        """turn_count must be persisted to Redis even when param extraction raises."""
+        """turn_count must be persisted to Dragonfly even when param extraction raises."""
         extractor_mock = MagicMock(side_effect=RuntimeError("LLM timeout"))
         store_mock = _make_session_store_mock()
         states = [_make_state(_ENDPOINT_A)]
@@ -1600,13 +1600,13 @@ class TestStreamRunTurn:
 
     @pytest.mark.asyncio
     async def test_session_save_failure_does_not_raise(self) -> None:
-        """A Redis failure must not propagate — NEEDS_INPUT is still returned."""
+        """A Dragonfly failure must not propagate — NEEDS_INPUT is still returned."""
         extractor_mock = _make_stream_extractor_mock(
             ["Which", " language?"],
             _extraction({}, ["languageIsoCode"], "Which language?"),
         )
         store_mock = _make_session_store_mock()
-        store_mock.update.side_effect = RuntimeError("Redis unavailable")
+        store_mock.update.side_effect = RuntimeError("Dragonfly unavailable")
         states = [_make_state(_ENDPOINT_A)]
         loop = _make_loop(extractor_mock, store_mock)
 
@@ -1622,7 +1622,7 @@ class TestStreamRunTurn:
 
     @pytest.mark.asyncio
     async def test_session_saved_on_stream_extractor_error(self) -> None:
-        """turn_count must be persisted to Redis even when stream_forward raises."""
+        """turn_count must be persisted to Dragonfly even when stream_forward raises."""
         extractor_mock = MagicMock()
         extractor_mock.stream_forward = AsyncMock(
             side_effect=RuntimeError("stream failure")

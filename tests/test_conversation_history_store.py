@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
-from redis import WatchError
 
+from src.utils.dragonfly_client import WatchError
 from src.models.conversation_history_models import (
     ConversationHistoryState,
     ConversationRound,
@@ -36,7 +36,7 @@ def _make_round(**kwargs) -> ConversationRound:
     return ConversationRound(**defaults)
 
 
-def _make_redis_mock() -> AsyncMock:
+def _make_dragonfly_mock() -> AsyncMock:
     mock = AsyncMock()
     mock.get = AsyncMock(return_value=None)
     mock.set = AsyncMock()
@@ -149,12 +149,12 @@ class TestSaveRound:
         pipe = _make_pipe_mock()
         pipe.get = AsyncMock(return_value=None)  # no existing rounds
 
-        redis_mock = _make_redis_mock()
-        redis_mock.pipeline = MagicMock(return_value=pipe)
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.pipeline = MagicMock(return_value=pipe)
 
         with patch(
-            "src.utils.conversation_history_store.get_redis_client",
-            return_value=redis_mock,
+            "src.utils.conversation_history_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             await store.save_round("chat-1", round_)
 
@@ -181,12 +181,12 @@ class TestSaveRound:
         pipe = _make_pipe_mock()
         pipe.get = AsyncMock(return_value=json.dumps(existing))
 
-        redis_mock = _make_redis_mock()
-        redis_mock.pipeline = MagicMock(return_value=pipe)
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.pipeline = MagicMock(return_value=pipe)
 
         with patch(
-            "src.utils.conversation_history_store.get_redis_client",
-            return_value=redis_mock,
+            "src.utils.conversation_history_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             await store.save_round("chat-2", new_round)
 
@@ -208,12 +208,12 @@ class TestSaveRound:
         pipe = _make_pipe_mock()
         pipe.get = AsyncMock(return_value=json.dumps(existing))
 
-        redis_mock = _make_redis_mock()
-        redis_mock.pipeline = MagicMock(return_value=pipe)
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.pipeline = MagicMock(return_value=pipe)
 
         with patch(
-            "src.utils.conversation_history_store.get_redis_client",
-            return_value=redis_mock,
+            "src.utils.conversation_history_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             await store.save_round("chat-3", new_round)
 
@@ -232,12 +232,12 @@ class TestSaveRound:
         pipe = _make_pipe_mock()
         pipe.get = AsyncMock(return_value=None)
 
-        redis_mock = _make_redis_mock()
-        redis_mock.pipeline = MagicMock(return_value=pipe)
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.pipeline = MagicMock(return_value=pipe)
 
         with patch(
-            "src.utils.conversation_history_store.get_redis_client",
-            return_value=redis_mock,
+            "src.utils.conversation_history_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             await store.save_round("chat-4", round_)
 
@@ -246,10 +246,11 @@ class TestSaveRound:
         )
 
     @pytest.mark.asyncio
-    async def test_save_round_skips_when_redis_unavailable(self):
+    async def test_save_round_skips_when_dragonfly_unavailable(self):
         store = ConversationHistoryStore()
         with patch(
-            "src.utils.conversation_history_store.get_redis_client", return_value=None
+            "src.utils.conversation_history_store.get_dragonfly_client",
+            return_value=None,
         ):
             # Should not raise
             await store.save_round("chat-x", _make_round())
@@ -272,12 +273,12 @@ class TestSaveRound:
         pipe.get = AsyncMock(return_value=None)
         pipe.execute = fake_execute
 
-        redis_mock = _make_redis_mock()
-        redis_mock.pipeline = MagicMock(return_value=pipe)
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.pipeline = MagicMock(return_value=pipe)
 
         with patch(
-            "src.utils.conversation_history_store.get_redis_client",
-            return_value=redis_mock,
+            "src.utils.conversation_history_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             await store.save_round("chat-5", round_)
 
@@ -292,12 +293,12 @@ class TestSaveRound:
         pipe.get = AsyncMock(return_value=None)
         pipe.execute = AsyncMock(side_effect=WatchError("always conflicts"))
 
-        redis_mock = _make_redis_mock()
-        redis_mock.pipeline = MagicMock(return_value=pipe)
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.pipeline = MagicMock(return_value=pipe)
 
         with patch(
-            "src.utils.conversation_history_store.get_redis_client",
-            return_value=redis_mock,
+            "src.utils.conversation_history_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             # Should not raise after exhausting retries
             await store.save_round("chat-6", round_)
@@ -309,12 +310,12 @@ class TestSaveRound:
         pipe = _make_pipe_mock()
         pipe.watch = AsyncMock(side_effect=RuntimeError("boom"))
 
-        redis_mock = _make_redis_mock()
-        redis_mock.pipeline = MagicMock(return_value=pipe)
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.pipeline = MagicMock(return_value=pipe)
 
         with patch(
-            "src.utils.conversation_history_store.get_redis_client",
-            return_value=redis_mock,
+            "src.utils.conversation_history_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             await store.save_round("chat-7", _make_round())
 
@@ -328,12 +329,12 @@ class TestGetHistory:
     @pytest.mark.asyncio
     async def test_returns_empty_list_when_key_missing(self):
         store = ConversationHistoryStore()
-        redis_mock = _make_redis_mock()
-        redis_mock.get = AsyncMock(return_value=None)
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.get = AsyncMock(return_value=None)
 
         with patch(
-            "src.utils.conversation_history_store.get_redis_client",
-            return_value=redis_mock,
+            "src.utils.conversation_history_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             result = await store.get_history("missing-chat")
 
@@ -346,14 +347,14 @@ class TestGetHistory:
             _make_round(user_message="q1", bot_message="a1"),
             _make_round(user_message="q2", bot_message="a2"),
         ]
-        redis_mock = _make_redis_mock()
-        redis_mock.get = AsyncMock(
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.get = AsyncMock(
             return_value=json.dumps([r.model_dump() for r in rounds])
         )
 
         with patch(
-            "src.utils.conversation_history_store.get_redis_client",
-            return_value=redis_mock,
+            "src.utils.conversation_history_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             result = await store.get_history("chat-1")
 
@@ -362,10 +363,11 @@ class TestGetHistory:
         assert result[1].user_message == "q2"
 
     @pytest.mark.asyncio
-    async def test_returns_empty_list_when_redis_unavailable(self):
+    async def test_returns_empty_list_when_dragonfly_unavailable(self):
         store = ConversationHistoryStore()
         with patch(
-            "src.utils.conversation_history_store.get_redis_client", return_value=None
+            "src.utils.conversation_history_store.get_dragonfly_client",
+            return_value=None,
         ):
             result = await store.get_history("any-chat")
 
@@ -374,12 +376,12 @@ class TestGetHistory:
     @pytest.mark.asyncio
     async def test_returns_empty_list_on_error(self):
         store = ConversationHistoryStore()
-        redis_mock = _make_redis_mock()
-        redis_mock.get = AsyncMock(side_effect=RuntimeError("connection lost"))
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.get = AsyncMock(side_effect=RuntimeError("connection lost"))
 
         with patch(
-            "src.utils.conversation_history_store.get_redis_client",
-            return_value=redis_mock,
+            "src.utils.conversation_history_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             result = await store.get_history("chat-err")
 
@@ -395,12 +397,12 @@ class TestGetSummary:
     @pytest.mark.asyncio
     async def test_returns_none_when_key_missing(self):
         store = ConversationHistoryStore()
-        redis_mock = _make_redis_mock()
-        redis_mock.get = AsyncMock(return_value=None)
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.get = AsyncMock(return_value=None)
 
         with patch(
-            "src.utils.conversation_history_store.get_redis_client",
-            return_value=redis_mock,
+            "src.utils.conversation_history_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             result = await store.get_summary("chat-1")
 
@@ -409,22 +411,23 @@ class TestGetSummary:
     @pytest.mark.asyncio
     async def test_returns_summary_string(self):
         store = ConversationHistoryStore()
-        redis_mock = _make_redis_mock()
-        redis_mock.get = AsyncMock(return_value="User asked about holidays.")
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.get = AsyncMock(return_value="User asked about holidays.")
 
         with patch(
-            "src.utils.conversation_history_store.get_redis_client",
-            return_value=redis_mock,
+            "src.utils.conversation_history_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             result = await store.get_summary("chat-1")
 
         assert result == "User asked about holidays."
 
     @pytest.mark.asyncio
-    async def test_returns_none_when_redis_unavailable(self):
+    async def test_returns_none_when_dragonfly_unavailable(self):
         store = ConversationHistoryStore()
         with patch(
-            "src.utils.conversation_history_store.get_redis_client", return_value=None
+            "src.utils.conversation_history_store.get_dragonfly_client",
+            return_value=None,
         ):
             result = await store.get_summary("any-chat")
 
@@ -433,12 +436,12 @@ class TestGetSummary:
     @pytest.mark.asyncio
     async def test_returns_none_on_error(self):
         store = ConversationHistoryStore()
-        redis_mock = _make_redis_mock()
-        redis_mock.get = AsyncMock(side_effect=RuntimeError("boom"))
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.get = AsyncMock(side_effect=RuntimeError("boom"))
 
         with patch(
-            "src.utils.conversation_history_store.get_redis_client",
-            return_value=redis_mock,
+            "src.utils.conversation_history_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             result = await store.get_summary("chat-err")
 
@@ -456,12 +459,12 @@ class TestSaveSummary:
         store = ConversationHistoryStore()
 
         pipe = _make_pipe_mock()
-        redis_mock = _make_redis_mock()
-        redis_mock.pipeline = MagicMock(return_value=pipe)
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.pipeline = MagicMock(return_value=pipe)
 
         with patch(
-            "src.utils.conversation_history_store.get_redis_client",
-            return_value=redis_mock,
+            "src.utils.conversation_history_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             await store.save_summary("chat-1", "Some summary text.")
 
@@ -476,12 +479,12 @@ class TestSaveSummary:
         store = ConversationHistoryStore()
 
         pipe = _make_pipe_mock()
-        redis_mock = _make_redis_mock()
-        redis_mock.pipeline = MagicMock(return_value=pipe)
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.pipeline = MagicMock(return_value=pipe)
 
         with patch(
-            "src.utils.conversation_history_store.get_redis_client",
-            return_value=redis_mock,
+            "src.utils.conversation_history_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             await store.save_summary("chat-2", "Summary.")
 
@@ -490,10 +493,11 @@ class TestSaveSummary:
         )
 
     @pytest.mark.asyncio
-    async def test_save_summary_skips_when_redis_unavailable(self):
+    async def test_save_summary_skips_when_dragonfly_unavailable(self):
         store = ConversationHistoryStore()
         with patch(
-            "src.utils.conversation_history_store.get_redis_client", return_value=None
+            "src.utils.conversation_history_store.get_dragonfly_client",
+            return_value=None,
         ):
             await store.save_summary("chat-x", "text")
 
@@ -502,12 +506,12 @@ class TestSaveSummary:
         store = ConversationHistoryStore()
         pipe = _make_pipe_mock()
         pipe.execute = AsyncMock(side_effect=RuntimeError("io error"))
-        redis_mock = _make_redis_mock()
-        redis_mock.pipeline = MagicMock(return_value=pipe)
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.pipeline = MagicMock(return_value=pipe)
 
         with patch(
-            "src.utils.conversation_history_store.get_redis_client",
-            return_value=redis_mock,
+            "src.utils.conversation_history_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             await store.save_summary("chat-err", "text")
 
@@ -542,10 +546,11 @@ class TestGetContext:
         assert result.summary == summary_text
 
     @pytest.mark.asyncio
-    async def test_get_context_returns_empty_defaults_when_redis_unavailable(self):
+    async def test_get_context_returns_empty_defaults_when_dragonfly_unavailable(self):
         store = ConversationHistoryStore()
         with patch(
-            "src.utils.conversation_history_store.get_redis_client", return_value=None
+            "src.utils.conversation_history_store.get_dragonfly_client",
+            return_value=None,
         ):
             result = await store.get_context("chat-gone")
 
@@ -618,15 +623,15 @@ class TestSaveRoundIncrementalSummary:
             for i in range(_MAX_ROUNDS)
         ]
         pipe = self._make_pipe_with_existing(existing)
-        redis_mock = _make_redis_mock()
-        redis_mock.pipeline = MagicMock(return_value=pipe)
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.pipeline = MagicMock(return_value=pipe)
 
         new_round = _make_round(user_message="q_new", bot_message="a_new")
 
         with (
             patch(
-                "src.utils.conversation_history_store.get_redis_client",
-                return_value=redis_mock,
+                "src.utils.conversation_history_store.get_dragonfly_client",
+                return_value=dragonfly_mock,
             ),
             patch.object(store, "_get_summary_lock", return_value=asyncio.Lock()),
             patch.object(store, "get_summary", AsyncMock(return_value="old summary")),
@@ -664,12 +669,12 @@ class TestSaveRoundIncrementalSummary:
         pipe = _make_pipe_mock()
         pipe.get = AsyncMock(return_value=json.dumps(existing))
 
-        redis_mock = _make_redis_mock()
-        redis_mock.pipeline = MagicMock(return_value=pipe)
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.pipeline = MagicMock(return_value=pipe)
 
         with patch(
-            "src.utils.conversation_history_store.get_redis_client",
-            return_value=redis_mock,
+            "src.utils.conversation_history_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             await store.save_round("chat-no-evict", _make_round())
 
@@ -688,12 +693,12 @@ class TestSaveRoundIncrementalSummary:
         pipe = _make_pipe_mock()
         pipe.get = AsyncMock(return_value=json.dumps(existing))
 
-        redis_mock = _make_redis_mock()
-        redis_mock.pipeline = MagicMock(return_value=pipe)
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.pipeline = MagicMock(return_value=pipe)
 
         with patch(
-            "src.utils.conversation_history_store.get_redis_client",
-            return_value=redis_mock,
+            "src.utils.conversation_history_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             await store.save_round("chat-no-summarizer", _make_round())
 

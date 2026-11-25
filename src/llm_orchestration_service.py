@@ -6,7 +6,7 @@ from src.loki_logger import LokiLogger
 from langfuse import Langfuse, observe
 import dspy
 
-from llm_orchestrator_config.llm_manager import LLMManager
+from llm_orchestrator_config.llm_manager import LLMManager, request_llm_scope
 from models.request_models import (
     OrchestrationRequest,
     OrchestrationResponse,
@@ -145,15 +145,15 @@ class LLMOrchestrationService:
         # This allows components to be initialized per-request with proper context
         self.tool_classifier = None
 
-        # Redis-backed session store for API Tool Calling agentic loop.
+        # Dragonfly-backed session store for API Tool Calling agentic loop.
         # Set to None here; the FastAPI lifespan injects the live store after
-        # Redis initialises (app.state.orchestration_service.session_store = ...).
+        # Dragonfly initialises (app.state.orchestration_service.session_store = ...).
         # Workflow executors access it via self.orchestration_service.session_store.
         self.session_store: Any = None
 
-        # Redis-backed conversation history store.
+        # Dragonfly-backed conversation history store.
         # Set to None here; the FastAPI lifespan injects the live store after
-        # Redis initialises (app.state.orchestration_service.conversation_history_store = ...).
+        # Dragonfly initialises (app.state.orchestration_service.conversation_history_store = ...).
         self.conversation_history_store: Any = None
 
         # Shared BM25 search index pre-warmed at startup.
@@ -314,8 +314,19 @@ class LLMOrchestrationService:
             orchestration_service=self,
         )
 
-    @observe(name="orchestration_request", as_type="agent")
     async def process_orchestration_request(
+        self, request: OrchestrationRequest
+    ) -> Union[OrchestrationResponse, TestOrchestrationResponse]:
+        """Process an orchestration request with the request's own LLM connection.
+
+        The request runs in its own LLM scope: once its components are built,
+        every LLM call uses the connection of this request (see request_llm_scope).
+        """
+        with request_llm_scope():
+            return await self._process_orchestration_request(request)
+
+    @observe(name="orchestration_request", as_type="agent")
+    async def _process_orchestration_request(
         self, request: OrchestrationRequest
     ) -> Union[OrchestrationResponse, TestOrchestrationResponse]:
         """
@@ -532,6 +543,18 @@ class LLMOrchestrationService:
     async def stream_orchestration_response(
         self, request: OrchestrationRequest
     ) -> AsyncIterator[str]:
+        """Stream an orchestration response with the request's own LLM connection.
+
+        The scope stays open while chunks are produced, so streamed generation
+        and output guardrails use the same connection as the rest of the request.
+        """
+        with request_llm_scope():
+            async for chunk in self._stream_orchestration_response(request):
+                yield chunk
+
+    async def _stream_orchestration_response(
+        self, request: OrchestrationRequest
+    ) -> AsyncIterator[str]:
         """
         Stream orchestration response with validation-first guardrails.
 
@@ -728,7 +751,7 @@ class LLMOrchestrationService:
                         # Tracks whether an excluded marker (OOS / guardrail violation /
                         # error) was observed at any point during the stream.  When True
                         # the entire accumulated buffer is discarded so no partial content
-                        # from before the blocked marker is ever written to Redis.
+                        # from before the blocked marker is ever written to Dragonfly.
                         _history_blocked = False
 
                         async for sse_chunk in stream_result:
@@ -882,6 +905,9 @@ class LLMOrchestrationService:
     ) -> Dict[str, Any]:
         """Initialize all service components. See ComponentFactory for details."""
         components = self._component_factory.initialize_service_components(request)
+
+        # From here on, every LLM call of this request uses its own connection.
+        components["llm_manager"].activate_for_request()
 
         # Log optimization status for all components
         self._log_optimization_status(components)

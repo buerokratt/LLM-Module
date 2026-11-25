@@ -1,0 +1,49 @@
+replicas: 1
+enabled: true
+
+images:
+  dragonfly:
+    registry: "ghcr.io"
+    repository: "dragonflydb/dragonfly"
+    tag: "v2.0.2"
+
+release_name: "dragonfly"
+
+service:
+  type: ClusterIP
+  port: 6379
+
+# Sizing (required): Dragonfly needs ~256Mi per thread and never evicts data,
+# so writes are refused above maxmemory. Keep maxmemory at ~80% of the memory limit,
+# and the memory limit at least threads x 256Mi plus headroom.
+threads: 2
+maxmemory: "800mb"
+
+# Extra Dragonfly flags.
+# Option A (DF-0.3): Langfuse's BullMQ Lua scripts use keys they don't declare.
+extraArgs:
+  - "--default_lua_flags=allow-undeclared-keys"
+
+# Snapshots are written to the PVC so data survives a pod restart
+snapshotCron: "*/15 * * * *"
+persistence:
+  size: "2Gi"
+  storageClass: ""
+
+# requests.cpu is set from `threads` in the template
+resources:
+  requests:
+    memory: "1Gi"
+  limits:
+    memory: "1Gi"
+    cpu: "2"
+
+pullPolicy: IfNotPresent
+
+healthcheck:
+  enabled: true
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+  successThreshold: 1

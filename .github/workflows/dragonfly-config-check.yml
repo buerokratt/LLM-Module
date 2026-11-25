@@ -1,0 +1,36 @@
+name: Dragonfly Config Check
+
+on:
+  pull_request:
+    branches: ["*"]
+    paths:
+      - 'docker-compose*.yml'
+      - 'kubernetes/**'
+      - '.github/scripts/check_dragonfly_config.py'
+      - '.github/workflows/dragonfly-config-check.yml'
+  push:
+    branches: ["*"]
+    paths:
+      - 'docker-compose*.yml'
+      - 'kubernetes/**'
+      - '.github/scripts/check_dragonfly_config.py'
+      - '.github/workflows/dragonfly-config-check.yml'
+
+jobs:
+  dragonfly-config:
+    name: Dragonfly sizing & pinned image tags
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version-file: '.python-version'
+
+      # Fails if Dragonfly lacks explicit maxmemory/proactor_threads,
+      # or a Dragonfly/Langfuse image uses a floating tag
+      - name: Check Dragonfly sizing and pinned tags
+        run: uv run --no-project --with pyyaml python .github/scripts/check_dragonfly_config.py

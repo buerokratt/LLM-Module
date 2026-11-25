@@ -5,13 +5,13 @@ metadata:
   name: "{{ .Values.release_name }}"
   labels:
     app: "{{ .Values.release_name }}"
-    component: redis
+    component: dragonfly
 spec:
   type: {{ .Values.service.type }}
   selector:
     app: "{{ .Values.release_name }}"
   ports:
-    - name: redis
+    - name: dragonfly
       protocol: TCP
       port: {{ .Values.service.port }}
       targetPort: {{ .Values.service.port }}

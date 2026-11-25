@@ -38,10 +38,10 @@ Grafana:
 S3-Ferry:
   enabled: true
 
-minio:
+seaweedfs:
   enabled: true
 
-Redis:
+Dragonfly:
   enabled: true
 
 Qdrant:

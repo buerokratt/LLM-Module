@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "{{ .Values.release_name }}"
+spec:
+  replicas: {{ .Values.replicas }}
+  # ReadWriteOnce volume: the old pod must stop before the new one mounts it
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: "{{ .Values.release_name }}"
+  template:
+    metadata:
+      labels:
+        app: "{{ .Values.release_name }}"
+      annotations:
+        # Restart the pod when the S3 login changes
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      containers:
+        - name: "{{ .Values.release_name }}"
+          image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          # args keep the image entrypoint, which fixes /data ownership and drops to the seaweed user
+          args:
+            - server
+            - -filer
+            - -s3
+            - -s3.config=/etc/seaweedfs/s3.json
+            - -ip.bind=0.0.0.0
+          ports:
+            - containerPort: {{ .Values.ports.s3 }}
+              name: s3
+              protocol: TCP
+            - containerPort: {{ .Values.ports.master }}
+              name: master
+              protocol: TCP
+            - containerPort: {{ .Values.ports.filer }}
+              name: filer
+              protocol: TCP
+          # Ready only once the S3 gateway answers (it starts after the master)
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: s3
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /cluster/status
+              port: master
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: s3-config
+              mountPath: /etc/seaweedfs
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: pvc-seaweedfs-data
+        - name: s3-config
+          secret:
+            secretName: seaweedfs-secrets
+            items:
+              - key: s3.json
+                path: s3.json

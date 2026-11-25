@@ -69,7 +69,7 @@ class EndpointSessionState(BaseModel):
 class APIToolSession(BaseModel):
     """Persisted session state for the API Tool Calling agentic loop.
 
-    Keyed by chat_id in Redis with a sliding 30-minute TTL.
+    Keyed by chat_id in Dragonfly with a sliding 30-minute TTL.
     """
 
     chat_id: str = Field(..., description="Unique conversation identifier")

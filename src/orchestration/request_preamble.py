@@ -121,7 +121,7 @@ class RequestPreamble:
         # STEP 0.15: If the previous turn was blocked by guardrails and this
         # message is a bare "why?" follow-up, repeat the same violation message
         # instead of routing a context-less query through the classifier
-        # (blocked turns are never persisted to Redis history, so the
+        # (blocked turns are never persisted to Dragonfly history, so the
         # client-resent conversationHistory is the source of truth).
         repeated_violation = get_repeated_violation_message(request)
         if repeated_violation:
