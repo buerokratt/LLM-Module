@@ -33,7 +33,7 @@ cost and quality.
 ## Architecture
 
 The LLM Module sits behind the Ruuter API gateway and orchestrates retrieval, generation, and tool
-calling over a set of supporting data stores (Qdrant, Redis, PostgreSQL/ClickHouse, MinIO) and
+calling over a set of supporting data stores (Qdrant, Dragonfly, PostgreSQL/ClickHouse, SeaweedFS) and
 HashiCorp Vault for secrets.
 
 ![LLM Module — System Context](./docs/images/LLM%20Module%20Context%20Diagram%20(Current).png)
@@ -51,9 +51,9 @@ For the full picture — container and component (C4) diagrams plus the request 
 | LLM pipelines | DSPy |
 | Safety | NeMo Guardrails |
 | Vector database | Qdrant |
-| Sessions & history | Redis |
+| Sessions, history & cache | Dragonfly |
 | Analytics store | PostgreSQL + ClickHouse (Langfuse) |
-| Object storage | MinIO (S3-compatible) |
+| Object storage | SeaweedFS (S3-compatible) |
 | Secrets | HashiCorp Vault |
 | Observability | Langfuse, Grafana, Loki |
 | API gateway | Ruuter |
@@ -106,7 +106,7 @@ Configuration is supplied through environment files at the repository root:
 
 | File | Scope |
 | --- | --- |
-| `.env` | Shared infrastructure (storage, databases, Redis, Vault, feature flags) |
+| `.env` | Shared infrastructure (storage, databases, Dragonfly store, Vault, feature flags) |
 | `.env.llm_orchestration_service` | LLM Orchestration Service |
 | `.env.gui` | Admin GUI |
 | `.env.notification` | Notification server |
@@ -132,14 +132,14 @@ The orchestration service lives under `src/`. The main packages:
 | Guardrails | NeMo Guardrails input/output safety | `src/guardrails/` |
 | LLM configuration | Provider management, Vault credentials, feature flags | `src/llm_orchestrator_config/` |
 | Optimization | DSPy-based tuning of guardrails, refiner, generator | `src/optimization/` |
-| Utilities | Redis, sessions, rate limiting, streaming, cost, logging | `src/utils/` |
+| Utilities | Dragonfly client, sessions, rate limiting, streaming, cost, logging | `src/utils/` |
 
 ## Core Workflows
 
 The tool classifier routes each query to one of:
 
 - **Service** — maps the query to a backend service/intent ([docs](./docs/TOOL_CLASSIFIER_AND_SERVICE_WORKFLOW.md))
-- **Context** — greetings and conversation handling with Redis-backed history ([docs](./docs/CONTEXT_WORKFLOW_GREETING_DETECTION.md))
+- **Context** — greetings and conversation handling with history kept in Dragonfly ([docs](./docs/CONTEXT_WORKFLOW_GREETING_DETECTION.md))
 - **RAG** — contextual retrieval then grounded generation ([docs](./docs/CONTEXTUAL_RETRIEVAL_FLOW.md))
 - **API-Tool** — agentic multi-endpoint API calling ([docs](./docs/API_TOOL_CALLING.md))
 - **OOD** — graceful fallback for out-of-domain queries
@@ -223,7 +223,7 @@ For Kubernetes, see [kubernetes/LANGFUSE_SETUP.md](./kubernetes/LANGFUSE_SETUP.m
 | --- | --- |
 | Service unhealthy | `curl http://localhost:8100/health`; `docker compose ps`; `docker compose logs llm-orchestration-service` |
 | Vault / credential errors | [docs/VAULT_SETUP_AND_USAGE.md](./docs/VAULT_SETUP_AND_USAGE.md) and [docs/VAULT_SECURITY_ARCHITECTURE.md](./docs/VAULT_SECURITY_ARCHITECTURE.md) |
-| Missing conversation history | Redis connectivity (`REDIS_HOST`/`REDIS_AUTH`); [docs/REDIS_SESSION_STORE.md](./docs/REDIS_SESSION_STORE.md) |
+| Missing conversation history | `/health` → `dragonfly_session_store`; Dragonfly running and `DRAGONFLY_HOST`/`DRAGONFLY_PASSWORD` correct; [docs/DRAGONFLY_SESSION_STORE.md](./docs/DRAGONFLY_SESSION_STORE.md), [docs/DRAGONFLY_OPERATIONS.md](./docs/DRAGONFLY_OPERATIONS.md) |
 | Retrieval returns nothing | Qdrant availability (port `6333`) and that indexing has run |
 | Logs & traces | Grafana/Loki for logs; Langfuse for request traces and cost |
 

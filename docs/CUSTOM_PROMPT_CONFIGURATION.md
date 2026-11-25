@@ -45,7 +45,7 @@ All consumers read the same prompt from the shared `PromptConfigurationLoader`
 - In the formatter/extractor signatures, a non-empty `custom_instructions` is followed with
   **HIGHEST PRIORITY**, overriding defaults such as language policy, tone, and formatting.
 - Additionally, the workflow derives the response language from the prompt via
-  `_language_from_custom_instructions()` and merges any Redis conversation summary into the same
+  `_language_from_custom_instructions()` and merges any Dragonfly conversation summary into the same
   `custom_instructions` string before extraction.
 
 ---

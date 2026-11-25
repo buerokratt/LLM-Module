@@ -7,7 +7,10 @@ The **Context Workflow (Layer 3)** intercepts user queries that can be answered 
 1. **Greetings** — Detects and responds to social exchanges (hello, goodbye, thanks) in multiple languages
 2. **Conversation history references** — Answers follow-up questions that refer to information already discussed in the session
 
-Conversation history is now sourced from a **Redis-backed store** (canonical source) rather than the GUI-provided `request.conversationHistory`. The store retains the most recent 10 rounds per session and maintains an incremental summary of evicted older rounds, enabling context detection to cover the full conversation lifetime.
+Conversation history is now sourced from a **Dragonfly-backed store** (canonical source) rather than the GUI-provided `request.conversationHistory`. The store retains the most recent 10 rounds per session and maintains an incremental summary of evicted older rounds, enabling context detection to cover the full conversation lifetime.
+
+> **Note:** See [DRAGONFLY_SESSION_STORE.md](./DRAGONFLY_SESSION_STORE.md) for the store's keys, TTLs
+> and settings.
 
 When the context workflow can answer, a response is returned immediately, bypassing the RAG pipeline entirely. When it cannot answer, the query falls through to the RAG workflow (Layer 4).
 
@@ -42,9 +45,9 @@ Layer 5: OOD              → Out-of-domain fallback
 | `ToolClassifier` | `src/tool_classifier/classifier.py` | Invokes `ContextAnalyzer` during classification and routes to `ContextWorkflowExecutor` |
 | `FeatureFlags.CONTEXT_WORKFLOW_ENABLED` | `src/llm_orchestrator_config/feature_flags.py` | Guards the context workflow; if `False`, the layer is skipped in the fallback chain and the request proceeds directly to RAG |
 | `PromptConfigurationLoader` | `src/utils/prompt_config_loader.py` | Fetches and caches administrator-defined custom prompt instructions from Ruuter (5-minute TTL) |
-| `ConversationHistoryStore` | `src/utils/conversation_history_store.py` | Redis CRUD store for per-session rounds and incremental summary |
+| `ConversationHistoryStore` | `src/utils/conversation_history_store.py` | Dragonfly CRUD store for per-session rounds and incremental summary |
 | `conversation_summary_generator` | `src/utils/conversation_summary_generator.py` | Factory for the incremental summarizer callable injected into the store |
-| `redis_client` | `src/utils/redis_client.py` | Singleton async Redis client (db=1, TLS-capable) |
+| `dragonfly_client` | `src/utils/dragonfly_client.py` | Singleton async Dragonfly client (db=1, TLS-capable) |
 | `greeting_constants.py` | `src/tool_classifier/greeting_constants.py` | Static greeting response templates for Estonian, English, and Russian |
 
 ---
@@ -69,10 +72,10 @@ ToolClassifier.classify()
 ToolClassifier.route_to_workflow()
     ├─ Non-streaming → ContextWorkflowExecutor.execute_async()
     │      ├─ _get_custom_instructions() → PromptConfigurationLoader [cached, 5-min TTL]
-    │      ├─ _build_history() → ConversationHistoryStore.get_context() [Redis, with fallback]
+    │      ├─ _build_history() → ConversationHistoryStore.get_context() [Dragonfly, with fallback]
     │      ├─ Phase 1: _detect() → context_analyzer.detect_context_with_summary_fallback()
     │      │      ├─ Step 1: detect_context() on last 10 turns
-    │      │      ├─ Step 2 (if needed): use pre_computed_summary from Redis OR generate summary
+    │      │      ├─ Step 2 (if needed): use pre_computed_summary from Dragonfly OR generate summary
     │      │      └─ Step 3 (if needed): _analyze_from_summary() on summary
     │      ├─ If greeting → return greeting OrchestrationResponse (static template)
     │      ├─ If can_answer → _generate_response_async(custom_instructions=...) → context_analyzer.generate_context_response()
@@ -80,7 +83,7 @@ ToolClassifier.route_to_workflow()
     │
     └─ Streaming → ContextWorkflowExecutor.execute_streaming()
            ├─ _get_custom_instructions() → PromptConfigurationLoader [cached, 5-min TTL]
-           ├─ _build_history() → ConversationHistoryStore.get_context() [Redis, with fallback]
+           ├─ _build_history() → ConversationHistoryStore.get_context() [Dragonfly, with fallback]
            ├─ Phase 1: _detect() → context_analyzer.detect_context_with_summary_fallback()
            ├─ If greeting → _stream_greeting() async generator (static template)
            ├─ If can_answer → _create_history_stream(custom_instructions=...) → context_analyzer.stream_context_response()
@@ -89,15 +92,15 @@ ToolClassifier.route_to_workflow()
 
 ---
 
-## Redis-Backed Conversation History
+## Dragonfly-Backed Conversation History
 
 ### Overview
 
-`ConversationHistoryStore` is a Redis-backed CRUD store (db=1) that holds per-session conversation data. It is the **canonical source of truth** for conversation history, replacing the GUI-provided `request.conversationHistory` when available.
+`ConversationHistoryStore` is a Dragonfly-backed CRUD store (db=1) that holds per-session conversation data. It is the **canonical source of truth** for conversation history, replacing the GUI-provided `request.conversationHistory` when available.
 
 ### Key Layout
 
-| Redis Key | Content | TTL |
+| Dragonfly Key | Content | TTL |
 |-----------|---------|-----|
 | `conv:{chat_id}` | JSON list of up to 10 `ConversationRound` objects | 30 minutes (sliding) |
 | `conv:summary:{chat_id}` | Plain-text incremental summary of evicted rounds | 30 minutes (sliding) |
@@ -112,15 +115,15 @@ The store caps history at **10 rounds** (`_MAX_ROUNDS`). When appending a new ro
 
 `ContextWorkflowExecutor._build_history()` resolves the history and pre-computed summary to pass to Phase 1:
 
-1. If `ConversationHistoryStore` is wired in, call `get_context(chat_id)` to retrieve rounds and the optional Redis summary.
+1. If `ConversationHistoryStore` is wired in, call `get_context(chat_id)` to retrieve rounds and the optional Dragonfly summary.
 2. If rounds are present, flatten them into `{"authorRole", "message", "timestamp"}` dicts and return `(history, summary)`.
 3. If the store is absent, raises, or returns no rounds → fall back to `request.conversationHistory` with `summary=None`.
 
-The returned `pre_computed_summary` is forwarded to `detect_context_with_summary_fallback()` to skip an expensive LLM summarisation step when Redis already has one.
+The returned `pre_computed_summary` is forwarded to `detect_context_with_summary_fallback()` to skip an expensive LLM summarisation step when Dragonfly already has one.
 
 ### Optimistic Locking
 
-`save_round()` uses Redis `WATCH`/`MULTI`/`EXEC` (optimistic locking) to detect concurrent writes and retries up to 3 times on conflict.
+`save_round()` uses Dragonfly `WATCH`/`MULTI`/`EXEC` (optimistic locking) to detect concurrent writes and retries up to 3 times on conflict.
 
 ---
 
@@ -138,10 +141,10 @@ Runs `ContextDetectionSignature` via `dspy.ChainOfThought` against the **most re
 
 Triggered when `can_answer_from_context=False` AND one of the following is true:
 - Total history exceeds 10 turns (older turns exist), OR
-- Redis has a `pre_computed_summary` (covers evicted rounds beyond the current active window)
+- Dragonfly has a `pre_computed_summary` (covers evicted rounds beyond the current active window)
 
 Two sub-paths:
-- **Redis path**: Pre-computed summary is available → used directly (no LLM call, zero cost).
+- **Dragonfly path**: Pre-computed summary is available → used directly (no LLM call, zero cost).
 - **On-demand path**: No pre-computed summary → older turns (beyond last 10) are summarised via `ConversationSummarySignature`.
 
 **Step 3 — Summary analysis (`_analyze_from_summary`)**
@@ -336,7 +339,7 @@ costs_metric = {
 }
 ```
 
-Greeting responses skip Phase 2, so only `"context_detection"` cost is populated. When the Redis pre-computed summary is used, the summary-generation cost is zero (no LLM call).
+Greeting responses skip Phase 2, so only `"context_detection"` cost is populated. When the Dragonfly pre-computed summary is used, the summary-generation cost is zero (no LLM call).
 
 ---
 
@@ -344,8 +347,8 @@ Greeting responses skip Phase 2, so only `"context_detection"` cost is populated
 
 | Failure Point | Behaviour |
 |---------------|-----------|
-| Redis unavailable (`ConversationHistoryStore`) | Logged as warning → falls back to `request.conversationHistory` |
-| Redis fetch raises exception | Logged as warning → falls back to `request.conversationHistory` |
+| Dragonfly unavailable (`ConversationHistoryStore`) | Logged as warning → falls back to `request.conversationHistory` |
+| Dragonfly fetch raises exception | Logged as warning → falls back to `request.conversationHistory` |
 | Phase 1 LLM call raises exception | `can_answer_from_context=False` → falls back to RAG |
 | Phase 1 returns invalid JSON | Logged as warning, all flags default to `False` → falls back to RAG |
 | Summary generation (on-demand) fails | Logged as error → summary path skipped → falls back to RAG |
@@ -369,12 +372,12 @@ Key log entries emitted during a request:
 |-------|---------|------|
 | `INFO` | `CONTEXT WORKFLOW (NON-STREAMING) \| Query: '...'` | `execute_async()` entry |
 | `INFO` | `CONTEXT WORKFLOW (STREAMING) \| Query: '...'` | `execute_streaming()` entry |
-| `DEBUG` | `[chatId] Using Redis history: N rounds, summary=present\|absent` | Redis history fetched successfully |
-| `WARNING` | `[chatId] Redis history fetch failed, falling back to request history: ...` | Redis read error |
+| `DEBUG` | `[chatId] Using Dragonfly history: N rounds, summary=present\|absent` | Dragonfly history fetched successfully |
+| `WARNING` | `[chatId] Dragonfly history fetch failed, falling back to request history: ...` | Dragonfly read error |
 | `INFO` | `CONTEXT DETECTOR: Phase 1 \| Query: '...' \| History: N turns` | `detect_context()` entry |
 | `INFO` | `DETECTION RESULT \| Greeting: ... \| Can Answer: ... \| Has snippet: ...` | Phase 1 LLM response parsed |
 | `INFO` | `Detection cost \| Total: $... \| Tokens: N` | After Phase 1 cost tracked |
-| `INFO` | `Pre-computed summary available \| Skipping LLM summary generation, using Redis summary directly` | Redis summary reused |
+| `INFO` | `Pre-computed summary available \| Skipping LLM summary generation, using Dragonfly summary directly` | Dragonfly summary reused |
 | `INFO` | `History has N turns (> 10) \| Cannot answer from recent 10 \| Attempting summary-based detection` | On-demand summary path triggered |
 | `INFO` | `DETECTION: Can answer from summary \| Reasoning: ...` | Summary path answered query |
 | `INFO` | `Cannot answer from summary either \| Falling back to RAG` | Summary path failed |
@@ -392,7 +395,7 @@ Key log entries emitted during a request:
 
 ## Data Models
 
-### `ConversationRound` (Redis storage unit)
+### `ConversationRound` (Dragonfly storage unit)
 
 ```python
 class ConversationRound(BaseModel):
@@ -401,7 +404,7 @@ class ConversationRound(BaseModel):
     timestamp: float  # Unix timestamp of the round
 ```
 
-### `ConversationHistoryState` (Redis fetch result)
+### `ConversationHistoryState` (Dragonfly fetch result)
 
 ```python
 class ConversationHistoryState(BaseModel):
@@ -474,13 +477,13 @@ class ContextDetectionResult(BaseModel):
 |----------|--------------------|--------------------|---------|
 | Greeting detected | 1 (`detect_context`) | 0 (static template) | Context responds (greeting) |
 | Follow-up answerable from last 10 turns | 1 (`detect_context`) | 1 (`generate_context_response` or `stream_context_response`) | Context responds |
-| Cannot answer from 10 turns; Redis summary answers | 1 + 1 (`detect_context` + `_analyze_from_summary`) | 1 | Context responds (summary path) |
-| Cannot answer from 10 turns; Redis summary reused (no new LLM call) | 1 + 1 (`detect_context` + `_analyze_from_summary`; 0 for summary gen) | 1 | Context responds (Redis summary path) |
+| Cannot answer from 10 turns; Dragonfly summary answers | 1 + 1 (`detect_context` + `_analyze_from_summary`) | 1 | Context responds (summary path) |
+| Cannot answer from 10 turns; Dragonfly summary reused (no new LLM call) | 1 + 1 (`detect_context` + `_analyze_from_summary`; 0 for summary gen) | 1 | Context responds (Dragonfly summary path) |
 | Cannot answer from 10 turns; on-demand summary answers | 1 + 1 + 1 (`detect_context` + `_generate_conversation_summary` + `_analyze_from_summary`) | 1 | Context responds (on-demand summary path) |
 | Cannot answer from any path | 1–3 (all detection steps) | 0 | Falls back to RAG |
 | Phase 1 LLM error / JSON parse failure | — | 0 | Falls back to RAG |
 | Phase 2 LLM error or empty answer | 1–3 | — | Falls back to RAG |
-| Redis unavailable | 0 (fallback to request history) | varies | Proceeds normally with request history |
+| Dragonfly unavailable | 0 (fallback to request history) | varies | Proceeds normally with request history |
 
 ---
 
@@ -493,9 +496,9 @@ class ContextDetectionResult(BaseModel):
 | `src/tool_classifier/classifier.py` | Classification layer that invokes context analysis |
 | `src/tool_classifier/greeting_constants.py` | Static greeting response templates (ET/EN) |
 | `src/utils/prompt_config_loader.py` | HTTP-backed loader for administrator custom instructions (5-min TTL cache) |
-| `src/utils/conversation_history_store.py` | Redis CRUD store for rounds and incremental summary |
+| `src/utils/conversation_history_store.py` | Dragonfly CRUD store for rounds and incremental summary |
 | `src/utils/conversation_summary_generator.py` | Factory for the incremental summarizer callable |
-| `src/utils/redis_client.py` | Singleton async Redis client (db=1, TLS-capable) |
+| `src/utils/dragonfly_client.py` | Singleton async Dragonfly client (db=1, TLS-capable) |
 | `src/models/conversation_history_models.py` | Pydantic models: `ConversationRound`, `ConversationHistoryState` |
 | `tests/test_context_analyzer.py` | Unit tests for `ContextAnalyzer` |
 | `tests/test_context_workflow.py` | Unit tests for `ContextWorkflowExecutor` |

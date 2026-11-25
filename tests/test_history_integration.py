@@ -2,12 +2,12 @@
 
 Tests cover:
 - should_save_history(): filtering logic for when to persist rounds (standalone function)
-- save_history_round(): Redis persistence with error isolation (standalone function)
+- save_history_round(): Dragonfly persistence with error isolation (standalone function)
 - _extract_content_from_sse(): SSE chunk parsing
 - Non-streaming hook in process_orchestration_request()
 - RAG streaming hook in _stream_rag_pipeline() (accumulated_response saved after END)
 - Classifier streaming hook in stream_orchestration_response() (non-RAG workflows)
-- ContextWorkflowExecutor._build_history(): Redis-first history retrieval
+- ContextWorkflowExecutor._build_history(): Dragonfly-first history retrieval
 - ContextAnalyzer.detect_context_with_summary_fallback(): pre_computed_summary fast path
 """
 
@@ -195,7 +195,7 @@ class TestSaveHistoryRound:
     @pytest.mark.asyncio
     async def test_does_not_raise_when_store_raises(self):
         store = AsyncMock()
-        store.save_round.side_effect = RuntimeError("Redis down")
+        store.save_round.side_effect = RuntimeError("Dragonfly down")
 
         # Must not propagate
         await save_history_round(store, "chat-1", "q", "a")
@@ -530,16 +530,16 @@ def _make_round(
 
 
 # ---------------------------------------------------------------------------
-# ContextWorkflowExecutor._build_history — Redis-first retrieval
+# ContextWorkflowExecutor._build_history — Dragonfly-first retrieval
 # ---------------------------------------------------------------------------
 
 
-class TestBuildHistoryRedisFirst:
+class TestBuildHistoryDragonflyFirst:
     """Tests for the async _build_history method in ContextWorkflowExecutor."""
 
     @pytest.mark.asyncio
-    async def test_uses_redis_rounds_when_available(self) -> None:
-        """When Redis has rounds, _build_history returns them and ignores request history."""
+    async def test_uses_dragonfly_rounds_when_available(self) -> None:
+        """When Dragonfly has rounds, _build_history returns them and ignores request history."""
         from src.tool_classifier.workflows.context_workflow import (
             ContextWorkflowExecutor,
         )
@@ -567,8 +567,8 @@ class TestBuildHistoryRedisFirst:
         assert summary is None
 
     @pytest.mark.asyncio
-    async def test_returns_redis_summary_with_rounds(self) -> None:
-        """Summary stored in Redis is returned as pre_computed_summary."""
+    async def test_returns_dragonfly_summary_with_rounds(self) -> None:
+        """Summary stored in Dragonfly is returned as pre_computed_summary."""
         from src.tool_classifier.workflows.context_workflow import (
             ContextWorkflowExecutor,
         )
@@ -594,14 +594,14 @@ class TestBuildHistoryRedisFirst:
         assert summary == "Earlier we discussed tax rates."
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_request_when_redis_raises(self) -> None:
+    async def test_falls_back_to_request_when_dragonfly_raises(self) -> None:
         """When get_context() raises, _build_history falls back to request.conversationHistory."""
         from src.tool_classifier.workflows.context_workflow import (
             ContextWorkflowExecutor,
         )
 
         store = AsyncMock()
-        store.get_context = AsyncMock(side_effect=RuntimeError("Redis down"))
+        store.get_context = AsyncMock(side_effect=RuntimeError("Dragonfly down"))
 
         workflow = ContextWorkflowExecutor(
             llm_manager=_make_llm_manager(),
@@ -647,8 +647,10 @@ class TestBuildHistoryRedisFirst:
         assert summary is None
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_request_when_redis_returns_empty_rounds(self) -> None:
-        """Redis state with no rounds → fall back to request.conversationHistory."""
+    async def test_falls_back_to_request_when_dragonfly_returns_empty_rounds(
+        self,
+    ) -> None:
+        """Dragonfly state with no rounds → fall back to request.conversationHistory."""
         from src.tool_classifier.workflows.context_workflow import (
             ContextWorkflowExecutor,
         )
@@ -673,7 +675,7 @@ class TestBuildHistoryRedisFirst:
 
         history, summary = await workflow._build_history(req)
 
-        # Empty Redis rounds → fall back to request; summary not returned
+        # Empty Dragonfly rounds → fall back to request; summary not returned
         assert len(history) == 1
         assert history[0]["message"] == "from request"
         assert summary is None
@@ -751,7 +753,7 @@ class TestDetectContextWithPrecomputedSummary:
     async def test_still_runs_analyze_from_summary_when_pre_computed_provided(
         self,
     ) -> None:
-        """_analyze_from_summary IS called even when the summary comes from Redis."""
+        """_analyze_from_summary IS called even when the summary comes from Dragonfly."""
         analyzer = self._make_analyzer()
 
         with (
@@ -859,17 +861,17 @@ class TestDetectContextWithPrecomputedSummary:
 
 
 # ---------------------------------------------------------------------------
-# End-to-end: no LLM summarisation when Redis supplies a summary
+# End-to-end: no LLM summarisation when Dragonfly supplies a summary
 # ---------------------------------------------------------------------------
 
 
-class TestEndToEndNoLLMSummarisationWhenRedisHasSummary:
+class TestEndToEndNoLLMSummarisationWhenDragonflyHasSummary:
     """Verify that _generate_conversation_summary is never called when the
-    workflow retrieves a summary from Redis via _build_history."""
+    workflow retrieves a summary from Dragonfly via _build_history."""
 
     @pytest.mark.asyncio
-    async def test_no_summarisation_call_when_redis_has_summary(self) -> None:
-        """Full _detect() path: Redis summary present → no LLM summarisation."""
+    async def test_no_summarisation_call_when_dragonfly_has_summary(self) -> None:
+        """Full _detect() path: Dragonfly summary present → no LLM summarisation."""
         from src.tool_classifier.context_analyzer import (
             ContextAnalysisResult,
             ContextDetectionResult,
@@ -878,7 +880,7 @@ class TestEndToEndNoLLMSummarisationWhenRedisHasSummary:
             ContextWorkflowExecutor,
         )
 
-        # Redis returns one round + a running summary
+        # Dragonfly returns one round + a running summary
         round_ = _make_round()
         state = ConversationHistoryState(
             chat_id="chat-e2e",
@@ -951,15 +953,15 @@ class TestEndToEndNoLLMSummarisationWhenRedisHasSummary:
 
 
 # ---------------------------------------------------------------------------
-# RAG Workflow: Redis history used in _refine_user_prompt
+# RAG Workflow: Dragonfly history used in _refine_user_prompt
 # ---------------------------------------------------------------------------
 
 
-class TestRagWorkflowUsesRedisHistory:
-    """Verify that the RAG pipeline fetches history from Redis before refinement."""
+class TestRagWorkflowUsesDragonflyHistory:
+    """Verify that the RAG pipeline fetches history from Dragonfly before refinement."""
 
     @pytest.mark.asyncio
-    async def test_redis_history_passed_to_refine_when_available(self) -> None:
+    async def test_dragonfly_history_passed_to_refine_when_available(self) -> None:
         """get_conversation_history is called and its result replaces request history."""
 
         svc = _make_service()
@@ -1012,7 +1014,7 @@ class TestRagWorkflowUsesRedisHistory:
         )
 
     @pytest.mark.asyncio
-    async def test_redis_fallback_used_when_store_is_none(self) -> None:
+    async def test_dragonfly_fallback_used_when_store_is_none(self) -> None:
         """When conversation_history_store is None, request history is used."""
         svc = _make_service()
         svc.conversation_history_store = None
@@ -1141,12 +1143,12 @@ class TestRefineUserPromptSummary:
 
 
 # ---------------------------------------------------------------------------
-# Service Workflow: Redis history used in _process_intent_detection
+# Service Workflow: Dragonfly history used in _process_intent_detection
 # ---------------------------------------------------------------------------
 
 
-class TestServiceWorkflowUsesRedisHistory:
-    """Verify ServiceWorkflowExecutor fetches history from Redis before intent detection."""
+class TestServiceWorkflowUsesDragonflyHistory:
+    """Verify ServiceWorkflowExecutor fetches history from Dragonfly before intent detection."""
 
     @pytest.mark.asyncio
     async def test_get_conversation_history_called_in_process_intent_detection(
@@ -1196,7 +1198,7 @@ class TestServiceWorkflowUsesRedisHistory:
 
     @pytest.mark.asyncio
     async def test_summary_passed_to_detect_service_intent(self) -> None:
-        """Summary from Redis is forwarded to _detect_service_intent."""
+        """Summary from Dragonfly is forwarded to _detect_service_intent."""
         from src.tool_classifier.workflows.service_workflow import (
             ServiceWorkflowExecutor,
         )
@@ -1297,12 +1299,12 @@ class TestServiceWorkflowUsesRedisHistory:
 
 
 # ---------------------------------------------------------------------------
-# ATC Workflow: Redis history used in _compute_loop_step
+# ATC Workflow: Dragonfly history used in _compute_loop_step
 # ---------------------------------------------------------------------------
 
 
-class TestATCWorkflowUsesRedisHistory:
-    """Verify APIToolWorkflowExecutor fetches history from Redis on turns > 0."""
+class TestATCWorkflowUsesDragonflyHistory:
+    """Verify APIToolWorkflowExecutor fetches history from Dragonfly on turns > 0."""
 
     def _make_executor(
         self,
@@ -1341,7 +1343,7 @@ class TestATCWorkflowUsesRedisHistory:
         assert executor._get_conversation_history_store() is None
 
     @pytest.mark.asyncio
-    async def test_no_redis_call_on_turn_zero(self) -> None:
+    async def test_no_dragonfly_call_on_turn_zero(self) -> None:
         """On turn 0 get_conversation_history must NOT be called."""
         from src.models.session_models import APIToolSession
         from src.tool_classifier.enums import ExecutionMode
@@ -1406,7 +1408,7 @@ class TestATCWorkflowUsesRedisHistory:
         mock_get_history.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_redis_history_fetched_on_turn_greater_than_zero(self) -> None:
+    async def test_dragonfly_history_fetched_on_turn_greater_than_zero(self) -> None:
         """On turn > 0 get_conversation_history IS called."""
         from src.models.session_models import APIToolSession
         from src.tool_classifier.enums import ExecutionMode

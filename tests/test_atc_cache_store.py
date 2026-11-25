@@ -24,7 +24,7 @@ PARAMS = {"country": "EE", "year": 2026}
 RESPONSE = {"holidays": [{"date": "2026-02-24", "name": "Independence Day"}]}
 
 
-def _make_redis_mock() -> AsyncMock:
+def _make_dragonfly_mock() -> AsyncMock:
     mock = AsyncMock()
     mock.get = AsyncMock(return_value=None)
     mock.set = AsyncMock()
@@ -43,8 +43,8 @@ def _make_last_call_ctx(api_name: str = API_NAME) -> LastCallContext:
     )
 
 
-def _fake_redis_store() -> tuple[dict, AsyncMock]:
-    """Return a (store_dict, redis_mock) pair backed by an in-memory dict."""
+def _fake_dragonfly_store() -> tuple[dict, AsyncMock]:
+    """Return a (store_dict, dragonfly_mock) pair backed by an in-memory dict."""
     store: dict = {}
 
     async def fake_set(key, value, ex=None):
@@ -167,10 +167,12 @@ class TestGetL1:
     @pytest.mark.asyncio
     async def test_returns_deserialised_value_on_hit(self):
         store = ATCCacheStore()
-        redis_mock = _make_redis_mock()
-        redis_mock.get = AsyncMock(return_value=json.dumps(RESPONSE))
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.get = AsyncMock(return_value=json.dumps(RESPONSE))
 
-        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
+        with patch(
+            "utils.atc_cache_store.get_dragonfly_client", return_value=dragonfly_mock
+        ):
             result = await store.get_l1(CHAT_ID, API_NAME, PARAMS)
 
         assert result == RESPONSE
@@ -178,29 +180,33 @@ class TestGetL1:
     @pytest.mark.asyncio
     async def test_returns_none_on_miss(self):
         store = ATCCacheStore()
-        redis_mock = _make_redis_mock()
-        redis_mock.get = AsyncMock(return_value=None)
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.get = AsyncMock(return_value=None)
 
-        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
+        with patch(
+            "utils.atc_cache_store.get_dragonfly_client", return_value=dragonfly_mock
+        ):
             result = await store.get_l1(CHAT_ID, API_NAME, PARAMS)
 
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_returns_none_when_redis_unavailable(self):
+    async def test_returns_none_when_dragonfly_unavailable(self):
         store = ATCCacheStore()
-        with patch("utils.atc_cache_store.get_redis_client", return_value=None):
+        with patch("utils.atc_cache_store.get_dragonfly_client", return_value=None):
             result = await store.get_l1(CHAT_ID, API_NAME, PARAMS)
 
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_returns_none_on_redis_exception(self):
+    async def test_returns_none_on_dragonfly_exception(self):
         store = ATCCacheStore()
-        redis_mock = _make_redis_mock()
-        redis_mock.get = AsyncMock(side_effect=RuntimeError("connection lost"))
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.get = AsyncMock(side_effect=RuntimeError("connection lost"))
 
-        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
+        with patch(
+            "utils.atc_cache_store.get_dragonfly_client", return_value=dragonfly_mock
+        ):
             result = await store.get_l1(CHAT_ID, API_NAME, PARAMS)
 
         assert result is None
@@ -215,10 +221,12 @@ class TestGetL1:
         async def selective_get(key):
             return json.dumps(RESPONSE) if key == stored_key else None
 
-        redis_mock = _make_redis_mock()
-        redis_mock.get = AsyncMock(side_effect=selective_get)
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.get = AsyncMock(side_effect=selective_get)
 
-        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
+        with patch(
+            "utils.atc_cache_store.get_dragonfly_client", return_value=dragonfly_mock
+        ):
             result = await store.get_l1(CHAT_ID, API_NAME, different_params)
 
         assert result is None
@@ -231,15 +239,17 @@ class TestGetL1:
 
 class TestSetL1:
     @pytest.mark.asyncio
-    async def test_calls_redis_set_with_correct_key_and_value(self):
+    async def test_calls_dragonfly_set_with_correct_key_and_value(self):
         store = ATCCacheStore()
-        redis_mock = _make_redis_mock()
+        dragonfly_mock = _make_dragonfly_mock()
         expected_key = ATCCacheStore._l1_key(CHAT_ID, API_NAME, PARAMS)
 
-        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
+        with patch(
+            "utils.atc_cache_store.get_dragonfly_client", return_value=dragonfly_mock
+        ):
             await store.set_l1(CHAT_ID, API_NAME, PARAMS, RESPONSE)
 
-        redis_mock.set.assert_called_once_with(
+        dragonfly_mock.set.assert_called_once_with(
             expected_key,
             json.dumps(RESPONSE),
             ex=ATC_CACHE_DEFAULT_TTL_SECONDS,
@@ -248,36 +258,42 @@ class TestSetL1:
     @pytest.mark.asyncio
     async def test_uses_default_ttl_when_not_specified(self):
         store = ATCCacheStore()
-        redis_mock = _make_redis_mock()
+        dragonfly_mock = _make_dragonfly_mock()
 
-        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
+        with patch(
+            "utils.atc_cache_store.get_dragonfly_client", return_value=dragonfly_mock
+        ):
             await store.set_l1(CHAT_ID, API_NAME, PARAMS, RESPONSE)
 
-        assert redis_mock.set.call_args[1]["ex"] == ATC_CACHE_DEFAULT_TTL_SECONDS
+        assert dragonfly_mock.set.call_args[1]["ex"] == ATC_CACHE_DEFAULT_TTL_SECONDS
 
     @pytest.mark.asyncio
     async def test_uses_custom_ttl_when_provided(self):
         store = ATCCacheStore()
-        redis_mock = _make_redis_mock()
+        dragonfly_mock = _make_dragonfly_mock()
 
-        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
+        with patch(
+            "utils.atc_cache_store.get_dragonfly_client", return_value=dragonfly_mock
+        ):
             await store.set_l1(CHAT_ID, API_NAME, PARAMS, RESPONSE, ttl=120)
 
-        assert redis_mock.set.call_args[1]["ex"] == 120
+        assert dragonfly_mock.set.call_args[1]["ex"] == 120
 
     @pytest.mark.asyncio
-    async def test_no_op_when_redis_unavailable(self):
+    async def test_no_op_when_dragonfly_unavailable(self):
         store = ATCCacheStore()
-        with patch("utils.atc_cache_store.get_redis_client", return_value=None):
+        with patch("utils.atc_cache_store.get_dragonfly_client", return_value=None):
             await store.set_l1(CHAT_ID, API_NAME, PARAMS, RESPONSE)  # must not raise
 
     @pytest.mark.asyncio
-    async def test_no_op_on_redis_exception(self):
+    async def test_no_op_on_dragonfly_exception(self):
         store = ATCCacheStore()
-        redis_mock = _make_redis_mock()
-        redis_mock.set = AsyncMock(side_effect=RuntimeError("write failed"))
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.set = AsyncMock(side_effect=RuntimeError("write failed"))
 
-        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
+        with patch(
+            "utils.atc_cache_store.get_dragonfly_client", return_value=dragonfly_mock
+        ):
             await store.set_l1(CHAT_ID, API_NAME, PARAMS, RESPONSE)  # must not raise
 
 
@@ -290,9 +306,11 @@ class TestL1RoundTrip:
     @pytest.mark.asyncio
     async def test_set_then_get_returns_same_response(self):
         store = ATCCacheStore()
-        _, redis_mock = _fake_redis_store()
+        _, dragonfly_mock = _fake_dragonfly_store()
 
-        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
+        with patch(
+            "utils.atc_cache_store.get_dragonfly_client", return_value=dragonfly_mock
+        ):
             await store.set_l1(CHAT_ID, API_NAME, PARAMS, RESPONSE)
             result = await store.get_l1(CHAT_ID, API_NAME, PARAMS)
 
@@ -302,11 +320,13 @@ class TestL1RoundTrip:
     async def test_string_year_hits_entry_stored_with_int_year(self):
         """Normalisation: set with int year, get with string year — must still hit."""
         store = ATCCacheStore()
-        _, redis_mock = _fake_redis_store()
+        _, dragonfly_mock = _fake_dragonfly_store()
         params_int = {"country": "EE", "year": 2026}
         params_str = {"country": "EE", "year": "2026"}
 
-        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
+        with patch(
+            "utils.atc_cache_store.get_dragonfly_client", return_value=dragonfly_mock
+        ):
             await store.set_l1(CHAT_ID, API_NAME, params_int, RESPONSE)
             result = await store.get_l1(CHAT_ID, API_NAME, params_str)
 
@@ -316,10 +336,12 @@ class TestL1RoundTrip:
     async def test_list_response_survives_round_trip(self):
         """raw_response may be a list — must serialise/deserialise cleanly."""
         store = ATCCacheStore()
-        _, redis_mock = _fake_redis_store()
+        _, dragonfly_mock = _fake_dragonfly_store()
         list_response = [{"date": "2026-02-24"}, {"date": "2026-06-23"}]
 
-        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
+        with patch(
+            "utils.atc_cache_store.get_dragonfly_client", return_value=dragonfly_mock
+        ):
             await store.set_l1(CHAT_ID, API_NAME, PARAMS, list_response)
             result = await store.get_l1(CHAT_ID, API_NAME, PARAMS)
 
@@ -336,9 +358,11 @@ class TestSetAndGetL2:
     async def test_round_trip_returns_correct_context_list(self):
         store = ATCCacheStore()
         ctx = _make_last_call_ctx()
-        _, redis_mock = _fake_redis_store()
+        _, dragonfly_mock = _fake_dragonfly_store()
 
-        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
+        with patch(
+            "utils.atc_cache_store.get_dragonfly_client", return_value=dragonfly_mock
+        ):
             await store.set_l2(CHAT_ID, [ctx])
             result = await store.get_l2(CHAT_ID)
 
@@ -355,9 +379,11 @@ class TestSetAndGetL2:
         store = ATCCacheStore()
         ctx1 = _make_last_call_ctx("get_national_holidays")
         ctx2 = _make_last_call_ctx("get_electricity_prices")
-        _, redis_mock = _fake_redis_store()
+        _, dragonfly_mock = _fake_dragonfly_store()
 
-        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
+        with patch(
+            "utils.atc_cache_store.get_dragonfly_client", return_value=dragonfly_mock
+        ):
             await store.set_l2(CHAT_ID, [ctx1, ctx2])
             result = await store.get_l2(CHAT_ID)
 
@@ -371,40 +397,46 @@ class TestSetAndGetL2:
     @pytest.mark.asyncio
     async def test_set_l2_uses_correct_ttl(self):
         store = ATCCacheStore()
-        redis_mock = _make_redis_mock()
+        dragonfly_mock = _make_dragonfly_mock()
         ctx = _make_last_call_ctx()
 
-        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
+        with patch(
+            "utils.atc_cache_store.get_dragonfly_client", return_value=dragonfly_mock
+        ):
             await store.set_l2(CHAT_ID, [ctx])
 
-        assert redis_mock.set.call_args[1]["ex"] == ATC_LAST_CALL_TTL_SECONDS
+        assert dragonfly_mock.set.call_args[1]["ex"] == ATC_LAST_CALL_TTL_SECONDS
 
     @pytest.mark.asyncio
     async def test_set_l2_writes_to_correct_key(self):
         store = ATCCacheStore()
-        redis_mock = _make_redis_mock()
+        dragonfly_mock = _make_dragonfly_mock()
         ctx = _make_last_call_ctx()
         expected_key = ATCCacheStore._l2_key(CHAT_ID)
 
-        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
+        with patch(
+            "utils.atc_cache_store.get_dragonfly_client", return_value=dragonfly_mock
+        ):
             await store.set_l2(CHAT_ID, [ctx])
 
-        assert redis_mock.set.call_args[0][0] == expected_key
+        assert dragonfly_mock.set.call_args[0][0] == expected_key
 
     @pytest.mark.asyncio
     async def test_get_l2_returns_none_on_miss(self):
         store = ATCCacheStore()
-        redis_mock = _make_redis_mock()
+        dragonfly_mock = _make_dragonfly_mock()
 
-        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
+        with patch(
+            "utils.atc_cache_store.get_dragonfly_client", return_value=dragonfly_mock
+        ):
             result = await store.get_l2(CHAT_ID)
 
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_get_l2_returns_none_when_redis_unavailable(self):
+    async def test_get_l2_returns_none_when_dragonfly_unavailable(self):
         store = ATCCacheStore()
-        with patch("utils.atc_cache_store.get_redis_client", return_value=None):
+        with patch("utils.atc_cache_store.get_dragonfly_client", return_value=None):
             result = await store.get_l2(CHAT_ID)
 
         assert result is None
@@ -412,29 +444,33 @@ class TestSetAndGetL2:
     @pytest.mark.asyncio
     async def test_get_l2_returns_none_on_exception(self):
         store = ATCCacheStore()
-        redis_mock = _make_redis_mock()
-        redis_mock.get = AsyncMock(side_effect=RuntimeError("connection reset"))
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.get = AsyncMock(side_effect=RuntimeError("connection reset"))
 
-        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
+        with patch(
+            "utils.atc_cache_store.get_dragonfly_client", return_value=dragonfly_mock
+        ):
             result = await store.get_l2(CHAT_ID)
 
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_set_l2_no_op_when_redis_unavailable(self):
+    async def test_set_l2_no_op_when_dragonfly_unavailable(self):
         store = ATCCacheStore()
         ctx = _make_last_call_ctx()
-        with patch("utils.atc_cache_store.get_redis_client", return_value=None):
+        with patch("utils.atc_cache_store.get_dragonfly_client", return_value=None):
             await store.set_l2(CHAT_ID, [ctx])  # must not raise
 
     @pytest.mark.asyncio
-    async def test_set_l2_no_op_on_redis_exception(self):
+    async def test_set_l2_no_op_on_dragonfly_exception(self):
         store = ATCCacheStore()
-        redis_mock = _make_redis_mock()
-        redis_mock.set = AsyncMock(side_effect=RuntimeError("write error"))
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.set = AsyncMock(side_effect=RuntimeError("write error"))
         ctx = _make_last_call_ctx()
 
-        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
+        with patch(
+            "utils.atc_cache_store.get_dragonfly_client", return_value=dragonfly_mock
+        ):
             await store.set_l2(CHAT_ID, [ctx])  # must not raise
 
 
@@ -447,21 +483,25 @@ class TestInvalidateL2:
     @pytest.mark.asyncio
     async def test_calls_delete_with_correct_l2_key(self):
         store = ATCCacheStore()
-        redis_mock = _make_redis_mock()
+        dragonfly_mock = _make_dragonfly_mock()
         expected_key = ATCCacheStore._l2_key(CHAT_ID)
 
-        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
+        with patch(
+            "utils.atc_cache_store.get_dragonfly_client", return_value=dragonfly_mock
+        ):
             await store.invalidate_l2(CHAT_ID)
 
-        redis_mock.delete.assert_called_once_with(expected_key)
+        dragonfly_mock.delete.assert_called_once_with(expected_key)
 
     @pytest.mark.asyncio
     async def test_get_l2_returns_none_after_invalidate(self):
         store = ATCCacheStore()
-        _, redis_mock = _fake_redis_store()
+        _, dragonfly_mock = _fake_dragonfly_store()
         ctx = _make_last_call_ctx()
 
-        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
+        with patch(
+            "utils.atc_cache_store.get_dragonfly_client", return_value=dragonfly_mock
+        ):
             await store.set_l2(CHAT_ID, [ctx])
             await store.invalidate_l2(CHAT_ID)
             result = await store.get_l2(CHAT_ID)
@@ -472,26 +512,30 @@ class TestInvalidateL2:
     async def test_invalidate_only_deletes_l2_key_not_l1(self):
         """invalidate_l2 must call delete exactly once with the L2 prefix."""
         store = ATCCacheStore()
-        redis_mock = _make_redis_mock()
+        dragonfly_mock = _make_dragonfly_mock()
 
-        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
+        with patch(
+            "utils.atc_cache_store.get_dragonfly_client", return_value=dragonfly_mock
+        ):
             await store.invalidate_l2(CHAT_ID)
 
-        deleted_key: str = redis_mock.delete.call_args[0][0]
+        deleted_key: str = dragonfly_mock.delete.call_args[0][0]
         assert deleted_key.startswith(ATC_LAST_CALL_KEY_PREFIX)
         assert not deleted_key.startswith(ATC_CACHE_KEY_PREFIX)
 
     @pytest.mark.asyncio
-    async def test_no_op_when_redis_unavailable(self):
+    async def test_no_op_when_dragonfly_unavailable(self):
         store = ATCCacheStore()
-        with patch("utils.atc_cache_store.get_redis_client", return_value=None):
+        with patch("utils.atc_cache_store.get_dragonfly_client", return_value=None):
             await store.invalidate_l2(CHAT_ID)  # must not raise
 
     @pytest.mark.asyncio
-    async def test_no_op_on_redis_exception(self):
+    async def test_no_op_on_dragonfly_exception(self):
         store = ATCCacheStore()
-        redis_mock = _make_redis_mock()
-        redis_mock.delete = AsyncMock(side_effect=RuntimeError("gone"))
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.delete = AsyncMock(side_effect=RuntimeError("gone"))
 
-        with patch("utils.atc_cache_store.get_redis_client", return_value=redis_mock):
+        with patch(
+            "utils.atc_cache_store.get_dragonfly_client", return_value=dragonfly_mock
+        ):
             await store.invalidate_l2(CHAT_ID)  # must not raise

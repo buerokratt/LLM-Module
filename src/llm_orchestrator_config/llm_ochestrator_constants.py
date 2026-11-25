@@ -56,7 +56,7 @@ QUERY_VALIDATION_FAILED_MESSAGES = {
 #
 # Any new message dictionary added here MUST also be registered in
 # _HISTORY_EXCLUDED_MESSAGES (llm_orchestration_service.py) or the failed
-# exchange will be persisted to Redis and replayed to the prompt refiner on
+# exchange will be persisted to Dragonfly and replayed to the prompt refiner on
 # the user's next turn.
 # ---------------------------------------------------------------------------
 

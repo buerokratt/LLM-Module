@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 class ConversationRound(BaseModel):
     """A single user+bot exchange in a conversation.
 
-    Stored as part of ``ConversationHistoryState`` in Redis, keyed by chat_id.
+    Stored as part of ``ConversationHistoryState`` in Dragonfly, keyed by chat_id.
     """
 
     user_message: str = Field(..., description="The user's message text for this round")
@@ -23,7 +23,7 @@ class ConversationRound(BaseModel):
 class ConversationHistoryState(BaseModel):
     """Persisted conversation history for a chat session.
 
-    Keyed by chat_id in Redis with a sliding 30-minute TTL.
+    Keyed by chat_id in Dragonfly with a sliding 30-minute TTL.
     Retains up to the most recent 10 rounds; older rounds are trimmed.
     An optional summary field holds a condensed representation of rounds
     that have been evicted. When a summarizer is injected into the store,

@@ -288,7 +288,7 @@ class ServiceWorkflowExecutor(BaseWorkflow):
             conversation_history: Recent conversation turns (``ConversationItem`` objects).
             chat_id: Chat identifier for logging.
             conversation_summary: Optional summary of earlier conversation rounds
-                evicted from Redis.  When provided it is prepended to the history
+                evicted from Dragonfly.  When provided it is prepended to the history
                 passed to the intent detector so the LLM has additional context
                 without a separate summarisation call.
 

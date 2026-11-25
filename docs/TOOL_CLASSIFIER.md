@@ -121,7 +121,7 @@ All are environment variables read at startup.
 | `API_TOOL_CALLING_WORKFLOW_ENABLED` | `true` | Enables Layer 2 (API tool calling). |
 | `CONTEXT_WORKFLOW_ENABLED` | `true` | Enables Layer 3 (Context). |
 | `MULTI_INTENT_ENABLED` | `true` | Enables the parallel multi-intent path (IntentDecomposer) in API tool calling. |
-| `ATC_RESPONSE_CACHE_ENABLED` | `true` | Enables the two-tier Redis response cache for API tool calling. |
+| `ATC_RESPONSE_CACHE_ENABLED` | `true` | Enables the two-tier Dragonfly response cache for API tool calling. |
 | `FALLBACK_TO_RAG_ON_ERROR` | `true` (constant) | Routes to RAG if the classifier raises. |
 
 > RAG and OOD have no flags — RAG is the core fallback and OOD is the final safety net.
