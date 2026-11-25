@@ -5,14 +5,13 @@ honour the connection_id supplied in the request, like /embeddings does, and onl
 fall back to the Resql lookup of the environment's vault_uuid when none is given.
 
 Scope: these tests verify *which* connection id and environment reach the
-LLMManager constructor and whether Resql is consulted. They do not (and cannot,
-with LLMManager mocked) verify that the LM is bound per connection: LLMManager
-is a process-wide singleton fixed by the first successful construction, so the
-arguments only take effect when this is the first LLM manager in the process.
+LLMManager constructor, whether Resql is consulted, and that one context manager
+is kept per connection and rebuilt when its LLMManager is reloaded.
 The method is exercised unbound on a bare stub object so nothing heavy is built.
 """
 
 from types import SimpleNamespace
+from typing import Dict, Iterator, Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,8 +21,8 @@ from src.vector_indexer.indexer_support import IndexerSupport
 
 @pytest.fixture
 def stub_support() -> SimpleNamespace:
-    """Bare object standing in for ``self``; no cached _context_manager yet."""
-    return SimpleNamespace(_context_manager=None)
+    """Bare object standing in for ``self``; no cached context managers yet."""
+    return SimpleNamespace(_context_managers={})
 
 
 def _call(stub: SimpleNamespace, **kwargs) -> tuple[MagicMock, MagicMock, MagicMock]:
@@ -74,12 +73,69 @@ def test_defaults_match_previous_behaviour(stub_support) -> None:
     assert llm_manager_cls.call_args.kwargs["environment"] == "production"
 
 
-def test_context_manager_is_cached(stub_support) -> None:
-    llm_manager_cls, ctx_cls, _ = _call(
-        stub_support, environment="testing", connection_id="evalconnection-1"
-    )
-    first = stub_support._context_manager
+# --- One context manager per connection ----------------------------------------
 
-    # Second call with different args must not rebuild (process-wide LLMManager).
-    _call(stub_support, environment="production")
-    assert stub_support._context_manager is first
+
+@pytest.fixture
+def per_connection(stub_support: SimpleNamespace) -> Iterator[Dict[str, object]]:
+    """Patch LLMManager to return one object per connection (like the real
+    per-connection cache) and the DB lookup to return the current production id."""
+    managers: Dict[str, SimpleNamespace] = {}
+    state: Dict[str, object] = {"production_id": "prod-1", "managers": managers}
+
+    def llm_manager(environment: str, connection_id: Optional[str]) -> SimpleNamespace:
+        key = str(connection_id)
+        if key not in managers:
+            managers[key] = SimpleNamespace(connection_id=connection_id)
+        return managers[key]
+
+    fetcher = MagicMock()
+    fetcher.fetch_vault_uuid_sync.side_effect = lambda env: state["production_id"]
+
+    with (
+        patch("src.vector_indexer.indexer_support.LLMManager", side_effect=llm_manager),
+        patch(
+            "src.llm_orchestrator_config.context_manager.ContextGenerationManager",
+            side_effect=lambda manager: SimpleNamespace(llm_manager=manager),
+        ),
+        patch(
+            "src.utils.connection_id_fetcher.get_connection_id_fetcher",
+            return_value=fetcher,
+        ),
+    ):
+        yield state
+
+
+def _get(stub: SimpleNamespace, **kwargs) -> SimpleNamespace:
+    return IndexerSupport._get_context_manager(stub, **kwargs)  # type: ignore[arg-type,return-value]
+
+
+def test_same_connection_reuses_context_manager(stub_support, per_connection) -> None:
+    first = _get(stub_support, environment="production")
+    second = _get(stub_support, environment="production")
+
+    assert second is first
+
+
+def test_production_switch_uses_new_connection(stub_support, per_connection) -> None:
+    before = _get(stub_support, environment="production")
+
+    # Production is switched to another connection (e.g. after /cache/clear).
+    per_connection["production_id"] = "prod-2"
+    after = _get(stub_support, environment="production")
+
+    assert after is not before
+    assert after.llm_manager.connection_id == "prod-2"
+
+
+def test_reloaded_connection_rebuilds_context_manager(
+    stub_support, per_connection
+) -> None:
+    before = _get(stub_support, environment="production")
+
+    # /cache/clear drops the loaded connection; the same id is loaded again.
+    per_connection["managers"].clear()  # type: ignore[union-attr]
+    after = _get(stub_support, environment="production")
+
+    assert after is not before
+    assert after.llm_manager is not before.llm_manager

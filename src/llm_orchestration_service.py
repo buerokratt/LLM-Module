@@ -6,7 +6,7 @@ from src.loki_logger import LokiLogger
 from langfuse import Langfuse, observe
 import dspy
 
-from llm_orchestrator_config.llm_manager import LLMManager
+from llm_orchestrator_config.llm_manager import LLMManager, request_llm_scope
 from models.request_models import (
     OrchestrationRequest,
     OrchestrationResponse,
@@ -313,8 +313,19 @@ class LLMOrchestrationService:
             orchestration_service=self,
         )
 
-    @observe(name="orchestration_request", as_type="agent")
     async def process_orchestration_request(
+        self, request: OrchestrationRequest
+    ) -> Union[OrchestrationResponse, TestOrchestrationResponse]:
+        """Process an orchestration request with the request's own LLM connection.
+
+        The request runs in its own LLM scope: once its components are built,
+        every LLM call uses the connection of this request (see request_llm_scope).
+        """
+        with request_llm_scope():
+            return await self._process_orchestration_request(request)
+
+    @observe(name="orchestration_request", as_type="agent")
+    async def _process_orchestration_request(
         self, request: OrchestrationRequest
     ) -> Union[OrchestrationResponse, TestOrchestrationResponse]:
         """
@@ -529,6 +540,18 @@ class LLMOrchestrationService:
             return self._create_error_response(request)
 
     async def stream_orchestration_response(
+        self, request: OrchestrationRequest
+    ) -> AsyncIterator[str]:
+        """Stream an orchestration response with the request's own LLM connection.
+
+        The scope stays open while chunks are produced, so streamed generation
+        and output guardrails use the same connection as the rest of the request.
+        """
+        with request_llm_scope():
+            async for chunk in self._stream_orchestration_response(request):
+                yield chunk
+
+    async def _stream_orchestration_response(
         self, request: OrchestrationRequest
     ) -> AsyncIterator[str]:
         """
@@ -881,6 +904,9 @@ class LLMOrchestrationService:
     ) -> Dict[str, Any]:
         """Initialize all service components. See ComponentFactory for details."""
         components = self._component_factory.initialize_service_components(request)
+
+        # From here on, every LLM call of this request uses its own connection.
+        components["llm_manager"].activate_for_request()
 
         # Log optimization status for all components
         self._log_optimization_status(components)

@@ -8,7 +8,7 @@ classifier (`llm_service` / `orchestration_service` / `embedding_service`
 duck-typed references). It has no dependency on the RAG/streaming pipeline.
 """
 
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from langfuse import observe
 
@@ -38,7 +38,8 @@ class IndexerSupport:
 
     def __init__(self) -> None:
         self._embedding_manager: Optional["EmbeddingManager"] = None
-        self._context_manager: Optional["ContextGenerationManager"] = None
+        # One context manager per (environment, vault_uuid); see _get_context_manager.
+        self._context_managers: Dict[Tuple[str, str], "ContextGenerationManager"] = {}
         self._config_loader: Optional["ConfigurationLoader"] = None
 
     @observe(name="create_embeddings_for_indexer", as_type="span")
@@ -92,7 +93,7 @@ class IndexerSupport:
 
         try:
             # Passing the request's connection_id lets dev/test indexers work
-            # without Resql; see the singleton caveat on _get_context_manager.
+            # without Resql; otherwise the environment's current connection is used.
             context_manager = self._get_context_manager(
                 environment=request.environment,
                 connection_id=request.connection_id,
@@ -159,40 +160,44 @@ class IndexerSupport:
         environment: str = PRODUCTION_DEPLOYMENT_ENVIRONMENT,
         connection_id: Optional[str] = None,
     ) -> "ContextGenerationManager":
-        """Lazy initialization of ContextGenerationManager for vector indexer.
+        """Return the ContextGenerationManager for the connection to index with.
 
         Mirrors ``create_embeddings_for_indexer``: a ``connection_id`` supplied by
         the caller (dev/test indexers, the deepeval stack) is used as-is, so no
         Resql lookup is needed; only when it is absent is the environment's
-        vault_uuid looked up in the DB (Resql has routes for ``production`` and
-        ``testing`` only, so ``development`` without a connection_id fails with
-        ``ConfigurationError``, exactly like the embeddings path).
+        current vault_uuid looked up in the DB (Resql has routes for
+        ``production`` and ``testing`` only, so ``development`` without a
+        connection_id fails with ``ConfigurationError``, exactly like the
+        embeddings path).
 
-        Caveat: ``LLMManager`` is a process-wide singleton bound by the first
-        construction that succeeds, and ``ContextGenerationManager`` uses the
-        global DSPy LM. The arguments therefore select the connection only when
-        this is the first LLM manager created in the process (the case in the
-        eval stack); afterwards every caller shares that one connection. One
-        cached context manager reflects that reality.
+        The connection is resolved on every call, so after a connection switch or
+        ``/cache/clear`` the next call uses the current connection. ``LLMManager``
+        caches one instance per connection, so this is cheap; a context manager
+        is created again only when its LLMManager has been reloaded.
         """
-        if self._context_manager is None:
+        if not connection_id:
+            from src.utils.connection_id_fetcher import get_connection_id_fetcher
+
+            fetcher = get_connection_id_fetcher()
+            connection_id = fetcher.fetch_vault_uuid_sync(environment)
+
+        llm_manager = LLMManager(environment=environment, connection_id=connection_id)
+        key = (environment, llm_manager.connection_id or "")
+
+        context_manager = self._context_managers.get(key)
+        if context_manager is None or context_manager.llm_manager is not llm_manager:
             from src.llm_orchestrator_config.context_manager import (
                 ContextGenerationManager,
             )
 
-            if not connection_id:
-                from src.utils.connection_id_fetcher import get_connection_id_fetcher
-
-                fetcher = get_connection_id_fetcher()
-                connection_id = fetcher.fetch_vault_uuid_sync(environment)
-
-            llm_manager = LLMManager(
-                environment=environment, connection_id=connection_id
+            context_manager = ContextGenerationManager(llm_manager)
+            self._context_managers[key] = context_manager
+            logger.debug(
+                f"Initialized ContextGenerationManager for vector indexer "
+                f"({environment}, vault_uuid: {llm_manager.connection_id})"
             )
-            self._context_manager = ContextGenerationManager(llm_manager)
-            logger.debug("Lazy initialized ContextGenerationManager for vector indexer")
 
-        return self._context_manager
+        return context_manager
 
     def _get_config_loader(self) -> "ConfigurationLoader":
         """Lazy initialization of ConfigurationLoader for vector indexer."""

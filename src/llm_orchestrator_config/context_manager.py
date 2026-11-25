@@ -161,9 +161,11 @@ Answer only with the succinct context and nothing else."""
             prompt = dspy.InputField()
             context = dspy.OutputField()
 
-        # Use DSPy Predict to generate context
+        # Use DSPy Predict to generate context, with this manager's connection
+        # rather than the process-wide default model.
         context_generator = dspy.Predict(ContextGeneration)
-        result = context_generator(prompt=prompt)
+        with self.llm_manager.use_task_local():
+            result = context_generator(prompt=prompt)
 
         # Return a response object with the expected structure
         class MockResponse:
