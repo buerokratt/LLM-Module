@@ -108,7 +108,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await init_dragonfly_client()
         app.state.session_store = APIToolSessionStore()
 
-        # Wire an incremental summarizer if the LLM manager singleton is available.
+        # Wire an incremental summarizer if the production LLM connection loads.
+        # Inside a request it uses that request's connection (use_task_local).
         summarizer = None
         try:
             summarizer = create_incremental_summarizer(LLMManager())
@@ -296,10 +297,15 @@ async def pydantic_validation_exception_handler(
 
 @app.post("/cache/clear")
 async def clear_connection_cache() -> dict[str, str]:
-    """Clear cached connection IDs and vault UUIDs."""
+    """Clear cached connection IDs, vault UUIDs and loaded LLM connections.
+
+    Called when a connection is added, promoted, edited or deleted, so the next
+    request resolves and loads the current connection without a restart.
+    """
     try:
         fetcher = get_connection_id_fetcher()
         fetcher.clear_cache()
+        LLMManager.clear_instances()
         logger.info("Connection cache cleared via /cache/clear endpoint")
         return {"status": "ok", "message": "Connection cache cleared"}
     except Exception as e:

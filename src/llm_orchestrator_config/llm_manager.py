@@ -1,7 +1,8 @@
 """LLM Manager - Main entry point for the LLM Config Module."""
 
-from typing import Any, Dict, Generator, List, Optional
-from contextlib import contextmanager
+from typing import Any, Dict, Generator, List, Optional, Tuple
+from contextlib import ExitStack, contextmanager, suppress
+from contextvars import ContextVar
 import threading
 
 import dspy
@@ -13,18 +14,61 @@ from llm_orchestrator_config.providers.base import BaseLLMProvider
 from llm_orchestrator_config.types import LLMProvider
 from llm_orchestrator_config.exceptions import ConfigurationError
 
+# The DSPy LM of the request being processed. use_task_local() prefers it over
+# the manager's own LM, so components created once (e.g. the tool classifier)
+# still use the connection of the current request.
+_request_lm: ContextVar[Optional[dspy.LM]] = ContextVar("request_lm", default=None)
+
+# Cleanup for the current request scope; see request_llm_scope().
+_request_scope: ContextVar[Optional[ExitStack]] = ContextVar(
+    "request_llm_scope", default=None
+)
+
+
+@contextmanager
+def request_llm_scope() -> Generator[None, None, None]:
+    """Scope one orchestration request.
+
+    Inside the scope, LLMManager.activate_for_request() makes that manager's LM
+    the model for the rest of the request: dspy.settings.lm, use_task_local()
+    and everything reading them (guardrails, classifier, RAG) use it. The
+    request's model is reset when the scope ends.
+    """
+    stack = ExitStack()
+    token = _request_scope.set(stack)
+    try:
+        yield
+    finally:
+        # A ValueError means the scope is being closed from another context,
+        # e.g. a streaming generator finalized elsewhere; nothing to restore.
+        with suppress(ValueError):
+            stack.close()
+        with suppress(ValueError):
+            _request_scope.reset(token)
+
+
+def _resolve_connection_id(environment: str) -> Optional[str]:
+    """Resolve the vault_uuid of the environment's current connection from the DB."""
+    try:
+        from src.utils.connection_id_fetcher import get_connection_id_fetcher
+    except ImportError:
+        return None
+    return get_connection_id_fetcher().fetch_vault_uuid_sync(environment)
+
 
 class LLMManager:
-    """Singleton manager for LLM providers.
+    """Manager for the LLM providers of one LLM connection.
 
-    This class provides a centralized way to manage and access LLM providers
-    throughout the application. It follows the Singleton pattern to ensure
-    consistent configuration and provider instances.
+    One instance is created per connection (environment + vault_uuid) and
+    reused, so each connection's model and credentials are loaded once.
+    ``LLMManager(environment=..., connection_id=...)`` returns that
+    connection's instance. Without a connection_id, the environment's current
+    connection is resolved from the database.
     """
 
-    _instance: Optional["LLMManager"] = None
-    _instance_lock: threading.Lock = threading.Lock()
-    _initialized: bool = False
+    _instances: Dict[Tuple[str, str], "LLMManager"] = {}
+    # Re-entrant: loading a connection must not deadlock if it creates a manager.
+    _instance_lock = threading.RLock()
     _configured: bool = False
     _config_lock: threading.Lock = threading.Lock()
 
@@ -34,22 +78,27 @@ class LLMManager:
         environment: str = "production",
         connection_id: Optional[str] = None,
     ) -> "LLMManager":
-        """Create or return the singleton instance.
+        """Return the instance for the connection, creating it on first use.
 
         Args:
             config_path: Optional path to configuration file.
-            environment: Environment type ("production", "development", "test")
-            connection_id: Connection ID (required for development/test environments)
+            environment: Environment type ("production", "testing", ...)
+            connection_id: Connection vault_uuid. Resolved from the database
+                when omitted.
 
         Returns:
-            LLMManager singleton instance.
+            The LLMManager of that connection.
         """
-        # Thread-safe singleton creation
-        if cls._instance is None:
-            with cls._instance_lock:
-                if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-        return cls._instance
+        resolved_id = connection_id or _resolve_connection_id(environment)
+        key = (environment, resolved_id or "")
+        with cls._instance_lock:
+            instance = cls._instances.get(key)
+            if instance is None:
+                instance = super().__new__(cls)
+                # Only cached once loaded, so a failed load is retried next time.
+                instance._setup(config_path, environment, resolved_id)
+                cls._instances[key] = instance
+        return instance
 
     def __init__(
         self,
@@ -57,25 +106,25 @@ class LLMManager:
         environment: str = "production",
         connection_id: Optional[str] = None,
     ) -> None:
-        """Initialize the LLM Manager.
+        """No-op: each instance is set up once, in __new__."""
 
-        Args:
-            config_path: Optional path to configuration file.
-            environment: Environment type ("production", "development", "test")
-            connection_id: Connection ID (required for development/test environments)
-        """
-        if not self._initialized:
-            self._environment = environment
-            self._connection_id = connection_id
-            self._config_loader = ConfigurationLoader(
-                config_path, environment, connection_id
-            )
-            self._config: Optional[LLMConfiguration] = None
-            self._providers: Dict[LLMProvider, BaseLLMProvider] = {}
-            self._default_provider: Optional[BaseLLMProvider] = None
-            self._load_configuration()
-            self._initialize_providers()
-            LLMManager._initialized = True
+    def _setup(
+        self,
+        config_path: Optional[str],
+        environment: str,
+        connection_id: Optional[str],
+    ) -> None:
+        """Load the connection's configuration and initialize its providers."""
+        self._environment = environment
+        self._connection_id = connection_id
+        self._config_loader = ConfigurationLoader(
+            config_path, environment, connection_id
+        )
+        self._config: Optional[LLMConfiguration] = None
+        self._providers: Dict[LLMProvider, BaseLLMProvider] = {}
+        self._default_provider: Optional[BaseLLMProvider] = None
+        self._load_configuration()
+        self._initialize_providers()
 
     @property
     def connection_id(self) -> Optional[str]:
@@ -183,22 +232,48 @@ class LLMManager:
         dspy.configure(lm=dspy_client, track_usage=True)
 
     def ensure_global_config(self, provider: Optional[LLMProvider] = None) -> None:
-        """Configure DSPy exactly once per process (thread-safe)."""
+        """Set the process-wide default DSPy LM once (thread-safe).
+
+        The default only applies outside requests and use_task_local(); requests
+        use their own connection via activate_for_request(). It is set only once
+        per process (DSPy rejects dspy.configure() from other async tasks), so it
+        is kept after clear_instances().
+        """
         # Double-checked locking pattern for performance
-        if not self._configured:
-            with self._config_lock:
+        if not LLMManager._configured:
+            with LLMManager._config_lock:
                 # Re-check inside the lock to prevent race condition
-                if not self._configured:
+                if not LLMManager._configured:
                     dspy_client = self.get_dspy_client(provider)
                     dspy.configure(lm=dspy_client, track_usage=True)
-                    self._configured = True
+                    LLMManager._configured = True
+
+    def activate_for_request(self, provider: Optional[LLMProvider] = None) -> None:
+        """Use this manager's LM for the rest of the current request.
+
+        Only has an effect inside request_llm_scope(); the model is reset when
+        the scope ends.
+        """
+        stack = _request_scope.get()
+        if stack is None:
+            return
+        lm = self.get_dspy_client(provider)
+        if _request_lm.get() is lm:
+            return
+        stack.enter_context(dspy.context(lm=lm))
+        token = _request_lm.set(lm)
+        stack.callback(_request_lm.reset, token)
 
     @contextmanager
     def use_task_local(
         self, provider: Optional[LLMProvider] = None
     ) -> Generator[None, None, None]:
-        """Use a task/thread-local DSPy LM without reconfiguring globally."""
-        lm = self.get_dspy_client(provider)
+        """Use a task/thread-local DSPy LM without reconfiguring globally.
+
+        Inside a request, the request's LM is used, so components holding a
+        manager from an earlier request still call the current connection.
+        """
+        lm = _request_lm.get() or self.get_dspy_client(provider)
         with dspy.context(lm=lm):
             yield
 
@@ -267,12 +342,20 @@ class LLMManager:
         return self._config
 
     @classmethod
-    def reset_instance(cls) -> None:
-        """Reset the singleton instance.
+    def clear_instances(cls) -> None:
+        """Drop all cached connections, so the next use reloads them.
 
-        This is primarily useful for testing purposes.
+        Called by /cache/clear when a connection is added, changed or deleted.
+        Requests already running keep the manager they hold.
+
+        The process-wide DSPy default is not set again: DSPy only allows
+        dspy.configure() from the task that called it first, and requests use
+        their own connection via activate_for_request() anyway.
         """
         with cls._instance_lock:
-            cls._instance = None
-            cls._initialized = False
-            cls._configured = False
+            cls._instances.clear()
+
+    @classmethod
+    def reset_instance(cls) -> None:
+        """Drop all cached connections (kept for existing callers and tests)."""
+        cls.clear_instances()

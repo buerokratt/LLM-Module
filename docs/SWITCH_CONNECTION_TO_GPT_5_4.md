@@ -26,7 +26,7 @@ This keeps the current connection untouched, so you can switch back at any time.
    - **Deployment environment:** **Testing**
 3. Click **Create connection**.
 4. Open the new connection, set **Deployment environment** to **Production** and save. The previous production connection is moved to **Testing** automatically.
-5. Restart the LLM orchestration service and verify the switch (see [After switching](#after-switching)).
+5. Verify the switch (see [After switching](#after-switching)).
 
 ## Option B: edit the existing connection
 
@@ -41,21 +41,11 @@ Use this only if you need to keep the same connection. Read step 3 carefully.
    - the **embedding API key**
 
    The edit form shows masked keys. The new deployment name and endpoint are only stored in Vault when a full API key is entered, and when that happens all keys in the form are stored. A masked embedding key would replace the working one and break embeddings.
-4. Save, then restart the LLM orchestration service and verify the switch (see [After switching](#after-switching)).
+4. Save, then verify the switch (see [After switching](#after-switching)).
 
 ## After switching
 
-### Restart the LLM orchestration service
-
-The service loads the production LLM configuration once and keeps it until it restarts, so a restart is required after changing the production connection.
-
-```bash
-# Docker Compose
-docker restart llm-orchestration-service
-
-# Kubernetes
-kubectl rollout restart deployment/llm-orchestration-service
-```
+No restart is needed. The LLM orchestration service reloads a connection when it is promoted to production, deleted, or when its credentials are stored in Vault, so the next request uses the current connection.
 
 ### Verify the model in use
 
@@ -81,8 +71,8 @@ Then check that:
 
 ## Switching back
 
-- **Option A:** open the previous connection, set **Deployment environment** to **Production**, save and restart the service.
-- **Option B:** edit the connection back to the previous model, deployment name and endpoint, re-enter both API keys, save and restart the service.
+- **Option A:** open the previous connection, set **Deployment environment** to **Production** and save.
+- **Option B:** edit the connection back to the previous model, deployment name and endpoint, re-enter both API keys and save.
 
 ## How GPT-5.4 is configured
 
@@ -116,7 +106,7 @@ The model family is detected from the selected model, but some libraries also in
 
 | Symptom | Likely cause |
 | --- | --- |
-| Log shows `Configured azure_openai with model gpt-4.1` after switching | The service was not restarted, or the new connection is not set to Production. |
+| Log shows `Configured azure_openai with model gpt-4.1` after switching | The new connection is not set to Production, or the service's connection cache was not cleared. Check that `POST /cache/clear` succeeded (Ruuter or CronManager logs), or call it manually. |
 | `UnsupportedParamsError` / `400` mentioning `temperature` or `max_tokens` | The service runs an older version without reasoning-model support. |
 | Answers fail after editing a connection (Option B) | The deployment name, endpoint or keys were not stored in Vault. Re-enter both API keys and save again. |
 | Retrieval or indexing fails after editing a connection (Option B) | The embedding API key was saved in masked form. Re-enter the embedding API key and save. |
