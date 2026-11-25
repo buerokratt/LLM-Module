@@ -103,8 +103,30 @@ extract_request_data:
 validate_environment:
   switch:
     - condition: ${deployment_environment == "testing" || deployment_environment == "production"}
-      next: check_production_environment
+      next: check_embedding_lock
   next: return_invalid_environment
+
+# Issue #806: every connection must use the embedding model of the knowledge base
+# (or, while it is empty, of the other active connection). This checks the form
+# values only; the GUI checks the real model with a test embedding before saving.
+check_embedding_lock:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_LLM_SERVICE]/knowledge-base/check-embedding"
+    body:
+      embedding_platform: ${embedding_platform}
+      embedding_model: ${embedding_model}
+  result: embedding_lock_result
+  next: validate_embedding_lock
+  on_error: return_embedding_check_unavailable
+
+validate_embedding_lock:
+  switch:
+    - condition: ${embedding_lock_result.response.body != null && embedding_lock_result.response.body.allowed === true}
+      next: check_production_environment
+    - condition: ${embedding_lock_result.response.body != null && embedding_lock_result.response.body.allowed === false}
+      next: return_embedding_model_locked
+  next: return_embedding_check_unavailable
 
 check_production_environment:
   switch:
@@ -191,6 +213,26 @@ return_success:
 return_invalid_environment:
   status: 400
   return: "error: environment must be 'Testing' or 'Production'"
+  next: end
+
+# 400/500: Ruuter only passes the codes in application.httpCodesAllowList.
+return_embedding_model_locked:
+  status: 400
+  return: ${embedding_lock_result.response.body}
+  next: end
+
+# Fail closed: without the check the connection is not saved.
+return_embedding_check_unavailable:
+  assign:
+    embedding_check_unavailable:
+      allowed: false
+      check_unavailable: true
+      reason: "The embedding model could not be checked against the knowledge base. Please try again later."
+  next: return_embedding_check_unavailable_response
+
+return_embedding_check_unavailable_response:
+  status: 500
+  return: ${embedding_check_unavailable}
   next: end
 
 return_unauthorized:

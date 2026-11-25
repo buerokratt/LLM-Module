@@ -13,6 +13,7 @@ from models.request_models import (
     ConversationItem,
     PromptRefinerOutput,
     ContextGenerationRequest,
+    EmbeddingLockCheckRequest,
     TestOrchestrationResponse,
     ChunkInfo,
     DocumentReference,
@@ -1207,6 +1208,16 @@ class LLMOrchestrationService:
     ) -> Dict[str, Any]:
         """Generate context for chunks. See IndexerSupport for details."""
         return self._indexer_support.generate_context_for_chunks(request)
+
+    def get_knowledge_base_embedding_model(self) -> Dict[str, Any]:
+        """Embedding model locked by the knowledge base. See IndexerSupport."""
+        return self._indexer_support.get_knowledge_base_embedding_model()
+
+    def check_embedding_lock(
+        self, request: EmbeddingLockCheckRequest
+    ) -> Dict[str, Any]:
+        """Check a connection's embedding model against the lock. See IndexerSupport."""
+        return self._indexer_support.check_embedding_lock(request)
 
     def get_available_embedding_models_for_indexer(
         self, environment: str = PRODUCTION_DEPLOYMENT_ENVIRONMENT

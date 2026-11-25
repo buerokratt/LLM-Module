@@ -81,6 +81,83 @@ graph TD
 5. **🎯 Embedding Creation** → Multi-provider with automatic model selection
 6. **💾 Vector Storage** → Provider-specific Qdrant collections with rich metadata
 
+### **🔌 Which LLM Connection Is Used**
+Before downloading the dataset, `main_indexer.py` asks Resql for the active
+connection to index with: **production if one exists, otherwise testing**
+(`resolve_indexing_connection`). Its environment and vault UUID are sent with
+every `/generate-context` and `/embeddings` call of that run. This lets a client
+set up and validate a testing connection first, as the knowledge base is built
+from whichever connection exists.
+
+Creating a second connection does not start indexing or re-index anything:
+indexing only runs when the CKB data hash changes, the diff detector skips files
+that were already processed, and Qdrant point IDs are deterministic.
+
+Testing and production connections must use the **same embedding model**: the
+Qdrant collection is chosen by embedding model (Azure 3072 dims vs AWS Titan 1024
+dims), so a connection with another model would search an empty collection. This
+is enforced when a connection is created or edited; see below.
+
+### **🔒 Locked Embedding Model**
+One embedding model is approved per platform: `text-embedding-3-large` (Azure,
+3072 dims, `contextual_chunks_azure`) and `amazon.titan-embed-text-v2:0` (AWS,
+1024 dims, `contextual_chunks_aws`). Once the knowledge base has embeddings, every
+connection must use the model that created them. The chat model may differ.
+
+**Where the lock is stored.** In the knowledge base itself: the filled
+collection gives the platform, and every point's payload has `embedding_model`
+and `vector_dimensions`. There is no separate record, so existing setups are
+locked as they are and the lock follows the knowledge base if it is rebuilt.
+`GET /knowledge-base/embedding-model` (orchestration service) returns it, and
+every check below logs it (`Embedding lock check for ... Knowledge base embedding
+model: ...`).
+
+**The check** (`src/llm_orchestrator_config/knowledge_base_lock.py`):
+1. Only the approved model of a supported platform.
+2. A **test embedding** with the connection's real credentials must have the
+   approved model's vector size. On Azure the deployment (and a full endpoint
+   URL) decides the real model, not the dropdown; e.g. a deployment of
+   `text-embedding-ada-002` gives 1536 dims and is refused.
+3. If the knowledge base has embeddings, the same platform/model.
+4. If it is still empty, the same model as the other active connection, so test
+   and production share one knowledge base from the first index on.
+
+**Where it runs.**
+| Step | What is checked |
+|---|---|
+| GUI, before saving (`POST /llm-connections/check-embedding`) | Real model: new credentials are stored in Vault under a temporary id, tested, and the temporary secret is deleted by Ruuter. When an edit keeps the saved key, the saved credentials are tested with the entered deployment/endpoint. |
+| `llm-connections/add` and `edit` (Ruuter) | Form values only (no credentials in Ruuter), as a backstop. `edit` checks only when the embedding platform/model changes, so other edits and testing ↔ production switches are never blocked. |
+| `llm-connections/update-status` (Ruuter), inactive → active | The saved platform/model and the saved credentials (real model). Inactive connections are not compared when others are saved, so activating one must pass the check. |
+
+The form values are checked first; the test embedding is only made when they pass,
+so a platform/model conflict is always reported as such.
+
+**Temporary secrets** are deleted by Ruuter right after their check. The check
+waits until the (asynchronously stored) secret exists before answering, so the
+delete runs after the store.
+
+Blocked saves return 400 with `{allowed: false, reason}`; the GUI shows the
+reason. If the check cannot run, nothing is saved (500, `check_unavailable`).
+
+### **🔁 Exit Codes and Retries**
+`vector_indexer_pipeline.sh` saves the CKB data hash (marking the data as synced)
+**only on exit 0**. On any other outcome the hash is left unsaved and the next
+hourly `data/update` sync retries.
+
+| Exit | Meaning | Hash saved | Pipeline result |
+|------|---------|------------|-----------------|
+| 0 | All documents indexed (or nothing to do) | ✅ | success |
+| 1 | Fatal error (health check, Resql unreachable, crash) | ❌ | error |
+| 2 | Some documents failed, including documents with any chunk that failed context generation | ❌ | warning |
+| 3 | Another run for the same dataset is in progress | ❌ | skipped (exit 0) |
+| 4 | No active LLM connection (production or testing) | ❌ | skipped (exit 0) |
+
+Only successfully indexed documents are marked processed, so a retry re-indexes
+just the documents that failed.
+
+`data/update` also returns 200 without starting the indexer when CKB returns no
+content ("CKB returned no content - nothing to index").
+
 ## 🎯 **Phase 1: Document Discovery & Loading**
 
 ### **📁 Document Discovery Excellence**

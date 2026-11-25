@@ -8,12 +8,14 @@ These tests verify the full flow:
 4. Verify embeddings in Qdrant
 """
 
+import asyncio
 import tempfile
 from pathlib import Path
 from datetime import timedelta
 import json
 import sys
 
+import pytest
 from minio import Minio
 from qdrant_client import QdrantClient
 
@@ -169,3 +171,120 @@ class TestQdrantOperations:
                 qdrant_client.delete_collection(test_collection)
             except Exception:
                 pass
+
+
+# Resql as exposed by docker-compose-test.yml (resql: 8082:8082).
+RESQL_TEST_URL = "http://localhost:8082/rag-search"
+
+
+@pytest.fixture
+def isolated_llm_connections(postgres_client):
+    """Give a test an empty set of active connections, then restore the DB.
+
+    Other integration tests share the database and may leave active
+    connections behind, so this deactivates them for the duration of the test
+    and returns a helper that inserts a connection row (as the GUI's add flow
+    would, minus the Vault secrets, which the indexer's resolver never reads).
+    """
+    cursor = postgres_client.cursor()
+    cursor.execute(
+        "SELECT id FROM llm_connections WHERE connection_status = 'active' "
+        "AND environment IN ('production', 'testing')"
+    )
+    previously_active = [row[0] for row in cursor.fetchall()]
+    if previously_active:
+        cursor.execute(
+            "UPDATE llm_connections SET connection_status = 'inactive' "
+            "WHERE id = ANY(%s)",
+            (previously_active,),
+        )
+    postgres_client.commit()
+
+    inserted: list = []
+
+    def add_connection(environment: str) -> str:
+        cursor.execute(
+            "INSERT INTO llm_connections (connection_name, environment, "
+            "llm_platform, llm_model, embedding_platform, embedding_model, "
+            "monthly_budget, connection_status) "
+            "VALUES (%s, %s, 'azure', 'gpt-4o-mini', 'azure', "
+            "'text-embedding-3-large', 100, 'active') "
+            "RETURNING id, vault_uuid",
+            (f"issue-805-{environment}", environment),
+        )
+        row_id, vault_uuid = cursor.fetchone()
+        postgres_client.commit()
+        inserted.append(row_id)
+        return str(vault_uuid)
+
+    try:
+        yield add_connection
+    finally:
+        if inserted:
+            cursor.execute(
+                "DELETE FROM llm_connections WHERE id = ANY(%s)", (inserted,)
+            )
+        if previously_active:
+            cursor.execute(
+                "UPDATE llm_connections SET connection_status = 'active' "
+                "WHERE id = ANY(%s)",
+                (previously_active,),
+            )
+        postgres_client.commit()
+
+
+class TestIndexingConnectionSelection:
+    """Issue #805: the indexer picks production, else testing, via real Resql.
+
+    The second connection only changes which connection future runs use; it
+    does not trigger indexing (that happens only when the CKB hash changes),
+    and re-indexing is prevented by the diff detector and deterministic point
+    IDs, which these tests do not need an LLM to show.
+    """
+
+    @staticmethod
+    def _resolve():
+        sys.path.insert(
+            0, str(Path(__file__).parent.parent.parent / "src" / "vector_indexer")
+        )
+        from vector_indexer.main_indexer import resolve_indexing_connection
+
+        return asyncio.run(resolve_indexing_connection(RESQL_TEST_URL))
+
+    def test_no_connection_resolves_none(self, isolated_llm_connections):
+        assert self._resolve() is None
+
+    def test_order_test_then_production(self, isolated_llm_connections):
+        testing_uuid = isolated_llm_connections("testing")
+
+        first = self._resolve()
+        assert first is not None
+        assert (first.environment, first.vault_uuid) == ("testing", testing_uuid)
+
+        production_uuid = isolated_llm_connections("production")
+
+        second = self._resolve()
+        assert second is not None
+        assert (second.environment, second.vault_uuid) == (
+            "production",
+            production_uuid,
+        )
+
+    def test_order_production_then_test(self, isolated_llm_connections):
+        production_uuid = isolated_llm_connections("production")
+
+        first = self._resolve()
+        assert first is not None
+        assert (first.environment, first.vault_uuid) == (
+            "production",
+            production_uuid,
+        )
+
+        isolated_llm_connections("testing")
+
+        second = self._resolve()
+        assert second is not None
+        assert (second.environment, second.vault_uuid) == (
+            "production",
+            production_uuid,
+        )

@@ -119,8 +119,38 @@ check_connection_exists:
 validate_connection_exists:
   switch:
     - condition: "${existing_connection.response.body.length > 0}"
-      next: check_deployment_environment
+      next: check_embedding_changed
   next: return_not_found
+
+# Issue #806: only a changed embedding platform/model is checked against the
+# knowledge base, so other edits (budget, name, testing <-> production) keep
+# working for existing setups. The GUI checks the real model with a test
+# embedding before saving.
+check_embedding_changed:
+  switch:
+    - condition: ${embedding_platform !== existing_connection.response.body[0].embeddingPlatform || embedding_model !== existing_connection.response.body[0].embeddingModel}
+      next: check_embedding_lock
+  next: check_deployment_environment
+
+check_embedding_lock:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_LLM_SERVICE]/knowledge-base/check-embedding"
+    body:
+      embedding_platform: ${embedding_platform}
+      embedding_model: ${embedding_model}
+      exclude_connection_id: ${connection_id}
+  result: embedding_lock_result
+  next: validate_embedding_lock
+  on_error: return_embedding_check_unavailable
+
+validate_embedding_lock:
+  switch:
+    - condition: ${embedding_lock_result.response.body != null && embedding_lock_result.response.body.allowed === true}
+      next: check_deployment_environment
+    - condition: ${embedding_lock_result.response.body != null && embedding_lock_result.response.body.allowed === false}
+      next: return_embedding_model_locked
+  next: return_embedding_check_unavailable
 
 check_deployment_environment:
   switch:
@@ -200,6 +230,26 @@ return_not_found:
 return_invalid_environment:
   status: 400
   return: "error: environment must be 'Testing' or 'Production'"
+  next: end
+
+# 400/500: Ruuter only passes the codes in application.httpCodesAllowList.
+return_embedding_model_locked:
+  status: 400
+  return: ${embedding_lock_result.response.body}
+  next: end
+
+# Fail closed: without the check the connection is not changed.
+return_embedding_check_unavailable:
+  assign:
+    embedding_check_unavailable:
+      allowed: false
+      check_unavailable: true
+      reason: "The embedding model could not be checked against the knowledge base. Please try again later."
+  next: return_embedding_check_unavailable_response
+
+return_embedding_check_unavailable_response:
+  status: 500
+  return: ${embedding_check_unavailable}
   next: end
 
 return_unauthorized:

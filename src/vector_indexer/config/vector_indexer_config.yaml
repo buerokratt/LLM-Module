@@ -4,10 +4,12 @@ vector_indexer:
   api:
     timeout: 300  # seconds
   
-  # Environment Configuration
+  # LLM connection. Placeholders only: main_indexer.py replaces both at runtime
+  # with the active connection from the database (production, else testing),
+  # and skips the run (exit 4) when there is none.
   processing:
-    environment: "production"  # Default: production
-    connection_id: null  # For dev/test environments
+    environment: "production"
+    connection_id: null
   
   # Chunking Configuration
   chunking:

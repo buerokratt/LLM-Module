@@ -5,11 +5,13 @@ import asyncio
 import fcntl
 import shutil
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime
 from typing import List, Optional, Dict, Any, IO
 from loki_logger import LokiLogger
 import hashlib
+import httpx
 
 # Add src to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
@@ -29,6 +31,78 @@ logger = LokiLogger(service_name="main-indexer")
 
 # Same container/venv as agency_data_resync.sh's lock (cron_data volume).
 INDEXER_LOCK_DIR = Path("/app/data/locks")
+
+# Exit code for "no active LLM connection". vector_indexer_pipeline.sh treats it
+# as a skip: the agency hash is not saved, so the next hourly sync retries.
+EXIT_NO_LLM_CONNECTION = 4
+
+# Order in which connections are tried when choosing the one to index with:
+# production when it exists, otherwise testing (decided for issue #805).
+CONNECTION_PRIORITY = ("production", "testing")
+CONNECTION_LOOKUP_TIMEOUT_SECONDS = 30
+
+
+class ConnectionLookupError(Exception):
+    """Resql could not be queried, so it is unknown whether a connection exists."""
+
+
+@dataclass(frozen=True)
+class IndexingConnection:
+    """The LLM connection the knowledge base is indexed with."""
+
+    environment: str
+    vault_uuid: str
+    embedding_model: Optional[str] = None
+
+
+def _first_connection_row(
+    payload: Dict[str, Any] | List[Any] | None,
+) -> Optional[Dict[str, Any]]:
+    """Return the first row of a Resql response, or None if it has no rows.
+
+    Resql returns a JSON list of rows; a {"response": [...]} wrapper is accepted
+    too, matching ConnectionIdFetcher._extract_vault_uuid_from_response.
+    """
+    rows = payload.get("response", payload) if isinstance(payload, dict) else payload
+    if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+        return rows[0]
+    return None
+
+
+async def resolve_indexing_connection(
+    resql_url: str, timeout: float = CONNECTION_LOOKUP_TIMEOUT_SECONDS
+) -> Optional[IndexingConnection]:
+    """Pick the active LLM connection to index with: production, else testing.
+
+    Queried on every run without caching, so a connection created or removed
+    since the previous sync is picked up.
+
+    Returns:
+        The chosen connection, or None when neither environment has one.
+
+    Raises:
+        ConnectionLookupError: Resql was unreachable or returned an error.
+    """
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        for environment in CONNECTION_PRIORITY:
+            try:
+                response = await client.post(
+                    f"{resql_url}/get-{environment}-connection", json={}
+                )
+                response.raise_for_status()
+                row = _first_connection_row(response.json())
+            except (httpx.HTTPError, ValueError) as e:
+                raise ConnectionLookupError(
+                    f"Could not look up the {environment} LLM connection: {e}"
+                ) from e
+
+            if row and row.get("vaultUuid"):
+                return IndexingConnection(
+                    environment=environment,
+                    vault_uuid=str(row["vaultUuid"]),
+                    embedding_model=row.get("embeddingModel"),
+                )
+    return None
 
 
 def _acquire_indexer_lock(signed_url: Optional[str]) -> Optional[IO]:
@@ -338,8 +412,9 @@ class VectorIndexer:
 
         Returns:
             tuple: (chunk_count: int, content_hash: str, failed_chunks: int).
-            Raises on any failure (including load failure or zero usable chunks),
-            so the document is counted as failed rather than as success.
+            Raises on any failure (load failure, zero usable chunks, or any
+            chunk dropped by context generation), so the document is counted
+            as failed rather than as success and is retried on the next sync.
         """
         async with semaphore:
             logger.info(f"Processing document: {doc_info.document_hash}")
@@ -367,6 +442,18 @@ class VectorIndexer:
 
                 # Store chunks in Qdrant
                 await qdrant_manager.store_chunks(contextual_chunks)
+
+                # A document with dropped chunks is incomplete. Keep the chunks
+                # that worked (searchable now), but fail the document so it is
+                # not marked processed and the run exits 2: the agency hash is
+                # not saved and the next sync retries it. Point IDs are
+                # deterministic, so the retry overwrites instead of duplicating.
+                if failed_chunks > 0:
+                    raise RuntimeError(
+                        f"Document {doc_info.document_hash} is incomplete: "
+                        f"{failed_chunks} of {failed_chunks + len(contextual_chunks)} "
+                        f"chunks failed context generation; will retry on next sync"
+                    )
 
                 logger.info(
                     f"Successfully processed document {doc_info.document_hash}: "
@@ -715,6 +802,30 @@ async def main() -> int:
         if not health_ok:
             logger.error("Health check failed. Aborting processing.")
             return 1  # Return exit code instead of sys.exit()
+
+        # Choose the LLM connection before downloading anything, so a run with
+        # no connection is skipped cheaply and retried on the next sync.
+        try:
+            connection = await resolve_indexing_connection(indexer.config.resql_url)
+        except ConnectionLookupError as e:
+            logger.error(f"{e}. Aborting processing; will retry on next sync.")
+            return 1
+
+        if connection is None:
+            logger.warning(
+                "No active LLM connection (production or testing) - indexing "
+                "skipped, will retry on next sync"
+            )
+            return EXIT_NO_LLM_CONNECTION
+
+        # api_client reads these on every request, so all /generate-context and
+        # /embeddings calls of this run use the chosen connection.
+        indexer.config.environment = connection.environment
+        indexer.config.connection_id = connection.vault_uuid
+        logger.info(
+            f"Indexing with the {connection.environment} LLM connection "
+            f"(embedding model: {connection.embedding_model or 'unknown'})"
+        )
 
         # Process all documents
         logger.info("Health check passed. Starting document processing...")

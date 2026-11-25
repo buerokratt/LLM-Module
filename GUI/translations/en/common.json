@@ -321,6 +321,15 @@
       "updateConnection": "Update connection",
       "createConnection": "Create connection"
     },
+    "embeddingLock": {
+      "differentModel": "This connection uses {{current}}, but all connections must use {{model}}.",
+      "wrongDeployment": "The embedding deployment is not {{model}} (it returns {{dims}}-dimensional vectors).",
+      "testFailed": "The embedding model could not be verified with these credentials.",
+      "unavailable": "The embedding model could not be checked. Please try again.",
+      "notSaved": "The connection was not saved.",
+      "notChanged": "The changes were not saved.",
+      "notActivated": "The connection was not activated."
+    },
     "environments": {
       "testing": "Testing",
       "production": "Production"
@@ -339,6 +348,8 @@
       "cancelButton": "Cancel",
       "confirmReplaceButton": "Yes, replace production connection",
       "errors": {
+        "embeddingLocked": "All connections must use the same embedding model. The connection was not saved.",
+        "embeddingCheck": "The embedding model could not be checked. The connection was not saved. Please try again.",
         "save": "The connection could not be saved. Nothing was created. Please try again.",
         "vault": "The connection credentials could not be stored securely, so the connection was not created. Please try again.",
         "vaultRollbackFailed": "The connection credentials could not be stored securely, and the incomplete connection could not be removed. Please delete it from the LLM connections list.",

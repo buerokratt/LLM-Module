@@ -4,16 +4,23 @@ import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useDialog } from 'hooks/useDialog';
 import { Button } from 'components';
-import { ButtonAppearanceTypes } from 'enums/commonEnums';
+import { ButtonAppearanceTypes, ToastTypes } from 'enums/commonEnums';
 import BackArrowButton from 'assets/BackArrowButton';
 import LLMConnectionForm, { LLMConnectionFormData } from 'components/molecules/LLMConnectionForm';
-import { getLLMConnection, updateLLMConnection, deleteLLMConnection } from 'services/llmConnections';
+import {
+  getLLMConnection,
+  updateLLMConnection,
+  deleteLLMConnection,
+} from 'services/llmConnections';
+import { embeddingLockMessage } from 'utils/embeddingLockMessage';
 import { llmConnectionsQueryKeys } from 'utils/queryKeys';
 import CircularSpinner from 'components/molecules/CircularSpinner/CircularSpinner';
+import { useToast } from 'hooks/useToast';
 
 const ViewLLMConnection = () => {
   const navigate = useNavigate();
   const { t } = useTranslation();
+  const toast = useToast();
   const { open: openDialog, close: closeDialog } = useDialog();
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
@@ -95,6 +102,17 @@ const ViewLLMConnection = () => {
     },
     onError: (error: any) => {
       console.error('Error updating LLM connection:', error);
+      // Embedding model refused or not checkable (#806): a toast, like the
+      // activation toggle; nothing was changed, so the form stays as it is
+      const embeddingMessage = embeddingLockMessage(t, error, 'notChanged');
+      if (embeddingMessage) {
+        toast.open({
+          type: ToastTypes.ERROR,
+          title: t('toast.error.title'),
+          message: embeddingMessage,
+        });
+        return;
+      }
       openDialog({
         title: t('llmConnectionForm.viewConnection.updateErrorTitle') || 'Connection Update Failed',
         content: <p>{t('llmConnectionForm.viewConnection.updateErrorMessage') || 'Failed to update LLM connection. Please try again.'}</p>,

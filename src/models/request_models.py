@@ -222,6 +222,38 @@ class EmbeddingRequest(BaseModel):
     )
 
 
+class EmbeddingLockCheckRequest(BaseModel):
+    """Check a connection's embedding model against the knowledge base lock (#806).
+
+    Without a Vault id only the declared platform/model are checked. With one, a
+    test embedding is made with the real credentials and its vector size checked.
+    """
+
+    embedding_platform: str = Field(
+        ..., description="Embedding platform key (azure, aws)"
+    )
+    embedding_model: str = Field(
+        ..., description="Embedding model from the connection form"
+    )
+    vault_uuid: Optional[str] = Field(
+        None, description="Vault id of newly entered credentials (temporary secret)"
+    )
+    existing_vault_uuid: Optional[str] = Field(
+        None,
+        description="Vault id of a saved connection whose key is kept; tested with the "
+        "embedding deployment name/endpoint below",
+    )
+    embedding_deployment_name: Optional[str] = Field(
+        None, description="Azure embedding deployment name to test"
+    )
+    embedding_target_uri: Optional[str] = Field(
+        None, description="Azure embedding endpoint to test"
+    )
+    exclude_connection_id: Optional[int] = Field(
+        None, description="Connection being edited; not compared with itself"
+    )
+
+
 class EmbeddingResponse(BaseModel):
     """Response model for embedding generation."""
 

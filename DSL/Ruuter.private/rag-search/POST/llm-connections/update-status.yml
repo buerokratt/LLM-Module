@@ -41,8 +41,38 @@ check_connection_exists:
 validate_connection_exists:
   switch:
     - condition: "${existing_connection.response.body.length > 0}"
-      next: update_connection_status
+      next: check_reactivation
   next: return_not_found
+
+# Issue #806: an inactive connection is not compared when others are created or
+# edited, so activating it must pass the same embedding model check. It tests
+# the saved credentials (real model), excluding the connection itself.
+check_reactivation:
+  switch:
+    - condition: ${connection_status === "active" && existing_connection.response.body[0].connectionStatus !== "active"}
+      next: check_embedding_lock
+  next: update_connection_status
+
+check_embedding_lock:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_LLM_SERVICE]/knowledge-base/check-embedding"
+    body:
+      embedding_platform: ${existing_connection.response.body[0].embeddingPlatform || ""}
+      embedding_model: ${existing_connection.response.body[0].embeddingModel || ""}
+      existing_vault_uuid: ${existing_connection.response.body[0].vaultUuid || ""}
+      exclude_connection_id: ${connection_id}
+  result: embedding_lock_result
+  next: validate_embedding_lock
+  on_error: return_embedding_check_unavailable
+
+validate_embedding_lock:
+  switch:
+    - condition: ${embedding_lock_result.response.body != null && embedding_lock_result.response.body.allowed === true}
+      next: update_connection_status
+    - condition: ${embedding_lock_result.response.body != null && embedding_lock_result.response.body.allowed === false}
+      next: return_embedding_model_locked
+  next: return_embedding_check_unavailable
 
 update_connection_status:
   call: http.post
@@ -83,6 +113,26 @@ return_invalid_status:
 return_update_failed:
   status: 500
   return: "error: failed to update connection status"
+  next: end
+
+# 400/500: Ruuter only passes the codes in application.httpCodesAllowList.
+return_embedding_model_locked:
+  status: 400
+  return: ${embedding_lock_result.response.body}
+  next: end
+
+# Fail closed: without the check the connection is not activated.
+return_embedding_check_unavailable:
+  assign:
+    embedding_check_unavailable:
+      allowed: false
+      check_unavailable: true
+      reason: "The embedding model could not be checked against the knowledge base. Please try again later."
+  next: return_embedding_check_unavailable_response
+
+return_embedding_check_unavailable_response:
+  status: 500
+  return: ${embedding_check_unavailable}
   next: end
 
 return_unauthorized:

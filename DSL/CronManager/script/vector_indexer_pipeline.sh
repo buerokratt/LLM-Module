@@ -105,6 +105,11 @@ elif [ $PYTHON_EXIT_CODE -eq 130 ]; then
 elif [ $PYTHON_EXIT_CODE -eq 3 ]; then
     echo "[SKIPPED] Existing indexer run for this dataset was already in progress"
     exit 0
+elif [ $PYTHON_EXIT_CODE -eq 4 ]; then
+    # Not a failure: nothing can be indexed until an LLM connection exists.
+    # The hash is left unsaved so the next hourly sync retries.
+    echo "[SKIPPED] No active LLM connection (production or testing) - agency data hash not updated, will retry on next sync"
+    exit 0
 else
     echo "[ERROR] Vector indexer failed with exit code: $PYTHON_EXIT_CODE"
     exit $PYTHON_EXIT_CODE

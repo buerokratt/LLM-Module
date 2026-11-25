@@ -56,7 +56,9 @@ check_ckb_response:
   switch:
     - condition: ${importResult.response.body == null || importResult.response.body.response == null || importResult.response.body.response == "Internal Server Error" || importResult.response.body.response.response == null}
       next: return_ckb_error_response
-    - condition: ${importResult.response.body.response.response.length === 0}
+    # CKB answered but has nothing to index: no rows, or a row without a
+    # dataset URL (the indexer pipeline would reject it and fail every hour).
+    - condition: ${importResult.response.body.response.response.length === 0 || !importResult.response.body.response.response[0].signedS3Url}
       next: return_no_ckb_data
   next: assign_import_agency_data
 
@@ -68,12 +70,15 @@ return_ckb_error_response:
       error: "CKB_ERROR"
   next: return_bad_request
 
+# Empty CKB is not a failure: nothing is indexed and the hash is left as is,
+# so the sync runs again normally once CKB has content.
 return_no_ckb_data:
+  log: "CKB returned no content - nothing to index, skipping vector indexing"
   assign:
-    error_response:
-      success: false
-      message: "Data synchronization failed - CKB agency data not found"
-  next: return_ckb_data_error
+    response_data:
+      success: true
+      message: "CKB returned no content - nothing to index"
+  next: return_no_ckb_content
 
 assign_import_agency_data:
   assign:
@@ -154,7 +159,7 @@ return_no_sync_needed:
   return: ${response_data}
   next: end
 
-return_ckb_data_error:
-  status: 404
-  return: ${error_response}
+return_no_ckb_content:
+  status: 200
+  return: ${response_data}
   next: end

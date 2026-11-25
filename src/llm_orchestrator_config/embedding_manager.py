@@ -202,7 +202,114 @@ class EmbeddingManager:
         # This should never be reached, but makes pyright happy
         raise RuntimeError("Unexpected error in retry logic")
 
-    def _create_dspy_embedder(self, config: Dict[str, Any]) -> dspy.Embedder:
+    def wait_until_embedding_secret_written(
+        self, connection_id: str, wait_seconds: float = 30.0
+    ) -> bool:
+        """Wait until a connection's embedding secret exists in Vault.
+
+        Only checks that it was written, not that it is valid: CronManager writes
+        the LLM secret first and the embedding secret last, so once it exists the
+        store is finished and the secrets can safely be deleted.
+
+        Returns:
+            True when it appeared, False after ``wait_seconds``.
+        """
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            for provider in ("azure_openai", "aws_bedrock"):
+                try:
+                    if self.vault_client.get_secret(
+                        f"embeddings/connections/{provider}/{connection_id}"
+                    ):
+                        return True
+                except Exception as e:
+                    logger.debug(f"Waiting for embedding secret {connection_id}: {e}")
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(1.0)
+
+    def wait_for_embedding_secret(
+        self, connection_id: str, wait_seconds: float = 30.0
+    ) -> tuple[str, str]:
+        """Wait until a connection's embedding secret can be read from Vault.
+
+        CronManager stores secrets asynchronously, LLM secret first and the
+        embedding secret last, so once this returns the whole store is finished
+        and the secret can safely be deleted.
+
+        Returns:
+            (provider_name, model_name) of the embedding secret
+
+        Raises:
+            Exception: The secret did not appear within ``wait_seconds``.
+        """
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            try:
+                return self.config_loader.resolve_embedding_model(
+                    "testing", connection_id
+                )
+            # Not `except ConfigurationError`: the loader imports that class as
+            # llm_orchestrator_config.exceptions and this module as
+            # src.llm_orchestrator_config.exceptions, which Python treats as two
+            # different classes, so it would never match and nothing would wait.
+            except Exception:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(1.0)
+
+    def measure_test_embedding(
+        self,
+        connection_id: str,
+        overrides: Optional[Dict[str, str]] = None,
+        wait_seconds: float = 30.0,
+    ) -> Dict[str, Any]:
+        """Embed one short text with a connection's real credentials.
+
+        Used by the knowledge base embedding lock (issue #806) to find the model
+        that is really behind a connection: on Azure the deployment name decides
+        it, not the dropdown, so the vector size is what tells.
+
+        Args:
+            connection_id: Vault UUID holding the embedding credentials. The GUI
+                stores them through CronManager, which returns before the secret
+                is written, so a missing secret is retried for ``wait_seconds``.
+            overrides: Non-secret Azure fields (``deployment_name``,
+                ``endpoint``) to test instead of the stored ones, for edits that
+                keep the saved key.
+            wait_seconds: How long to wait for the secret to appear in Vault.
+
+        Returns:
+            ``{"provider", "model", "vector_dimensions"}``
+
+        Raises:
+            ConfigurationError: Secret not found in time, or the test embedding failed.
+        """
+        provider_name, model_name = self.wait_for_embedding_secret(
+            connection_id, wait_seconds
+        )
+
+        config: Dict[str, Any] = self.config_loader.get_embedding_provider_config(
+            provider_name, model_name, "testing", connection_id
+        )
+        config.update({key: value for key, value in (overrides or {}).items() if value})
+
+        # Not cached: a cached result for the same text could hide bad credentials.
+        embedder = self._create_dspy_embedder(config, caching=False)
+        try:
+            vectors = embedder(["Knowledge base embedding model check"])
+        except Exception as e:
+            raise ConfigurationError(f"Test embedding failed: {e}") from e
+
+        return {
+            "provider": provider_name,
+            "model": model_name,
+            "vector_dimensions": int(np.asarray(vectors).shape[-1]),
+        }
+
+    def _create_dspy_embedder(
+        self, config: Dict[str, Any], caching: bool = True
+    ) -> dspy.Embedder:
         """Create DSPy embedder from vault configuration."""
         try:
             # For Azure OpenAI
@@ -215,19 +322,19 @@ class EmbeddingManager:
                     api_base=config["endpoint"],  # or extract base URL
                     api_version=config["api_version"],
                     batch_size=50,
-                    caching=True,
+                    caching=caching,
                 )
 
             # For OpenAI
             elif "openai" in config.get("endpoint", "").lower():
                 return dspy.Embedder(
-                    model=f"openai/{config['model']}", batch_size=50, caching=True
+                    model=f"openai/{config['model']}", batch_size=50, caching=caching
                 )
 
             # For AWS Bedrock
             else:
                 return dspy.Embedder(
-                    model=f"bedrock/{config['model']}", batch_size=50, caching=True
+                    model=f"bedrock/{config['model']}", batch_size=50, caching=caching
                 )
 
         except Exception as e:

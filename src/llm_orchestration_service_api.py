@@ -55,6 +55,7 @@ from models.request_models import (
     TestOrchestrationResponse,
     EmbeddingRequest,
     EmbeddingResponse,
+    EmbeddingLockCheckRequest,
     ContextGenerationRequest,
     ContextGenerationResponse,
     EmbeddingErrorResponse,
@@ -816,6 +817,58 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
                 "error": "Embedding creation failed",
                 "retry_after": 30,
             },
+        ) from e
+
+
+@app.get("/knowledge-base/embedding-model")
+async def get_knowledge_base_embedding_model() -> Dict[str, Any]:
+    """The embedding model that built the knowledge base (issue #806).
+
+    Read from the knowledge base itself (Qdrant). ``locked`` is false while it
+    is empty; then any approved model may be used and the first index locks it.
+    """
+    try:
+        return await asyncio.to_thread(
+            app.state.orchestration_service.get_knowledge_base_embedding_model
+        )
+    except Exception as e:
+        error_id = generate_error_id()
+        log_error_with_context(
+            logger, error_id, "knowledge_base_embedding_model_endpoint", None, e
+        )
+        raise HTTPException(
+            status_code=503, detail="Could not read the knowledge base"
+        ) from e
+
+
+@app.post("/knowledge-base/check-embedding")
+async def check_embedding_lock(request: EmbeddingLockCheckRequest) -> Dict[str, Any]:
+    """Check a connection's embedding model against the locked one (issue #806).
+
+    Returns 200 with ``allowed`` and, when blocked, a ``reason`` meant for the
+    user. 503 means the check itself could not run; callers must then not save.
+    Runs in a worker thread: it may wait for a secret that is still being stored.
+    """
+    try:
+        return await asyncio.to_thread(
+            app.state.orchestration_service.check_embedding_lock, request
+        )
+    except Exception as e:
+        error_id = generate_error_id()
+        log_error_with_context(
+            logger,
+            error_id,
+            "check_embedding_lock_endpoint",
+            None,
+            e,
+            {
+                "embedding_platform": request.embedding_platform,
+                "embedding_model": request.embedding_model,
+            },
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="The embedding model could not be checked against the knowledge base",
         ) from e
 
 

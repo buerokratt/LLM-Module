@@ -13,6 +13,7 @@ export const llmConnectionsEndpoints = {
   UPDATE_LLM_CONNECTION_STATUS: (): string => `/llm-connections/update-status`,
   DELETE_LLM_CONNECTION: (): string => `/llm-connections/delete`,
   CHECK_BUDGET_STATUS: (): string => `/llm-connections/cost/check`,
+  CHECK_EMBEDDING: (): string => `/llm-connections/check-embedding`,
 }
 
 export const inferenceEndpoints = {

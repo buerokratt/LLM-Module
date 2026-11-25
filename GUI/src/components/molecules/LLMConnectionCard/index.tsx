@@ -6,7 +6,12 @@ import './LLMConnectionCard.scss';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { Switch } from 'components/FormElements';
-import { updateLLMConnectionStatus } from 'services/llmConnections';
+import {
+  updateLLMConnectionStatus,
+  EmbeddingModelLockedError,
+  EmbeddingCheckUnavailableError,
+} from 'services/llmConnections';
+import { embeddingLockMessage } from 'utils/embeddingLockMessage';
 import { useToast } from 'hooks/useToast';
 import { ToastTypes } from 'enums/commonEnums';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -93,12 +98,15 @@ const LLMConnectionCard: FC<PropsWithChildren<LLMConnectionCardProps>> = ({
         onStatusChange(llmConnectionId, variables.status === 'active');
       }
     },
-    onError: (error: AxiosError) => {
+    onError: (error: AxiosError | EmbeddingModelLockedError | EmbeddingCheckUnavailableError) => {
       console.error('Error updating connection status:', error);
+      // Activation refused by the embedding model lock (#806): one short, specific message
+      const message =
+        embeddingLockMessage(t, error, 'notActivated') || 'Failed to update connection status';
       toast.open({
         type: ToastTypes.ERROR,
         title: t('toast.error.title'),
-        message: 'Failed to update connection status',
+        message,
       });
     },
   });
