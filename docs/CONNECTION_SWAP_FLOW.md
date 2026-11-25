@@ -136,7 +136,7 @@ update_llm_connection:
 
 ### 3. Cache Invalidation (`POST /cache/clear`)
 
-The LLM orchestration service caches `vault_uuid` and `connection_id` in memory (via `ConnectionIdFetcher`). Without invalidation, it would keep using the old production connection's vault_uuid.
+The LLM orchestration service caches `vault_uuid` and `connection_id` in memory (via `ConnectionIdFetcher`), and keeps one loaded `LLMManager` per connection. Without invalidation, it would keep using the old production connection.
 
 ```python
 # src/llm_orchestration_service_api.py
@@ -144,6 +144,7 @@ The LLM orchestration service caches `vault_uuid` and `connection_id` in memory 
 async def clear_connection_cache():
     fetcher = get_connection_id_fetcher()
     fetcher.clear_cache()  # Clears all cached connection_id + vault_uuid entries
+    LLMManager.clear_instances()  # Drops loaded connections; next use reloads them
     return {"status": "ok"}
 ```
 
@@ -213,8 +214,11 @@ sequenceDiagram
 |-----------|------|--------------------------|
 | Add new production connection (demotes existing) | `add.yml` | Yes. Not used by the GUI: it always creates connections as testing and promotes them via `edit.yml` (see [Adding a New Connection](#adding-a-new-connection-vault-write)) |
 | Edit connection to promote testing → production | `edit.yml` | Yes |
-| Delete a connection | `delete.yml` | No (not needed — deleted connections aren't cached) |
-| Edit without environment change | `edit.yml` | No (no swap happening) |
+| Delete a connection | `delete.yml` | Yes |
+| Store credentials in Vault (create, or edit with a re-entered API key) | `store_secrets_in_vault.sh` (CronManager) | Yes, after the Vault write |
+| Edit without environment change or new credentials | `edit.yml` | No (only DB fields change; the loaded model and credentials stay valid) |
+
+The CronManager script clears the cache only after the secrets are written, so the next request reloads the connection with the new credentials. Clearing it from `edit.yml` instead would race with the asynchronous Vault write.
 
 ## Caching Behavior
 
@@ -234,6 +238,19 @@ _connection_cache: Dict[str, int | str] = {}
 - **Cleared by:** `POST /cache/clear` (called by Ruuter after swap)
 - **Thread-safe:** Uses `threading.Lock`
 
+### LLMManager Instances (Per Connection)
+
+```python
+# src/llm_orchestrator_config/llm_manager.py
+# Key: (environment, vault_uuid) → LLMManager with that connection's providers
+_instances: Dict[Tuple[str, str], LLMManager] = {}
+```
+
+- **Populated on:** First request for a connection. `LLMManager(environment, connection_id)` returns that connection's instance; without a `connection_id`, the environment's current connection is resolved from the database.
+- **Cleared by:** `POST /cache/clear` (`LLMManager.clear_instances()`). Requests already running keep the manager they hold.
+- **Per request:** each orchestration request runs in `request_llm_scope()`. Once its components are built, `activate_for_request()` makes the request's LM the DSPy model for the rest of the request, including input/output guardrails and streaming. `use_task_local()` also prefers it, so components created once (for example the tool classifier) use the current request's connection.
+- **Reloaded credentials:** each instance has its own `ConfigurationLoader` and `SecretResolver`, so a reloaded connection reads its credentials from Vault again.
+
 ### SecretResolver Cache (TTL-Based)
 
 ```python
@@ -245,7 +262,7 @@ _cache: Dict[str, CachedSecret] = {}
 - **Populated on:** Successful Vault read
 - **Evicted after:** 5-minute TTL
 - **Background refresh:** Expired entries are refreshed asynchronously
-- **Not cleared by `/cache/clear`** — addressed by TTL expiry
+- **Not cleared by `/cache/clear`** — each `LLMManager` has its own resolver, so dropping the managers also drops their cached secrets
 
 ### Why Two Caches?
 

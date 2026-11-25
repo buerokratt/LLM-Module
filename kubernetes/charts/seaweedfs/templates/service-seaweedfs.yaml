@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: "{{ .Values.release_name }}"
+spec:
+  selector:
+    app: "{{ .Values.release_name }}"
+  # Cluster-internal only. The filer has no auth, so there is no Ingress.
+  ports:
+    - port: {{ .Values.ports.s3 }}
+      targetPort: s3
+      protocol: TCP
+      name: s3
+    - port: {{ .Values.ports.filer }}
+      targetPort: filer
+      protocol: TCP
+      name: filer

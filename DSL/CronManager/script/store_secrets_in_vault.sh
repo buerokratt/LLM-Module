@@ -547,3 +547,19 @@ fi
 unset PRIVATE_KEY_CACHE
 
 log "=== Vault secrets storage completed successfully ==="
+
+# Make the LLM orchestration service reload the connection, so new or changed
+# credentials (e.g. an edited deployment name or key) apply without a restart.
+# Runs after the Vault write; failing here does not fail the secret storage.
+if [ -n "$RAG_SEARCH_LLM_SERVICE" ]; then
+    # "|| true": the script runs with set -e, and a failed curl must not abort it.
+    cache_clear_status=$(curl -s -o /dev/null --max-time 10 -w "%{http_code}" \
+        -X POST "$RAG_SEARCH_LLM_SERVICE/cache/clear" || true)
+    if [ "$cache_clear_status" = "200" ]; then
+        log "LLM connection cache cleared"
+    else
+        log "WARNING: Failed to clear LLM connection cache (HTTP $cache_clear_status)"
+    fi
+else
+    log "WARNING: RAG_SEARCH_LLM_SERVICE not set; LLM connection cache not cleared"
+fi

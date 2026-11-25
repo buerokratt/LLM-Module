@@ -32,13 +32,13 @@ def _make_round(
 
 
 # ---------------------------------------------------------------------------
-# Redis available with rounds
+# Dragonfly available with rounds
 # ---------------------------------------------------------------------------
 
 
-class TestGetConversationHistoryRedisRounds:
+class TestGetConversationHistoryDragonflyRounds:
     @pytest.mark.asyncio
-    async def test_returns_redis_rounds_as_conversation_items(self) -> None:
+    async def test_returns_dragonfly_rounds_as_conversation_items(self) -> None:
         """Two ConversationItems (user + bot) per stored round."""
         round_ = _make_round()
         state = ConversationHistoryState(chat_id="c1", rounds=[round_], summary=None)
@@ -56,8 +56,8 @@ class TestGetConversationHistoryRedisRounds:
         assert summary is None
 
     @pytest.mark.asyncio
-    async def test_ignores_fallback_when_redis_has_rounds(self) -> None:
-        """Fallback list is not returned when Redis has valid rounds."""
+    async def test_ignores_fallback_when_dragonfly_has_rounds(self) -> None:
+        """Fallback list is not returned when Dragonfly has valid rounds."""
         round_ = _make_round()
         state = ConversationHistoryState(chat_id="c1", rounds=[round_], summary=None)
         store = AsyncMock()
@@ -71,7 +71,7 @@ class TestGetConversationHistoryRedisRounds:
 
     @pytest.mark.asyncio
     async def test_returns_summary_alongside_rounds(self) -> None:
-        """Redis summary is returned as the second tuple element."""
+        """Dragonfly summary is returned as the second tuple element."""
         round_ = _make_round()
         state = ConversationHistoryState(
             chat_id="c1",
@@ -120,13 +120,13 @@ class TestGetConversationHistoryRedisRounds:
 
 
 # ---------------------------------------------------------------------------
-# Redis empty → fallback
+# Dragonfly empty → fallback
 # ---------------------------------------------------------------------------
 
 
-class TestGetConversationHistoryRedisEmpty:
+class TestGetConversationHistoryDragonflyEmpty:
     @pytest.mark.asyncio
-    async def test_falls_back_when_redis_returns_no_rounds(self) -> None:
+    async def test_falls_back_when_dragonfly_returns_no_rounds(self) -> None:
         """Empty rounds list → fallback returned with summary=None."""
         state = ConversationHistoryState(
             chat_id="c1", rounds=[], summary="stale summary"
@@ -143,16 +143,16 @@ class TestGetConversationHistoryRedisEmpty:
 
 
 # ---------------------------------------------------------------------------
-# Redis unavailable → graceful degradation
+# Dragonfly unavailable → graceful degradation
 # ---------------------------------------------------------------------------
 
 
-class TestGetConversationHistoryRedisUnavailable:
+class TestGetConversationHistoryDragonflyUnavailable:
     @pytest.mark.asyncio
     async def test_falls_back_when_get_context_raises(self) -> None:
         """Any exception from get_context → fallback with summary=None, no propagation."""
         store = AsyncMock()
-        store.get_context = AsyncMock(side_effect=RuntimeError("Redis down"))
+        store.get_context = AsyncMock(side_effect=RuntimeError("Dragonfly down"))
 
         fallback = [_make_item(msg="fallback on error")]
         history, summary = await get_conversation_history("c1", store, fallback)
@@ -163,7 +163,7 @@ class TestGetConversationHistoryRedisUnavailable:
 
     @pytest.mark.asyncio
     async def test_falls_back_when_store_is_none(self) -> None:
-        """When store=None, fallback is returned immediately without calling Redis."""
+        """When store=None, fallback is returned immediately without calling Dragonfly."""
         fallback = [_make_item(role="bot", msg="bot message")]
         history, summary = await get_conversation_history("c1", None, fallback)
 
@@ -173,7 +173,7 @@ class TestGetConversationHistoryRedisUnavailable:
 
     @pytest.mark.asyncio
     async def test_does_not_raise_on_connection_error(self) -> None:
-        """ConnectionError from Redis is caught and does not propagate."""
+        """ConnectionError from Dragonfly is caught and does not propagate."""
         store = AsyncMock()
         store.get_context = AsyncMock(side_effect=ConnectionError("refused"))
 

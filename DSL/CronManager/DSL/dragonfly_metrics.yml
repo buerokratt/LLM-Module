@@ -1,0 +1,4 @@
+dragonfly_metrics:
+  trigger: "30 * * * * ?" # Every minute (at :30, offset from the queue-depth job): log Dragonfly INFO metrics to Loki
+  type: exec
+  command: "/app/scripts/dragonfly_metrics.sh"

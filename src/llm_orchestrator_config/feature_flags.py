@@ -53,7 +53,7 @@ class FeatureFlags:
     #            are attempted when the query is detected as multi-intent
     MULTI_INTENT_ENABLED = os.getenv("MULTI_INTENT_ENABLED", "true").lower() == "true"
 
-    # ATC Response Cache — two-tier Redis cache for API Tool Calling responses
+    # ATC Response Cache — two-tier Dragonfly cache for API Tool Calling responses
     # When True: successful ATC API responses are cached and follow-up queries are
     #            served from cache where possible (L1 exact hit, L2 follow-up routing)
     # When False: all cache reads and writes are skipped; normal ATC flow unchanged

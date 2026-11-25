@@ -1,0 +1,39 @@
+release_name: "seaweedfs"
+
+image:
+  registry: "docker.io"
+  repository: "chrislusf/seaweedfs"
+  tag: "4.47"
+
+replicas: 1
+
+resources:
+  requests:
+    memory: "512Mi"
+    cpu: "250m"
+  limits:
+    memory: "1Gi"
+    cpu: "500m"
+
+# S3 login. Set real values at deploy time, e.g.
+#   --set seaweedfs.auth.accessKey=... --set seaweedfs.auth.secretKey=...
+# Langfuse, S3-Ferry and CronManager (DVC) must all use these same keys.
+auth:
+  accessKey: "<SET_ME>"
+  secretKey: "<SET_ME>"
+
+# Created by the bucket-init Job on install/upgrade
+bucket: "rag-search"
+
+volumes:
+  data:
+    # MinIO's PVC was 5Gi; local already holds 8.5 GB of Langfuse traces
+    size: "20Gi"
+
+ports:
+  s3: 8333
+  master: 9333
+  filer: 8888
+
+init:
+  image: "docker.io/rclone/rclone:1.68.2"

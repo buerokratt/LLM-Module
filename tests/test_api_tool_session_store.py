@@ -31,7 +31,7 @@ def _make_session(**kwargs) -> APIToolSession:
     return APIToolSession(**defaults)
 
 
-def _make_redis_mock() -> AsyncMock:
+def _make_dragonfly_mock() -> AsyncMock:
     mock = AsyncMock()
     mock.get = AsyncMock(return_value=None)
     mock.set = AsyncMock()
@@ -181,11 +181,12 @@ class TestSessionStoreGet:
     @pytest.mark.asyncio
     async def test_get_returns_none_when_key_missing(self):
         store = APIToolSessionStore()
-        redis_mock = _make_redis_mock()
-        redis_mock.get = AsyncMock(return_value=None)
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.get = AsyncMock(return_value=None)
 
         with patch(
-            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             result = await store.get("missing-chat")
 
@@ -195,11 +196,12 @@ class TestSessionStoreGet:
     async def test_get_returns_session_when_key_exists(self):
         store = APIToolSessionStore()
         session = _make_session()
-        redis_mock = _make_redis_mock()
-        redis_mock.get = AsyncMock(return_value=session.model_dump_json())
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.get = AsyncMock(return_value=session.model_dump_json())
 
         with patch(
-            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             result = await store.get(session.chat_id)
 
@@ -208,9 +210,11 @@ class TestSessionStoreGet:
         assert result.state == session.state
 
     @pytest.mark.asyncio
-    async def test_get_returns_none_when_redis_unavailable(self):
+    async def test_get_returns_none_when_dragonfly_unavailable(self):
         store = APIToolSessionStore()
-        with patch("utils.api_tool_session_store.get_redis_client", return_value=None):
+        with patch(
+            "utils.api_tool_session_store.get_dragonfly_client", return_value=None
+        ):
             result = await store.get("any-chat")
 
         assert result is None
@@ -223,27 +227,30 @@ class TestSessionStoreGet:
 
 class TestSessionStoreSave:
     @pytest.mark.asyncio
-    async def test_save_calls_redis_set_with_correct_key_and_ttl(self):
+    async def test_save_calls_dragonfly_set_with_correct_key_and_ttl(self):
         store = APIToolSessionStore()
         session = _make_session()
-        redis_mock = _make_redis_mock()
+        dragonfly_mock = _make_dragonfly_mock()
 
         with patch(
-            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             await store.save(session)
 
-        redis_mock.set.assert_awaited_once()
-        call_args = redis_mock.set.call_args
+        dragonfly_mock.set.assert_awaited_once()
+        call_args = dragonfly_mock.set.call_args
         assert call_args[0][0] == _key(session.chat_id)
         assert call_args[1]["ex"] == 1800
 
     @pytest.mark.asyncio
-    async def test_save_skips_when_redis_unavailable(self):
+    async def test_save_skips_when_dragonfly_unavailable(self):
         store = APIToolSessionStore()
         session = _make_session()
 
-        with patch("utils.api_tool_session_store.get_redis_client", return_value=None):
+        with patch(
+            "utils.api_tool_session_store.get_dragonfly_client", return_value=None
+        ):
             # Should not raise
             await store.save(session)
 
@@ -276,11 +283,12 @@ class TestSessionStoreUpdate:
         pipe_mock.__aenter__ = AsyncMock(return_value=pipe_mock)
         pipe_mock.__aexit__ = AsyncMock(return_value=False)
 
-        redis_mock = _make_redis_mock()
-        redis_mock.pipeline = MagicMock(return_value=pipe_mock)
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.pipeline = MagicMock(return_value=pipe_mock)
 
         with patch(
-            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             result = await store.update(
                 original.chat_id,
@@ -305,11 +313,12 @@ class TestSessionStoreUpdate:
         pipe_mock.__aenter__ = AsyncMock(return_value=pipe_mock)
         pipe_mock.__aexit__ = AsyncMock(return_value=False)
 
-        redis_mock = _make_redis_mock()
-        redis_mock.pipeline = MagicMock(return_value=pipe_mock)
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.pipeline = MagicMock(return_value=pipe_mock)
 
         with patch(
-            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             result = await store.update("ghost-chat", turn_count=3)
 
@@ -330,11 +339,12 @@ class TestSessionStoreUpdate:
         pipe_mock.__aenter__ = AsyncMock(return_value=pipe_mock)
         pipe_mock.__aexit__ = AsyncMock(return_value=False)
 
-        redis_mock = _make_redis_mock()
-        redis_mock.pipeline = MagicMock(return_value=pipe_mock)
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.pipeline = MagicMock(return_value=pipe_mock)
 
         with patch(
-            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             await store.update(session.chat_id, state="ready")
 
@@ -351,21 +361,24 @@ class TestSessionStoreUpdate:
 
 class TestSessionStoreDelete:
     @pytest.mark.asyncio
-    async def test_delete_calls_redis_delete(self):
+    async def test_delete_calls_dragonfly_delete(self):
         store = APIToolSessionStore()
-        redis_mock = _make_redis_mock()
+        dragonfly_mock = _make_dragonfly_mock()
 
         with patch(
-            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             await store.delete("chat-to-delete")
 
-        redis_mock.delete.assert_awaited_once_with(_key("chat-to-delete"))
+        dragonfly_mock.delete.assert_awaited_once_with(_key("chat-to-delete"))
 
     @pytest.mark.asyncio
-    async def test_delete_skips_when_redis_unavailable(self):
+    async def test_delete_skips_when_dragonfly_unavailable(self):
         store = APIToolSessionStore()
-        with patch("utils.api_tool_session_store.get_redis_client", return_value=None):
+        with patch(
+            "utils.api_tool_session_store.get_dragonfly_client", return_value=None
+        ):
             await store.delete("any-chat")  # Should not raise
 
 
@@ -378,11 +391,12 @@ class TestSessionStoreExists:
     @pytest.mark.asyncio
     async def test_exists_returns_true_when_key_present(self):
         store = APIToolSessionStore()
-        redis_mock = _make_redis_mock()
-        redis_mock.exists = AsyncMock(return_value=1)
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.exists = AsyncMock(return_value=1)
 
         with patch(
-            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             result = await store.exists("chat-123")
 
@@ -391,20 +405,23 @@ class TestSessionStoreExists:
     @pytest.mark.asyncio
     async def test_exists_returns_false_when_key_absent(self):
         store = APIToolSessionStore()
-        redis_mock = _make_redis_mock()
-        redis_mock.exists = AsyncMock(return_value=0)
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.exists = AsyncMock(return_value=0)
 
         with patch(
-            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             result = await store.exists("chat-123")
 
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_exists_returns_false_when_redis_unavailable(self):
+    async def test_exists_returns_false_when_dragonfly_unavailable(self):
         store = APIToolSessionStore()
-        with patch("utils.api_tool_session_store.get_redis_client", return_value=None):
+        with patch(
+            "utils.api_tool_session_store.get_dragonfly_client", return_value=None
+        ):
             result = await store.exists("any-chat")
 
         assert result is False
@@ -417,49 +434,53 @@ class TestSessionStoreExists:
 
 class TestSessionStoreErrorHandling:
     @pytest.mark.asyncio
-    async def test_get_returns_none_on_redis_error(self):
+    async def test_get_returns_none_on_dragonfly_error(self):
         store = APIToolSessionStore()
-        redis_mock = _make_redis_mock()
-        redis_mock.get = AsyncMock(side_effect=ConnectionError("timeout"))
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.get = AsyncMock(side_effect=ConnectionError("timeout"))
 
         with patch(
-            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             result = await store.get("chat-xyz")
 
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_save_does_not_raise_on_redis_error(self):
+    async def test_save_does_not_raise_on_dragonfly_error(self):
         store = APIToolSessionStore()
         session = _make_session()
-        redis_mock = _make_redis_mock()
-        redis_mock.set = AsyncMock(side_effect=ConnectionError("timeout"))
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.set = AsyncMock(side_effect=ConnectionError("timeout"))
 
         with patch(
-            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             await store.save(session)  # Should not raise
 
     @pytest.mark.asyncio
-    async def test_delete_does_not_raise_on_redis_error(self):
+    async def test_delete_does_not_raise_on_dragonfly_error(self):
         store = APIToolSessionStore()
-        redis_mock = _make_redis_mock()
-        redis_mock.delete = AsyncMock(side_effect=ConnectionError("timeout"))
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.delete = AsyncMock(side_effect=ConnectionError("timeout"))
 
         with patch(
-            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             await store.delete("chat-xyz")  # Should not raise
 
     @pytest.mark.asyncio
-    async def test_exists_returns_false_on_redis_error(self):
+    async def test_exists_returns_false_on_dragonfly_error(self):
         store = APIToolSessionStore()
-        redis_mock = _make_redis_mock()
-        redis_mock.exists = AsyncMock(side_effect=ConnectionError("timeout"))
+        dragonfly_mock = _make_dragonfly_mock()
+        dragonfly_mock.exists = AsyncMock(side_effect=ConnectionError("timeout"))
 
         with patch(
-            "utils.api_tool_session_store.get_redis_client", return_value=redis_mock
+            "utils.api_tool_session_store.get_dragonfly_client",
+            return_value=dragonfly_mock,
         ):
             result = await store.exists("chat-xyz")
 

@@ -1,6 +1,6 @@
 """Detect a bare "why?" follow-up to a guardrail-violation message.
 
-Blocked exchanges are intentionally never persisted to Redis conversation
+Blocked exchanges are intentionally never persisted to Dragonfly conversation
 history (see ``_HISTORY_EXCLUDED_MESSAGES`` in ``llm_orchestration_service.py``),
 so the pipeline itself has no memory of a prior block. Instead of adding
 server-side state, this checks the client-resent ``conversationHistory`` on

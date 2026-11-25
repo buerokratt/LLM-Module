@@ -1127,7 +1127,7 @@ http_client:
 #### 3. Advanced Caching
 - **Multi-Level Cache**: L1 (embeddings) + L2 (search results)
 - **Semantic Similarity Cache**: Cache based on query similarity
-- **Distributed Cache**: Redis for multi-instance deployments
+- **Distributed Cache**: Dragonfly for multi-instance deployments
 
 #### 4. Query Optimization
 - **Query Expansion**: Automatic synonym expansion

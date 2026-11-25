@@ -1,7 +1,79 @@
-# Redis Session Store — Usage Guide
+# Dragonfly Session Store — Usage Guide
 
 The `APIToolSessionStore` provides simple async CRUD for persisting agentic loop state
 across multiple HTTP requests, keyed by `chat_id` with a 30-minute sliding TTL.
+
+> **Backend:** all stores run on **Dragonfly** (`dragonfly:6379`) and connect through
+> `src/utils/dragonfly_client.py`, configured by the `DRAGONFLY_*` settings below. Dragonfly
+> speaks the Redis wire protocol, so that module uses the redis-py client library; it is
+> the only app module that imports it.
+
+---
+
+## Backend and keyspace
+
+| | Value |
+|---|---|
+| Server | Dragonfly `v2.0.2` (Compose service and Helm chart `dragonfly`) |
+| App database | **db 1** (`DRAGONFLY_SESSION_DB`; an empty value also falls back to 1) |
+| Langfuse | **db 0** (its BullMQ job queues); never shared with app keys |
+| Optional key prefix | `DRAGONFLY_KEY_PREFIX` (default empty). Only needed if the app ever has to share db 0 with Langfuse (Dragonfly cluster mode). |
+
+## Keys and TTLs
+
+All app keys go through `dragonfly_key()` in `src/utils/dragonfly_client.py`, which prepends
+`DRAGONFLY_KEY_PREFIX`.
+
+| Key | Store | Content | TTL |
+|---|---|---|---|
+| `session:{chat_id}` | `APIToolSessionStore` | API tool-calling session | 30 min, sliding (reset on `save`/`update`) |
+| `conv:{chat_id}` | `ConversationHistoryStore` | Last 10 conversation rounds | 30 min, sliding (reset on `save_round`) |
+| `conv:summary:{chat_id}` | `ConversationHistoryStore` | Incremental summary of older rounds | 30 min, kept in sync with `conv:` |
+| `atc:cache:{chat_id}:{api_name}:{param_hash}` | `ATCCacheStore` | L1 cached API response | 30 min (`ATC_CACHE_DEFAULT_TTL_SECONDS`) |
+| `atc:last:{chat_id}` | `ATCCacheStore` | L2 last-call context for follow-ups | 30 min, sliding |
+
+Every key expires, so the store never grows without bound. Dragonfly never evicts
+(`noeviction`): if `maxmemory` is reached it refuses writes, which the
+`dragonfly-memory-*` alerts warn about.
+
+## Client settings
+
+Set in `.env` / `env.example` and read by `src/utils/dragonfly_client.py`:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DRAGONFLY_HOST` | `dragonfly` | Store hostname |
+| `DRAGONFLY_PORT` | `6379` | Store port |
+| `DRAGONFLY_PASSWORD` | — | Password (Kubernetes: Secret `dragonfly-secrets`, key `DRAGONFLY_PASSWORD`) |
+| `DRAGONFLY_SESSION_DB` | `1` | App database |
+| `DRAGONFLY_KEY_PREFIX` | empty | Optional prefix for all app keys |
+| `DRAGONFLY_CONNECT_TIMEOUT` | `2` (seconds) | Give up connecting after this long |
+| `DRAGONFLY_SOCKET_TIMEOUT` | `3` (seconds) | Give up waiting for a reply after this long |
+| `DRAGONFLY_MAX_CONNECTIONS` | `100` | Connection pool limit |
+| `DRAGONFLY_TLS_*` | TLS off | Optional TLS and client certificates |
+
+The client also uses `health_check_interval=30` and `retry_on_timeout=True` (one retry).
+Invalid or empty numeric values fall back to the defaults with a warning.
+
+## Fail-open behaviour
+
+The stores never let a store problem break a chat. Every method catches errors
+(timeouts, lost connections, `OOM` write rejections) and returns a safe fallback:
+
+| Store | Read methods return | Write methods |
+|---|---|---|
+| `APIToolSessionStore` | `get` / `update` → `None`, `exists` → `False` | `save`, `delete` → log and continue |
+| `ConversationHistoryStore` | `get_history` → `[]`, `get_summary` → `None` | `save_round`, `save_summary` → log and continue |
+| `ATCCacheStore` | `get_l1` / `get_l2` → `None` (cache miss) | `set_l1`, `set_l2`, `invalidate_l2` → log and continue |
+
+- If the store is unreachable at startup, the service still starts with the stores set
+  to `None`; chats work without history, sessions or cache.
+- With the timeouts above, a hung store adds at most a few seconds to a request instead
+  of blocking it.
+- `/health` reports `dragonfly_session_store` as `connected`, `disconnected` or
+  `not_configured`, and logs a warning when it is not connected (Grafana alert
+  "LLM service lost its Dragonfly connection").
+- These behaviours are covered by `tests/test_store_failure_modes.py`.
 
 ---
 
@@ -14,11 +86,11 @@ the FastAPI `Request` object.
 session_store = request.app.state.session_store  # APIToolSessionStore | None
 ```
 
-Always guard against `None` — the service starts even if Redis is down:
+Always guard against `None` — the service starts even if Dragonfly is down:
 
 ```python
 if session_store is None:
-    # Redis unavailable, handle gracefully (e.g. fall back, log warning)
+    # Dragonfly unavailable, handle gracefully (e.g. fall back, log warning)
     ...
 ```
 
@@ -179,4 +251,4 @@ else:
 | `turn_count` | `int` | `0` | Number of turns elapsed |
 | `max_turns` | `int` | `5` | Abandon session after this many turns |
 
-**Redis key:** `session:{chat_id}` — **TTL:** 30 minutes, sliding (reset on every `save`/`update`)
+**Key:** `session:{chat_id}` in db 1 (with `DRAGONFLY_KEY_PREFIX` if set) — **TTL:** 30 minutes, sliding (reset on every `save`/`update`)

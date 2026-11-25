@@ -39,6 +39,14 @@ delete_llm_connection:
     body:
       connection_id: ${Number(connection_id)}
   result: delete_result
+  next: clear_llm_cache
+
+# Drop the deleted connection from the LLM orchestration service's cache
+clear_llm_cache:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_LLM_CACHE_CLEAR]"
+  result: cache_clear_result
   next: return_success
 
 return_success:

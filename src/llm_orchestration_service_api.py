@@ -13,10 +13,10 @@ import uvicorn
 
 from llm_orchestration_service import LLMOrchestrationService
 from llm_orchestrator_config.llm_manager import LLMManager
-from src.utils.redis_client import (
-    init_redis_client,
-    close_redis_client,
-    check_redis_health,
+from src.utils.dragonfly_client import (
+    init_dragonfly_client,
+    close_dragonfly_client,
+    check_dragonfly_health,
 )
 from src.utils.api_tool_session_store import APIToolSessionStore
 from src.utils.conversation_history_store import ConversationHistoryStore
@@ -103,12 +103,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"Failed to initialize LLM Orchestration Service: {e}")
         raise
 
-    # Initialize Redis session store (non-fatal: service continues without it)
+    # Initialize Dragonfly session store (non-fatal: service continues without it)
     try:
-        await init_redis_client()
+        await init_dragonfly_client()
         app.state.session_store = APIToolSessionStore()
 
-        # Wire an incremental summarizer if the LLM manager singleton is available.
+        # Wire an incremental summarizer if the production LLM connection loads.
+        # Inside a request it uses that request's connection (use_task_local).
         summarizer = None
         try:
             summarizer = create_incremental_summarizer(LLMManager())
@@ -121,9 +122,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.conversation_history_store = ConversationHistoryStore(
             summarizer=summarizer
         )
-        logger.info("Redis session store initialized successfully")
+        logger.info("Dragonfly session store initialized successfully")
     except Exception as e:
-        logger.warning(f"Redis session store unavailable, continuing without it: {e}")
+        logger.warning(
+            f"Dragonfly session store unavailable, continuing without it: {e}"
+        )
         app.state.session_store = None
         app.state.conversation_history_store = None
 
@@ -159,9 +162,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.orchestration_service = None
 
     try:
-        await close_redis_client()
+        await close_dragonfly_client()
     except Exception as e:
-        logger.warning(f"Error closing Redis client during shutdown: {e}")
+        logger.warning(f"Error closing Dragonfly client during shutdown: {e}")
 
 
 # Create FastAPI application
@@ -294,10 +297,15 @@ async def pydantic_validation_exception_handler(
 
 @app.post("/cache/clear")
 async def clear_connection_cache() -> dict[str, str]:
-    """Clear cached connection IDs and vault UUIDs."""
+    """Clear cached connection IDs, vault UUIDs and loaded LLM connections.
+
+    Called when a connection is added, promoted, edited or deleted, so the next
+    request resolves and loads the current connection without a restart.
+    """
     try:
         fetcher = get_connection_id_fetcher()
         fetcher.clear_cache()
+        LLMManager.clear_instances()
         logger.info("Connection cache cleared via /cache/clear endpoint")
         return {"status": "ok", "message": "Connection cache cleared"}
     except Exception as e:
@@ -317,12 +325,15 @@ async def health_check(request: Request) -> dict[str, str]:
         and request.app.state.orchestration_service is not None
         else "not_initialized"
     )
-    redis_status = await check_redis_health()
+    dragonfly_status = await check_dragonfly_health()
+    if dragonfly_status != "connected":
+        # Logged so the Grafana alert "dragonfly-store-disconnected" can fire on it
+        logger.warning(f"Dragonfly health check: {dragonfly_status}")
     return {
         "status": "healthy",
         "service": "llm-orchestration-service",
         "orchestration_service": service_status,
-        "redis_session_store": redis_status,
+        "dragonfly_session_store": dragonfly_status,
     }
 
 

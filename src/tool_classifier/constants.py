@@ -132,7 +132,7 @@ Only a clear, unambiguous new query (cosine >= 0.50) should override a session."
 MAX_PARAM_VALUE_LENGTH = 500
 """Maximum length (chars) of a single extracted parameter value.
 Values longer than this are treated as invalid (same path as a type mismatch),
-preventing oversized values from reaching Redis session storage, the external
+preventing oversized values from reaching Dragonfly session storage, the external
 API call, or being re-echoed into the prompt on subsequent turns."""
 
 
@@ -295,11 +295,11 @@ MULTI_API_PARTIAL_FAILURE_MESSAGES = {
 # ============================================================================
 
 ATC_CACHE_KEY_PREFIX = "atc:cache"
-"""Redis key prefix for L1 exact-match response cache entries.
+"""Dragonfly key prefix for L1 exact-match response cache entries.
 Full key format: atc:cache:{chat_id}:{api_name}:{param_hash}"""
 
 ATC_LAST_CALL_KEY_PREFIX = "atc:last"
-"""Redis key prefix for L2 last-call context entries.
+"""Dragonfly key prefix for L2 last-call context entries.
 Full key format: atc:last:{chat_id}"""
 
 ATC_CACHE_DEFAULT_TTL_SECONDS = 1800
