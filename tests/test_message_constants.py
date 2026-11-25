@@ -6,7 +6,7 @@ read through ``get_localized_message``.
 
 The most important test here is ``test_every_message_dict_is_excluded_from_history``:
 a message dict that is not registered in ``_HISTORY_EXCLUDED_MESSAGES`` gets its
-failed exchange persisted to Redis and replayed to the prompt refiner on the
+failed exchange persisted to Dragonfly and replayed to the prompt refiner on the
 user's next turn, degrading the following answer.
 """
 
@@ -92,7 +92,7 @@ class TestHistoryExclusion:
 
         _HISTORY_EXCLUDED_MESSAGES matches by exact string equality, so adding a
         new message dictionary without registering it means that failed exchange
-        is written to Redis and replayed on the user's next turn.
+        is written to Dragonfly and replayed on the user's next turn.
         """
         from src.llm_orchestration_service import _HISTORY_EXCLUDED_MESSAGES
 
@@ -105,7 +105,7 @@ class TestHistoryExclusion:
 
         assert not unregistered, (
             "These messages are not in _HISTORY_EXCLUDED_MESSAGES "
-            "(llm_orchestration_service.py) and would be persisted to Redis, "
+            "(llm_orchestration_service.py) and would be persisted to Dragonfly, "
             f"polluting the prompt refiner on the next turn: {unregistered}"
         )
 

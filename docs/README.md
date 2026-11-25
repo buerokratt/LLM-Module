@@ -29,7 +29,7 @@ the areas below.
 | --- | --- |
 | [TOOL_CLASSIFIER.md](./TOOL_CLASSIFIER.md) | High-level overview of the classifier: routing model, key functions, and configuration. Start here, then read the per-workflow docs below. |
 | [TOOL_CLASSIFIER_AND_SERVICE_WORKFLOW.md](./TOOL_CLASSIFIER_AND_SERVICE_WORKFLOW.md) | Service-workflow architecture: high-confidence vs ambiguous routes and service-discovery logic. |
-| [CONTEXT_WORKFLOW_GREETING_DETECTION.md](./CONTEXT_WORKFLOW_GREETING_DETECTION.md) | The Context workflow: greeting detection and Redis-backed conversation history with incremental summaries. |
+| [CONTEXT_WORKFLOW_GREETING_DETECTION.md](./CONTEXT_WORKFLOW_GREETING_DETECTION.md) | The Context workflow: greeting detection and conversation history (kept in Dragonfly) with incremental summaries. |
 | [API_TOOL_CALLING.md](./API_TOOL_CALLING.md) | The agentic API-Tool workflow end to end: indexing, multi-intent decomposition, multi-endpoint agentic loop, calling, and response formatting. |
 | [TESTPRODUCTIONLLM_SERVICE_WORKFLOW.md](./TESTPRODUCTIONLLM_SERVICE_WORKFLOW.md) | Service workflow + streaming via the TestProductionLLM page (three-hop SSE relay). |
 
@@ -48,7 +48,9 @@ the areas below.
 
 | Document | What it covers |
 | --- | --- |
-| [REDIS_SESSION_STORE.md](./REDIS_SESSION_STORE.md) | Redis session-store usage: CRUD for agentic-loop state, TTL behaviour, and the async API. |
+| [DRAGONFLY_SESSION_STORE.md](./DRAGONFLY_SESSION_STORE.md) | Dragonfly session store: keyspace, keys and TTLs, client settings, fail-open behaviour, and CRUD for agentic-loop state. |
+| [DRAGONFLY_OPERATIONS.md](./DRAGONFLY_OPERATIONS.md) | Dragonfly runbook: flags, sizing, monitoring and alert responses, common commands, snapshots/backup, upgrades, troubleshooting. |
+| [STAGING_DEPLOYMENT_DRAGONFLY_SEAWEEDFS.md](./STAGING_DEPLOYMENT_DRAGONFLY_SEAWEEDFS.md) | Staging (Kubernetes) rollout of the Redis → Dragonfly and MinIO → SeaweedFS migration: secrets, MinIO backup, Langfuse drain, gated rollout, hypercare, rollback, decommission. |
 
 ## API Reference
 

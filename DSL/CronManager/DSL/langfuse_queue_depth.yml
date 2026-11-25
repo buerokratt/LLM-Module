@@ -1,0 +1,4 @@
+langfuse_queue_depth:
+  trigger: "0 * * * * ?" # Every minute: log Langfuse (BullMQ) queue depth to Loki
+  type: exec
+  command: "/app/scripts/langfuse_queue_depth.sh"

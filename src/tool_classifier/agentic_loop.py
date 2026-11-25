@@ -36,7 +36,7 @@ class AgenticLoop:
 
     Each call to run_turn() represents one user message / one loop iteration.
     The loop carries no internal state — all state is passed in as arguments.
-    Redis persistence (load from session before calling, save inside run_turn)
+    Dragonfly persistence (load from session before calling, save inside run_turn)
     is handled here so callers only need to act on the returned AgenticLoopResult.
 
     Typical usage::
@@ -75,7 +75,7 @@ class AgenticLoop:
         """Initialise the loop with an injected session store and param extractor.
 
         Args:
-            session_store: Redis-backed store used to persist loop state between
+            session_store: Dragonfly-backed store used to persist loop state between
                 HTTP requests. Injected to allow easy mocking in tests.
             param_extractor: DSPy module that extracts parameter values from a
                 user message. Injected to allow easy mocking in tests.
@@ -124,7 +124,7 @@ class AgenticLoop:
         extraction errors after handling the failure.
 
         Args:
-            chat_id: Unique conversation identifier, used as the Redis session key.
+            chat_id: Unique conversation identifier, used as the Dragonfly session key.
             user_message: The user's latest message for this turn.
             conversation_history: Recent conversation turns as a list of
                 ``{"authorRole": str, "message": str}`` dicts.
@@ -524,7 +524,7 @@ class AgenticLoop:
         turn_count: int,
         awaiting_continuation: bool = False,
     ) -> None:
-        """Persist updated loop state to the Redis session store.
+        """Persist updated loop state to the Dragonfly session store.
 
         Only updates the fields the loop owns (collected_params, turn_count,
         awaiting_continuation). Workflow-owned fields (selected_endpoint,

@@ -1,0 +1,34 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "{{ .Values.release_name }}-create-bucket"
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  # Retried until the S3 API is up; rclone mkdir succeeds if the bucket already exists
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: create-bucket
+          image: {{ .Values.init.image | quote }}
+          args: ["mkdir", "seaweedfs:{{ .Values.bucket }}", "-v"]
+          env:
+            - name: RCLONE_CONFIG_SEAWEEDFS_TYPE
+              value: "s3"
+            - name: RCLONE_CONFIG_SEAWEEDFS_PROVIDER
+              value: "SeaweedFS"
+            - name: RCLONE_CONFIG_SEAWEEDFS_ENDPOINT
+              value: "http://{{ .Values.release_name }}:{{ .Values.ports.s3 }}"
+            - name: RCLONE_CONFIG_SEAWEEDFS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: seaweedfs-secrets
+                  key: S3_ACCESS_KEY_ID
+            - name: RCLONE_CONFIG_SEAWEEDFS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: seaweedfs-secrets
+                  key: S3_SECRET_ACCESS_KEY

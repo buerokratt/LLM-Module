@@ -20,6 +20,12 @@ from loguru import logger
 # /orchestrate/test all line up without depending on a DB-generated UUID.
 TEST_VAULT_UUID = "00000000-0000-0000-0000-000000000001"
 
+# S3 test storage: SeaweedFS from docker-compose-test.yml. The `minio` package is
+# only an S3 client library and works against any S3-compatible server.
+S3_TEST_ENDPOINT = os.getenv("S3_TEST_ENDPOINT", "localhost:9000")
+S3_TEST_ACCESS_KEY = os.getenv("S3_TEST_ACCESS_KEY", "seaweedfs-test")
+S3_TEST_SECRET_KEY = os.getenv("S3_TEST_SECRET_KEY", "seaweedfs-test-secret")
+
 
 # ===================== VaultAgentClient =====================
 class VaultAgentClient:
@@ -995,14 +1001,20 @@ def orchestration_client(rag_stack: RAGStackTestContainers) -> Any:
 
 @pytest.fixture(scope="session")
 def minio_client(rag_stack: RAGStackTestContainers) -> Minio:
-    """Create MinIO client connected to test instance."""
+    """Create an S3 client connected to the test SeaweedFS instance."""
     client = Minio(
-        "localhost:9000",
-        access_key="minio",
-        secret_key="miniosecret",
+        S3_TEST_ENDPOINT,
+        access_key=S3_TEST_ACCESS_KEY,
+        secret_key=S3_TEST_SECRET_KEY,
         secure=False,
     )
     return client
+
+
+@pytest.fixture(scope="session")
+def s3_endpoint() -> str:
+    """host:port of the test S3 endpoint, as used in presigned URLs."""
+    return S3_TEST_ENDPOINT
 
 
 @pytest.fixture(scope="session")
@@ -1047,7 +1059,7 @@ def test_bucket(minio_client: Minio):
     except Exception as e:
         # Ignore cleanup errors - bucket may not exist or objects already deleted
         # This is acceptable in test teardown as it doesn't affect test results
-        logger.debug(f"MinIO cleanup failed for bucket {bucket_name}: {e}")
+        logger.debug(f"S3 cleanup failed for bucket {bucket_name}: {e}")
 
 
 @pytest.fixture
@@ -1087,7 +1099,7 @@ Integration testing ensures all components work together correctly.
     meta_file = doc_dir / "source.meta.json"
     meta_file.write_text(json.dumps(meta_content))
 
-    # Upload to MinIO
+    # Upload to S3 (SeaweedFS)
     object_prefix = "test_documents/doc1"
 
     minio_client.fput_object(

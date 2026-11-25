@@ -114,6 +114,14 @@ spec:
             - name: {{ $key }}
               value: "{{ $value }}"
             {{- end }}
+
+            # Dragonfly password, from the shared secret
+            - name: DRAGONFLY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{.Values.dragonflyAuth.secretName | quote}}
+                  key: {{.Values.dragonflyAuth.secretKey | quote}}
+                  optional: true
           
           {{- if .Values.healthcheck.enabled }}
           livenessProbe:

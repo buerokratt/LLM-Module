@@ -171,32 +171,68 @@ services:
 
   # === Langfuse Observability Stack ===
   
-  # Redis - Queue and cache for Langfuse
-  redis:
-    image: redis:7
-    container_name: redis
+  # Dragonfly: Langfuse queues (db 0) and app sessions (db 1)
+  dragonfly:
+    image: ghcr.io/dragonflydb/dragonfly:v2.0.2
+    container_name: dragonfly
     restart: always
-    command: --requirepass myredissecret
+    # No password: CI-only throwaway container, port bound to localhost
+    command:
+      - --logtostderr
+      - --maxmemory=512mb
+      - --proactor_threads=2
+      # Option A: Langfuse's BullMQ Lua scripts use keys they don't declare
+      - --default_lua_flags=allow-undeclared-keys
+    ulimits:
+      memlock: -1
     ports:
       - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     networks:
       - test-network
 
-  # MinIO - S3-compatible storage for Langfuse
-  minio:
-    image: minio/minio:latest
-    container_name: minio
+  # SeaweedFS - S3-compatible storage for Langfuse and the integration tests
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.47
+    container_name: seaweedfs
     restart: always
-    entrypoint: sh
-    command: -c "mkdir -p /data/langfuse && minio server /data --address ':9000' --console-address ':9001'"
-    environment:
-      MINIO_ROOT_USER: minio
-      MINIO_ROOT_PASSWORD: miniosecret
+    command: server -filer -s3 -s3.config=/etc/seaweedfs/s3.json -ip.bind=0.0.0.0
+    configs:
+      - source: seaweedfs_s3_identities
+        target: /etc/seaweedfs/s3.json
     ports:
-      - "9000:9000"
-      - "127.0.0.1:9091:9001"
+      - "9000:8333"   # tests connect to localhost:9000 (see conftest.py)
+      - "127.0.0.1:8888:8888"
     volumes:
-      - test_minio_data:/data
+      - test_seaweedfs_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:9333/cluster/status && wget -q --spider http://localhost:8333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - test-network
+
+  # Creates the Langfuse bucket (replaces MinIO's mkdir /data/langfuse)
+  seaweedfs-init:
+    image: rclone/rclone:1.68.2
+    container_name: seaweedfs-init
+    command: ["mkdir", "seaweedfs:langfuse", "-v"]
+    environment:
+      RCLONE_CONFIG_SEAWEEDFS_TYPE: s3
+      RCLONE_CONFIG_SEAWEEDFS_PROVIDER: SeaweedFS
+      RCLONE_CONFIG_SEAWEEDFS_ENDPOINT: http://seaweedfs:8333
+      RCLONE_CONFIG_SEAWEEDFS_ACCESS_KEY_ID: seaweedfs-test
+      RCLONE_CONFIG_SEAWEEDFS_SECRET_ACCESS_KEY: seaweedfs-test-secret
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    restart: "no"
     networks:
       - test-network
 
@@ -223,14 +259,18 @@ services:
 
   # Langfuse Worker - Background job processor
   langfuse-worker:
-    image: langfuse/langfuse-worker:3
+    image: langfuse/langfuse-worker:3.225.2
     container_name: langfuse-worker
     restart: always
     depends_on:
-      - rag-search-db
-      - minio
-      - redis
-      - clickhouse
+      rag-search-db:
+        condition: service_started
+      seaweedfs-init:
+        condition: service_completed_successfully
+      dragonfly:
+        condition: service_healthy
+      clickhouse:
+        condition: service_started
     ports:
       - "127.0.0.1:3030:3030"
     environment:
@@ -254,32 +294,31 @@ services:
       CLICKHOUSE_PASSWORD: clickhouse
       CLICKHOUSE_CLUSTER_ENABLED: "false"
       
-      # S3/MinIO Event Upload
+      # S3 (SeaweedFS) Event Upload
       LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
       LANGFUSE_S3_EVENT_UPLOAD_REGION: us-east-1
-      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
-      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: miniosecret
-      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: seaweedfs-test
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: seaweedfs-test-secret
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://seaweedfs:8333
       LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
       
-      # S3/MinIO Media Upload
+      # S3 (SeaweedFS) Media Upload
       LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
       LANGFUSE_S3_MEDIA_UPLOAD_REGION: us-east-1
-      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
-      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: miniosecret
-      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: seaweedfs-test
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: seaweedfs-test-secret
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://seaweedfs:8333
       LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
       
-      # Redis
-      REDIS_HOST: redis
+      # Langfuse's own setting names (REDIS_*), pointed at Dragonfly
+      REDIS_HOST: dragonfly
       REDIS_PORT: "6379"
-      REDIS_AUTH: myredissecret
     networks:
       - test-network
 
   # Langfuse Web - UI and API
   langfuse-web:
-    image: langfuse/langfuse:3
+    image: langfuse/langfuse:3.225.2
     container_name: langfuse-web
     restart: always
     depends_on:
@@ -310,26 +349,25 @@ services:
       CLICKHOUSE_PASSWORD: clickhouse
       CLICKHOUSE_CLUSTER_ENABLED: "false"
       
-      # S3/MinIO Event Upload
+      # S3 (SeaweedFS) Event Upload
       LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
       LANGFUSE_S3_EVENT_UPLOAD_REGION: us-east-1
-      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
-      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: miniosecret
-      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: seaweedfs-test
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: seaweedfs-test-secret
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://seaweedfs:8333
       LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
       
-      # S3/MinIO Media Upload
+      # S3 (SeaweedFS) Media Upload
       LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
       LANGFUSE_S3_MEDIA_UPLOAD_REGION: us-east-1
-      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
-      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: miniosecret
-      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: seaweedfs-test
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: seaweedfs-test-secret
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://seaweedfs:8333
       LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
       
-      # Redis
-      REDIS_HOST: redis
+      # Langfuse's own setting names (REDIS_*), pointed at Dragonfly
+      REDIS_HOST: dragonfly
       REDIS_PORT: "6379"
-      REDIS_AUTH: myredissecret
       
       # Initialize test project with known credentials
       LANGFUSE_INIT_PROJECT_PUBLIC_KEY: pk-lf-test
@@ -357,6 +395,10 @@ services:
       - EVAL_MODE=true
       # Disable OpenTelemetry tracing in test environment
       - OTEL_SDK_DISABLED=true
+      # Session store: Dragonfly db 1 (Langfuse uses db 0)
+      - DRAGONFLY_HOST=dragonfly
+      - DRAGONFLY_PORT=6379
+      - DRAGONFLY_SESSION_DB=1
     volumes:
       - ./src/llm_config_module/config:/app/src/llm_config_module/config:ro
       - ./test-vault/agent-out:/agent/llm-token:ro
@@ -365,6 +407,7 @@ services:
       - qdrant
       - langfuse-web
       - vault-agent-llm
+      - dragonfly
     networks:
       - test-network
 
@@ -382,9 +425,16 @@ volumes:
     name: test_rag_search_db
   test_qdrant_data:
     name: test_qdrant_data
-  test_minio_data:
-    name: test_minio_data
+  test_seaweedfs_data:
+    name: test_seaweedfs_data
   test_clickhouse_data:
     name: test_clickhouse_data
   test_llm_orchestration_logs:
     name: test_llm_orchestration_logs
+# === Configs ===
+
+# SeaweedFS S3 login (TEST VALUES ONLY - NOT FOR PRODUCTION)
+configs:
+  seaweedfs_s3_identities:
+    content: |
+      {"identities":[{"name":"test-admin","credentials":[{"accessKey":"seaweedfs-test","secretKey":"seaweedfs-test-secret"}],"actions":["Admin","Read","Write","List","Tagging"]}]}

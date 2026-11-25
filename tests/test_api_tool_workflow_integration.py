@@ -1,7 +1,7 @@
 """Integration tests for the full API Tool Calling workflow chain.
 
 Tests the full classify -> route -> execute chain with real component wiring.
-Only the LLM layer (DSPy), Qdrant HTTP, and Redis are mocked.
+Only the LLM layer (DSPy), Qdrant HTTP, and Dragonfly are mocked.
 
 Covers:
 - Phase 2: Full multi-turn workflow, fast-path, streaming, cost tracking
@@ -75,7 +75,7 @@ _ENDPOINT_WEATHER = {
 
 @pytest.fixture
 def mock_session_store() -> AsyncMock:
-    """In-memory mock Redis session store."""
+    """In-memory mock Dragonfly session store."""
     _store: Dict[str, APIToolSession] = {}
 
     store = AsyncMock()
@@ -267,7 +267,7 @@ class TestClassifyAndRouteToAPITool:
 
 
 class TestAPIToolMultiTurnFlow:
-    """Full multi-turn agentic loop with session state in mock Redis."""
+    """Full multi-turn agentic loop with session state in mock Dragonfly."""
 
     @pytest.mark.asyncio
     async def test_turn1_partial_params_returns_clarifying_question(
@@ -297,7 +297,7 @@ class TestAPIToolMultiTurnFlow:
 
         assert isinstance(response, OrchestrationResponse)
         assert "country" in response.content.lower() or response.content != ""
-        # Session created in Redis
+        # Session created in Dragonfly
         session = await mock_session_store.get(_CHAT_ID)
         assert session is not None
 
@@ -695,7 +695,7 @@ class TestFallbackChainRegression:
         self,
         classifier: ToolClassifier,
     ) -> None:
-        """Redis unavailable → stateless execution, loop still runs."""
+        """Dragonfly unavailable → stateless execution, loop still runs."""
         # Remove session_store from orchestration service
         classifier.orchestration_service.session_store = None
 
@@ -910,7 +910,7 @@ class TestParallelExecutionMode:
     """Full parallel path: classify → ExecutionMode.PARALLEL → MultiEndpointAgenticLoop
     → MultiAPICaller → MultiResponseFormatterModule.
 
-    Only DSPy (formatter/extractor), Qdrant HTTP, and Redis are mocked.
+    Only DSPy (formatter/extractor), Qdrant HTTP, and Dragonfly are mocked.
     """
 
     @pytest.mark.asyncio
@@ -1026,7 +1026,7 @@ class TestParallelExecutionMode:
 
         assert isinstance(response, OrchestrationResponse)
         assert response.content != ""
-        # Session created in Redis with parallel execution mode
+        # Session created in Dragonfly with parallel execution mode
         session = await mock_session_store.get(_CHAT_ID)
         assert session is not None
         assert session.execution_mode == ExecutionMode.PARALLEL.value
@@ -1192,7 +1192,7 @@ class TestTestEndpointSessionWipe:
 
         session_store_mock = AsyncMock()
         session_store_mock.delete = AsyncMock(
-            side_effect=RuntimeError("Redis unavailable")
+            side_effect=RuntimeError("Dragonfly unavailable")
         )
 
         orch_mock = AsyncMock()

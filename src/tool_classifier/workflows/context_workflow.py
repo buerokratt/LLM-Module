@@ -67,8 +67,8 @@ class ContextWorkflowExecutor(BaseWorkflow):
         Args:
             llm_manager: LLM manager for context analysis
             orchestration_service: Reference to LLMOrchestrationService for cost logging
-            conversation_history_store: Redis-backed conversation history store;
-                when provided, history is read from Redis (canonical source) rather
+            conversation_history_store: Dragonfly-backed conversation history store;
+                when provided, history is read from Dragonfly (canonical source) rather
                 than from ``request.conversationHistory``.
         """
         self.llm_manager = llm_manager
@@ -85,10 +85,10 @@ class ContextWorkflowExecutor(BaseWorkflow):
     async def _build_history(
         self, request: OrchestrationRequest
     ) -> tuple[list[Dict[str, Any]], Optional[str]]:
-        """Fetch conversation history, preferring Redis over request payload.
+        """Fetch conversation history, preferring Dragonfly over request payload.
 
         When a :class:`ConversationHistoryStore` is wired in and the session has
-        stored rounds, the Redis state is used as the canonical source of truth and
+        stored rounds, the Dragonfly state is used as the canonical source of truth and
         the GUI-provided ``request.conversationHistory`` is ignored.  Any running
         summary stored alongside the rounds is returned as ``pre_computed_summary``
         so that downstream callers can skip an expensive LLM summarisation step.
@@ -99,7 +99,7 @@ class ContextWorkflowExecutor(BaseWorkflow):
         Returns:
             A ``(history_dicts, pre_computed_summary)`` tuple where
             *history_dicts* is a list of ``{"authorRole", "message", "timestamp"}``
-            dicts and *pre_computed_summary* is the Redis summary string or ``None``.
+            dicts and *pre_computed_summary* is the Dragonfly summary string or ``None``.
         """
         if self.conversation_history_store is not None:
             try:
@@ -124,12 +124,12 @@ class ContextWorkflowExecutor(BaseWorkflow):
                             }
                         )
                     logger.debug(
-                        f"[{request.chatId}] Using Redis history: {len(state.rounds)} rounds, summary={'present' if state.summary else 'absent'}"
+                        f"[{request.chatId}] Using Dragonfly history: {len(state.rounds)} rounds, summary={'present' if state.summary else 'absent'}"
                     )
                     return history, state.summary
             except Exception as exc:
                 logger.warning(
-                    f"[{request.chatId}] Redis history fetch failed, falling back to request history: {exc}"
+                    f"[{request.chatId}] Dragonfly history fetch failed, falling back to request history: {exc}"
                 )
 
         # Fallback: use the conversation history supplied in the request
@@ -177,12 +177,12 @@ class ContextWorkflowExecutor(BaseWorkflow):
         """Phase 1: run context detection with summary fallback.
 
         Checks the last 10 conversation turns first. If the query cannot be
-        answered from those and the history exceeds 10 turns (or a Redis summary
+        answered from those and the history exceeds 10 turns (or a Dragonfly summary
         is available), falls back to a summary-based check. Returns None on error
         so the caller falls through to RAG.
 
         Args:
-            pre_computed_summary: Running conversation summary retrieved from Redis.
+            pre_computed_summary: Running conversation summary retrieved from Dragonfly.
                 When provided, the expensive LLM summarisation step is skipped and
                 this value is used directly.
         """
