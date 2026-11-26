@@ -150,6 +150,150 @@ def test_declared_check_without_test_embedding() -> None:
     assert result.detected_vector_dimensions is None
 
 
+# Issue #588: production may change the embedding model; the knowledge base is
+# then re-indexed. Testing connections keep the strict lock.
+
+
+@pytest.mark.parametrize(
+    "platform, model, dims, locked",
+    [
+        ("aws", "amazon.titan-embed-text-v2:0", 1024, AZURE),  # Azure -> AWS
+        ("azure", "text-embedding-3-large", 3072, AWS),  # AWS -> Azure
+    ],
+)
+def test_production_with_other_model_is_allowed_and_requires_reindex(
+    platform: str, model: str, dims: int, locked: LockedModel
+) -> None:
+    result = check_embedding_compatibility(
+        platform, model, dims, [locked], [], environment="production"
+    )
+    assert result.allowed
+    assert result.reindex_required
+    assert result.locked_by == "knowledge_base"
+    assert result.required_model == model
+    assert locked.embedding_model in (result.reason or "")
+    assert "re-indexed" in (result.reason or "")
+
+
+def test_testing_with_other_model_is_still_blocked() -> None:
+    result = check_embedding_compatibility(
+        "aws", "amazon.titan-embed-text-v2:0", 1024, [AZURE], [], environment="testing"
+    )
+    assert not result.allowed
+    assert not result.reindex_required
+    assert result.required_model == "text-embedding-3-large"
+
+
+def test_missing_environment_uses_the_strict_testing_rules() -> None:
+    result = check_embedding_compatibility(
+        "aws", "amazon.titan-embed-text-v2:0", 1024, [AZURE], []
+    )
+    assert not result.allowed
+    assert not result.reindex_required
+
+
+def test_production_with_same_model_needs_no_reindex() -> None:
+    result = check_embedding_compatibility(
+        "azure", "text-embedding-3-large", 3072, [AZURE], [], environment="production"
+    )
+    assert result.allowed
+    assert not result.reindex_required
+
+
+def test_production_switch_reports_the_test_connection_that_no_longer_matches() -> None:
+    result = check_embedding_compatibility(
+        "aws",
+        "amazon.titan-embed-text-v2:0",
+        1024,
+        [AZURE],
+        [other("azure", "text-embedding-3-large", environment="testing")],
+        environment="production",
+    )
+    assert result.allowed and result.reindex_required
+    assert [c["environment"] for c in result.mismatched_connections] == ["testing"]
+
+
+def test_production_mid_reindex_keeps_requiring_reindex() -> None:
+    # An interrupted Azure -> AWS re-index: both collections hold embeddings.
+    result = check_embedding_compatibility(
+        "aws",
+        "amazon.titan-embed-text-v2:0",
+        1024,
+        [AZURE, AWS],
+        [],
+        environment="production",
+    )
+    assert result.allowed
+    assert result.reindex_required
+
+
+def test_testing_on_old_model_keeps_working_until_the_reindex_finishes() -> None:
+    result = check_embedding_compatibility(
+        "azure",
+        "text-embedding-3-large",
+        3072,
+        [AZURE, AWS],
+        [],
+        environment="testing",
+    )
+    assert result.allowed
+    assert not result.reindex_required
+
+
+def test_production_still_needs_an_approved_model_and_the_right_deployment() -> None:
+    assert not check_embedding_compatibility(
+        "azure", "text-embedding-ada-002", None, [AWS], [], environment="production"
+    ).allowed
+    wrong_deployment = check_embedding_compatibility(
+        "azure", "text-embedding-3-large", 1536, [AWS], [], environment="production"
+    )
+    assert not wrong_deployment.allowed
+    assert wrong_deployment.detail == "wrong_deployment"
+
+
+def test_production_wins_over_test_connection_when_knowledge_base_is_empty() -> None:
+    result = check_embedding_compatibility(
+        "aws",
+        "amazon.titan-embed-text-v2:0",
+        1024,
+        [],
+        [other("azure", "text-embedding-3-large", environment="testing")],
+        environment="production",
+    )
+    assert result.allowed
+    assert not result.reindex_required  # nothing indexed yet
+    assert len(result.mismatched_connections) == 1
+
+
+def test_testing_must_match_production_when_knowledge_base_is_empty() -> None:
+    result = check_embedding_compatibility(
+        "aws",
+        "amazon.titan-embed-text-v2:0",
+        1024,
+        [],
+        [other("azure", "text-embedding-3-large")],
+        environment="testing",
+    )
+    assert not result.allowed
+    assert result.locked_by == "connection"
+
+
+@pytest.mark.parametrize(
+    "platform, locked, expected",
+    [
+        ("azure", [], False),
+        ("azure", [AZURE], False),
+        ("aws", [AZURE], True),
+        ("azure", [AZURE, AWS], True),
+        ("aws", [AWS], False),
+    ],
+)
+def test_reindex_required_for(
+    platform: str, locked: List[LockedModel], expected: bool
+) -> None:
+    assert kbl.reindex_required_for(platform, locked) is expected
+
+
 # read_locked_models / read_other_connections (HTTP faked)
 
 

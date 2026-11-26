@@ -88,6 +88,13 @@ class EmbeddingCheckResult:
     locked_by: Optional[str] = None  # "knowledge_base" | "connection" | None
     locked_models: List[Dict[str, Any]] = field(default_factory=list)
     detected_vector_dimensions: Optional[int] = None
+    # Issue #588: a production connection may use another approved model than
+    # the knowledge base; saving it makes the next indexer run re-index
+    # everything with it. Never set for testing connections.
+    reindex_required: bool = False
+    # Other active connections whose embedding model will no longer match the
+    # knowledge base once this (production) connection is saved.
+    mismatched_connections: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -191,12 +198,23 @@ def read_other_connections(
     return connections
 
 
+def reindex_required_for(platform: str, locked_models: List[LockedModel]) -> bool:
+    """Whether indexing with ``platform`` must first re-index the knowledge base.
+
+    True when any embeddings in the knowledge base come from another platform
+    (issue #588). Each platform has its own collection, so this also stays true
+    after an interrupted re-index, until the old collection has been emptied.
+    """
+    return any(model.platform != platform for model in locked_models)
+
+
 def check_embedding_compatibility(
     platform: str,
     embedding_model: str,
     detected_vector_dimensions: Optional[int],
     locked_models: List[LockedModel],
     other_connections: List[OtherConnection],
+    environment: Optional[str] = None,
 ) -> EmbeddingCheckResult:
     """Decide whether a connection's embedding model may be saved.
 
@@ -205,12 +223,21 @@ def check_embedding_compatibility(
       2. If a test embedding was made, its vector size must be the approved
          model's (catches an Azure deployment that points at another model).
       3. If the knowledge base has embeddings, the platform must be one of them.
+         Production (issue #588) may use another approved model instead: the
+         result is allowed with ``reindex_required`` and the next indexer run
+         re-indexes the knowledge base with it.
       4. Otherwise the other active connection(s) must use the same model, so
          test and production share one knowledge base from the first index on.
+         Production is allowed anyway (it is the one the indexer uses); the
+         other connections are reported in ``mismatched_connections``.
+
+    ``environment`` is where the connection is saved ("production" |
+    "testing"). Without it the strict (testing) rules apply.
 
     Only the embedding model is checked; the chat model may differ.
     """
     locked_dicts = [asdict(model) for model in locked_models]
+    is_production = environment == "production"
 
     def result(
         allowed: bool,
@@ -218,6 +245,8 @@ def check_embedding_compatibility(
         reason: Optional[str] = None,
         locked_by: Optional[str] = None,
         detail: str = "different_model",
+        reindex_required: bool = False,
+        mismatched: Optional[List[OtherConnection]] = None,
     ) -> EmbeddingCheckResult:
         return EmbeddingCheckResult(
             allowed=allowed,
@@ -229,7 +258,16 @@ def check_embedding_compatibility(
             locked_by=locked_by,
             locked_models=locked_dicts,
             detected_vector_dimensions=detected_vector_dimensions,
+            reindex_required=reindex_required,
+            mismatched_connections=[asdict(other) for other in mismatched or []],
         )
+
+    def mismatched_with(model: str) -> List[OtherConnection]:
+        return [
+            other
+            for other in other_connections
+            if other.platform != platform or other.embedding_model != model
+        ]
 
     spec = PLATFORMS.get(platform)
     if spec is None:
@@ -253,12 +291,31 @@ def check_embedding_compatibility(
         )
 
     if locked_models:
-        if any(
+        matches_knowledge_base = any(
             model.platform == platform
             and model.vector_dimensions == spec.vector_dimensions
             for model in locked_models
-        ):
+        )
+        reindex = is_production and reindex_required_for(platform, locked_models)
+        if matches_knowledge_base and not reindex:
             return result(True, spec.model, locked_by="knowledge_base")
+        if is_production:
+            # Also reached mid re-index (both platforms hold embeddings): saving
+            # again keeps the re-index going rather than blocking.
+            old = " and ".join(
+                model.describe()
+                for model in locked_models
+                if model.platform != platform
+            )
+            return result(
+                True,
+                spec.model,
+                f"The knowledge base is built with {old}. It will be fully "
+                f"re-indexed with {spec.model} ({platform}).",
+                locked_by="knowledge_base",
+                reindex_required=True,
+                mismatched=mismatched_with(spec.model),
+            )
         required = locked_models[0]
         return result(
             False,
@@ -267,11 +324,11 @@ def check_embedding_compatibility(
             locked_by="knowledge_base",
         )
 
-    conflicting = [
-        other
-        for other in other_connections
-        if other.platform != platform or other.embedding_model != embedding_model
-    ]
+    conflicting = mismatched_with(embedding_model)
+    if conflicting and is_production:
+        # Nothing indexed yet, so nothing to re-index: production simply wins
+        # and the first index is made with its model.
+        return result(True, mismatched=conflicting)
     if conflicting:
         other = conflicting[0]
         return result(

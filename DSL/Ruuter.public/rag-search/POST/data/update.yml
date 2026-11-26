@@ -84,8 +84,31 @@ assign_import_agency_data:
   assign:
     ckb_data_hash: ${importResult.response.body.response.response[0].agencyDataHash}
     signed_s3_url: ${importResult.response.body.response.response[0].signedS3Url}
+  next: get_knowledge_base_status
+
+# Issue #588: the knowledge base must be re-indexed when it holds embeddings
+# from another model than the indexing connection's (production, else testing),
+# even though the CKB data is unchanged. The indexer detects this itself; here
+# it only decides whether to run it. If the status cannot be read, the normal
+# hash comparison decides.
+get_knowledge_base_status:
+  call: http.get
+  args:
+    url: "[#RAG_SEARCH_LLM_SERVICE]/knowledge-base/status"
+  result: kb_status_result
+  next: check_reindex_required
+  on_error: check_has_match
+
+check_reindex_required:
+  switch:
+    - condition: ${kb_status_result.response.body != null && kb_status_result.response.body.reindex_required === true}
+      next: log_reindex_required
   next: check_has_match
-  
+
+log_reindex_required:
+  log: "Knowledge base re-index required (embedding model changed) - running the vector indexer although the CKB data hash is unchanged"
+  next: execute_cron_manager
+
 check_has_match:
   switch:
     - condition: ${current_data_hash !== null && current_data_hash === importResult.response.body.response.response[0].agencyDataHash}

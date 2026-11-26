@@ -139,6 +139,49 @@ delete runs after the store.
 Blocked saves return 400 with `{allowed: false, reason}`; the GUI shows the
 reason. If the check cannot run, nothing is saved (500, `check_unavailable`).
 
+**Production may change the model (issue #588).** Rule 3 is strict for testing
+connections only. A production connection (created, edited, promoted from
+testing or reactivated) may use the other approved model; the check then
+answers `{allowed: true, reindex_required: true}` and lists, in
+`mismatched_connections`, the connections that will no longer match. The GUI
+saves a new production connection as testing first, so it sends
+`target_environment: production` to `add` for this check; `edit` also runs the
+check on a testing → production promotion.
+
+### **🔄 Re-index on an Embedding Model Change**
+The indexer decides it itself, on every run: when the knowledge base holds
+embeddings on another platform than the indexing connection's (production, else
+testing), the run is a **full re-index** (`plan_reindex` / `_run_full_reindex`
+in `main_indexer.py`):
+
+1. A test embedding with the connection (retried for about a minute, since the
+   GUI stores the credentials right after saving) must have the target
+   collection's vector size.
+2. Every document of the dataset is embedded into the new platform's collection,
+   ignoring the diff detector. Documents already complete there (from an
+   interrupted run) are skipped.
+3. Only if all documents succeeded: the old collection is emptied, chunks of
+   documents no longer in the dataset are removed, and the processed-files
+   metadata is rewritten. Otherwise the old embeddings are kept, the run exits 2,
+   and the next sync resumes.
+
+Logs: `KB re-index STARTED | INCOMPLETE | FAILED | COMPLETED: old=<model> -> new=<model>`.
+
+**Starting it.** `data/update` asks `GET /knowledge-base/status`
+(`reindex_required`) and runs the indexer even when the CKB data hash is
+unchanged. `add`, `edit` and `update-status` also start the `agency_data_resync`
+job right away when they saved a production connection with `reindex_required`,
+so the switch does not wait for the hourly sync.
+
+**While it runs** production queries are embedded with the new model, so they
+only find what has been re-indexed so far. Test connections still on the old
+model keep searching the old collection until the switch-over; after it, their
+queries find nothing (logged by provider detection) until they use the new
+model. Retrieval never searches a collection with another vector size.
+
+A full re-index repeats context generation for all content, charged to the
+indexing connection's budget.
+
 ### **🔁 Exit Codes and Retries**
 `vector_indexer_pipeline.sh` saves the CKB data hash (marking the data as synced)
 **only on exit 0**. On any other outcome the hash is left unsaved and the next
@@ -149,7 +192,7 @@ hourly `data/update` sync retries.
 | 0 | All documents indexed (or nothing to do) | ✅ | success |
 | 1 | Fatal error (health check, Resql unreachable, crash) | ❌ | error |
 | 2 | Some documents failed, including documents with any chunk that failed context generation | ❌ | warning |
-| 3 | Another run for the same dataset is in progress | ❌ | skipped (exit 0) |
+| 3 | Another indexer run is in progress (one lock for the whole knowledge base) | ❌ | skipped (exit 0) |
 | 4 | No active LLM connection (production or testing) | ❌ | skipped (exit 0) |
 
 Only successfully indexed documents are marked processed, so a retry re-indexes
@@ -502,10 +545,11 @@ vector_indexer:
       aws_bedrock: ['\btitan\b', '\bamazon\b', '\bbedrock\b']
       azure_openai: ['\bazure\b', '\btext-embedding-3\b']
   
-  # Concurrency Control
+  # Concurrency Control (context generation is paced by the service's token
+  # budget, INDEXER_CONTEXT_TOKENS_PER_MINUTE; raise both with the model quota)
   concurrency:
-    max_concurrent_documents: 3                # Document-level parallelism
-    max_concurrent_chunks_per_doc: 5           # Chunk-level parallelism
+    max_concurrent_documents: 1                # Document-level parallelism
+    max_concurrent_chunks_per_doc: 2           # Chunk-level parallelism
   
   # Batch Optimization
   batching:

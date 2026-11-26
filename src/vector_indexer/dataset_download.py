@@ -1,5 +1,6 @@
 """Simple dataset download utility using requests."""
 
+import shutil
 import zipfile
 import tempfile
 from pathlib import Path
@@ -9,13 +10,34 @@ from loki_logger import LokiLogger
 # Initialize Loki logger
 logger = LokiLogger(service_name="dataset-download")
 
+DATASETS_PATH = Path("/app/datasets")
 
-def download_and_extract_dataset(signed_url: str) -> tuple[str, int]:
+
+def _empty_folder(folder: Path) -> int:
+    """Remove a folder's contents (not the folder: it is a mounted volume)."""
+    removed = 0
+    for child in folder.iterdir():
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+        removed += 1
+    return removed
+
+
+def download_and_extract_dataset(
+    signed_url: str, datasets_path: Path = DATASETS_PATH
+) -> tuple[str, int]:
     """
     Download ZIP from signed URL and extract it to datasets folder.
 
+    The folder is emptied first: files left by a failed or interrupted run
+    must not be indexed with the new dataset (issue #588: a retried re-index
+    must embed exactly the current content, not documents CKB has removed).
+
     Args:
         signed_url: URL to download ZIP from
+        datasets_path: Folder to extract into (the indexer's datasets volume)
 
     Returns:
         tuple: (extraction_path, files_extracted_count)
@@ -32,7 +54,6 @@ def download_and_extract_dataset(signed_url: str) -> tuple[str, int]:
     logger.debug(f"Download URL (first 100 chars): {signed_url[:100]}...")
 
     # Create datasets folder
-    datasets_path = Path("/app/datasets")
     datasets_path.mkdir(parents=True, exist_ok=True)
     logger.debug(f"Dataset directory ready: {datasets_path}")
 
@@ -56,6 +77,14 @@ def download_and_extract_dataset(signed_url: str) -> tuple[str, int]:
 
         file_size_mb = temp_zip_path.stat().st_size / (1024 * 1024)
         logger.info(f"✓ Downloaded {file_size_mb:.1f} MB")
+
+        # Only after a successful download, so a failed one changes nothing
+        leftovers = _empty_folder(datasets_path)
+        if leftovers:
+            logger.warning(
+                f"Removed {leftovers} leftover entries from {datasets_path} "
+                "(an earlier run did not finish) before extracting the new dataset"
+            )
 
         # Extract ZIP
         logger.info("Extracting files...")

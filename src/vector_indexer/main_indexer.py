@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import fcntl
 import shutil
+import signal
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,7 +20,11 @@ sys.path.append(str(Path(__file__).parent.parent))
 from vector_indexer.config.config_loader import ConfigLoader
 from vector_indexer.document_loader import DocumentLoader, DocumentLoadError
 from vector_indexer.contextual_processor import ContextualProcessor
-from vector_indexer.qdrant_manager import QdrantManager
+from vector_indexer.qdrant_manager import (
+    PLATFORM_COLLECTIONS,
+    QdrantManager,
+    StoredEmbeddings,
+)
 from vector_indexer.error_logger import ErrorLogger
 from vector_indexer.models import ProcessingStats, DocumentInfo
 from vector_indexer.diff_identifier import DiffDetector, create_diff_config, DiffError
@@ -31,6 +36,7 @@ logger = LokiLogger(service_name="main-indexer")
 
 # Same container/venv as agency_data_resync.sh's lock (cron_data volume).
 INDEXER_LOCK_DIR = Path("/app/data/locks")
+KNOWLEDGE_BASE_LOCK_KEY = "knowledge-base-indexer"
 
 # Exit code for "no active LLM connection". vector_indexer_pipeline.sh treats it
 # as a skip: the agency hash is not saved, so the next hourly sync retries.
@@ -40,6 +46,11 @@ EXIT_NO_LLM_CONNECTION = 4
 # production when it exists, otherwise testing (decided for issue #805).
 CONNECTION_PRIORITY = ("production", "testing")
 CONNECTION_LOOKUP_TIMEOUT_SECONDS = 30
+
+# Before a re-index (#588): how long to wait for a working test embedding with
+# the indexing connection (its Vault secret may still be being stored).
+REINDEX_EMBEDDING_READY_ATTEMPTS = 6
+REINDEX_EMBEDDING_READY_DELAY_SECONDS = 10.0
 
 
 class ConnectionLookupError(Exception):
@@ -53,6 +64,62 @@ class IndexingConnection:
     environment: str
     vault_uuid: str
     embedding_model: Optional[str] = None
+    embedding_platform: Optional[str] = None  # "azure" | "aws"
+
+
+@dataclass(frozen=True)
+class ReindexPlan:
+    """A full re-index of the knowledge base onto another embedding model (#588).
+
+    Each embedding platform has its own collection, so the new embeddings are
+    built in ``target_collection`` while the old ones stay in
+    ``old_collections`` until every document has been re-indexed.
+    """
+
+    target_collection: str
+    new_model: str
+    old: List[StoredEmbeddings]
+
+    @property
+    def old_collections(self) -> List[str]:
+        return [stored.collection for stored in self.old]
+
+    def describe(self) -> str:
+        old = " and ".join(stored.describe() for stored in self.old)
+        return f"old={old} -> new={self.new_model} ({self.target_collection})"
+
+
+async def plan_reindex(
+    qdrant_manager: QdrantManager, connection: IndexingConnection
+) -> Optional[ReindexPlan]:
+    """Decide whether this run must re-index everything (issue #588).
+
+    It must when the knowledge base holds embeddings from another platform than
+    the indexing connection's. Decided from Qdrant on every run, so a failed or
+    interrupted re-index is picked up again by the next sync until the old
+    collection has been emptied.
+
+    Raises:
+        QdrantOperationError: Qdrant could not be read.
+    """
+    target = PLATFORM_COLLECTIONS.get(connection.embedding_platform or "")
+    if target is None:
+        logger.warning(
+            f"Indexing connection has unknown embedding platform "
+            f"{connection.embedding_platform!r} - re-index check skipped"
+        )
+        return None
+
+    stored = await qdrant_manager.get_stored_embeddings()
+    old = [embeddings for embeddings in stored if embeddings.collection != target]
+    if not old:
+        return None
+    return ReindexPlan(
+        target_collection=target,
+        new_model=f"{connection.embedding_model or 'unknown'} "
+        f"({connection.embedding_platform})",
+        old=old,
+    )
 
 
 def _first_connection_row(
@@ -101,21 +168,28 @@ async def resolve_indexing_connection(
                     environment=environment,
                     vault_uuid=str(row["vaultUuid"]),
                     embedding_model=row.get("embeddingModel"),
+                    embedding_platform=row.get("embeddingPlatform"),
                 )
     return None
 
 
 def _acquire_indexer_lock(signed_url: Optional[str]) -> Optional[IO]:
-    """Acquire a non-blocking, per-dataset lock so the same signed URL is
-    never indexed by two concurrent runs (e.g. an overlapping manual trigger
-    of the vector_indexer CronManager job).
+    """Acquire a non-blocking lock for the whole knowledge base, so two indexer
+    runs never write to it at once.
+
+    One lock for every run, not one per signed URL: CKB issues a fresh
+    presigned URL on each data/update call, so the hourly sync and an immediate
+    re-index trigger (issue #588) would otherwise get different locks and run
+    side by side - two full re-indexes, or one deleting the old collection
+    while the other still reads it. A run that finds the lock busy exits 3; the
+    agency hash is then not saved, so the next sync runs again.
 
     Returns the open lock file handle — keep it referenced for the process's
     lifetime, since closing it releases the lock — or None if another run
     already holds it.
     """
     INDEXER_LOCK_DIR.mkdir(parents=True, exist_ok=True)
-    lock_key = hashlib.sha256((signed_url or "no-signed-url").encode()).hexdigest()
+    lock_key = KNOWLEDGE_BASE_LOCK_KEY
     lock_path = INDEXER_LOCK_DIR / f"{lock_key}.lock"
     lock_file = open(lock_path, "w")
     try:
@@ -176,9 +250,16 @@ class VectorIndexer:
         if self.signed_url:
             logger.info(f"Signed URL provided: {self.signed_url[:50]}...")
 
-    async def process_all_documents(self) -> ProcessingStats:
+    async def process_all_documents(
+        self, reindex: Optional[ReindexPlan] = None
+    ) -> ProcessingStats:
         """
         Process all documents in the dataset with contextual retrieval.
+
+        Args:
+            reindex: When given, re-index the whole knowledge base onto the
+                indexing connection's embedding model (issue #588) instead of
+                processing only the changed files.
 
         Returns:
             ProcessingStats: Overall processing statistics
@@ -202,7 +283,16 @@ class VectorIndexer:
                     self.config.dataset_base_path = extraction_path
                 except Exception as e:
                     logger.error(f"Dataset download failed: {e}")
+                    if reindex is not None:
+                        logger.error(
+                            f"KB re-index FAILED: {reindex.describe()} - dataset "
+                            f"download failed: {e}. Old embeddings kept; the next "
+                            "sync retries."
+                        )
                     raise
+
+            if reindex is not None:
+                return await self._run_full_reindex(reindex)
 
             # Step 2: Diff identification - determine what files need processing
             logger.info("Step 1: Identifying changed files...")
@@ -276,55 +366,11 @@ class VectorIndexer:
                 logger.info(f"Found {len(documents)} documents to process")
                 self.stats.total_documents = len(documents)
 
-                # Process documents with controlled concurrency
-                semaphore = asyncio.Semaphore(self.config.max_concurrent_documents)
-                tasks: List[asyncio.Task[tuple[int, str, int]]] = []
-
-                for doc_info in documents:
-                    task = asyncio.create_task(
-                        self._process_single_document(
-                            doc_info, qdrant_manager, semaphore
-                        )
-                    )
-                    tasks.append(task)
-
-                # Execute all document processing tasks
-                logger.info(
-                    f"Processing {len(tasks)} documents with max {self.config.max_concurrent_documents} concurrent"
-                )
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-
-                # Collect results and handle exceptions
-                chunks_info: Dict[
-                    str, Dict[str, Any]
-                ] = {}  # Track chunk counts for metadata update
                 # Only documents that processed successfully are marked as
                 # processed in DVC tracking, so failures are retried next run.
-                processed_documents: List[DocumentInfo] = []
-                for i, result in enumerate(results):
-                    if isinstance(result, Exception):
-                        doc_info = documents[i]
-                        logger.error(
-                            f"Document processing failed: {doc_info.document_hash} - {result}"
-                        )
-                        self.stats.documents_failed += 1
-                        self.error_logger.log_document_failure(
-                            doc_info.document_hash, str(result)
-                        )
-                    else:
-                        # Result should be tuple of (chunk_count, content_hash, failed_chunks)
-                        doc_info = documents[i]
-                        self.stats.documents_processed += 1
-                        processed_documents.append(doc_info)
-                        if isinstance(result, tuple) and len(result) == 3:
-                            chunk_count, content_hash, failed_chunks = result
-                            self.stats.total_chunks_processed += chunk_count
-                            self.stats.total_chunks_failed += failed_chunks
-                            # Track chunk count using content_hash (not directory hash)
-                            chunks_info[content_hash] = {"chunk_count": chunk_count}
-                            logger.info(
-                                f"CHUNK COUNT: Document {doc_info.document_hash[:12]}... (content: {content_hash[:12]}...) -> {chunk_count} chunks ({failed_chunks} failed)"
-                            )
+                processed_documents, chunks_info = await self._process_documents(
+                    documents, qdrant_manager
+                )
 
                 # Log summary only (avoid massive logs for large datasets)
                 total_chunks = sum(info["chunk_count"] for info in chunks_info.values())
@@ -395,6 +441,239 @@ class VectorIndexer:
                 await self.api_client.close()
             except Exception as e:
                 logger.warning(f"Error closing API client: {e}")
+
+    async def _process_documents(
+        self, documents: List[DocumentInfo], qdrant_manager: QdrantManager
+    ) -> tuple[List[DocumentInfo], Dict[str, Dict[str, Any]]]:
+        """Process documents concurrently and record the outcome in self.stats.
+
+        Returns:
+            The documents that succeeded, and their chunk counts keyed by
+            content hash (for the processed-files metadata).
+        """
+        semaphore = asyncio.Semaphore(self.config.max_concurrent_documents)
+        tasks: List[asyncio.Task[tuple[int, str, int]]] = [
+            asyncio.create_task(
+                self._process_single_document(doc_info, qdrant_manager, semaphore)
+            )
+            for doc_info in documents
+        ]
+
+        logger.info(
+            f"Processing {len(tasks)} documents with max {self.config.max_concurrent_documents} concurrent"
+        )
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        chunks_info: Dict[str, Dict[str, Any]] = {}
+        processed_documents: List[DocumentInfo] = []
+        for doc_info, result in zip(documents, results, strict=True):
+            if isinstance(result, BaseException):
+                logger.error(
+                    f"Document processing failed: {doc_info.document_hash} - {result}"
+                )
+                self.stats.documents_failed += 1
+                self.error_logger.log_document_failure(
+                    doc_info.document_hash, str(result)
+                )
+                continue
+
+            self.stats.documents_processed += 1
+            processed_documents.append(doc_info)
+            # A successful result is the tuple chunk count, content hash, failed chunks.
+            if isinstance(result, tuple) and len(result) == 3:
+                chunk_count, content_hash, failed_chunks = result
+                self.stats.total_chunks_processed += chunk_count
+                self.stats.total_chunks_failed += failed_chunks
+                # Track chunk count using content_hash (not directory hash)
+                chunks_info[content_hash] = {"chunk_count": chunk_count}
+                logger.info(
+                    f"CHUNK COUNT: Document {doc_info.document_hash[:12]}... (content: {content_hash[:12]}...) -> {chunk_count} chunks ({failed_chunks} failed)"
+                )
+        return processed_documents, chunks_info
+
+    async def _run_full_reindex(self, plan: ReindexPlan) -> ProcessingStats:
+        """Re-index every document onto the indexing connection's model (#588).
+
+        The new embeddings go to the target collection while the old collection
+        keeps serving until the end. Documents already complete in the target
+        collection (from an earlier, interrupted run) are skipped, so a retry
+        only redoes what is missing. Only when every document succeeded are the
+        old embeddings removed; otherwise they are kept and the next sync, which
+        sees both collections filled, carries on.
+
+        Raises:
+            Exception: Any error that stops the re-index; logged as FAILED.
+        """
+        logger.warning(f"KB re-index STARTED: {plan.describe()}")
+        try:
+            async with QdrantManager(self.config) as qdrant_manager:
+                await qdrant_manager.ensure_collections_exist()
+                await self._wait_for_reindex_embeddings(
+                    plan,
+                    qdrant_manager.collections_config[plan.target_collection][
+                        "vector_size"
+                    ],
+                )
+
+                all_documents = self.document_loader.discover_all_documents()
+                self.stats.total_documents = len(all_documents)
+                if not all_documents:
+                    logger.warning(
+                        f"KB re-index SKIPPED: {plan.describe()} - the dataset has no "
+                        "documents; old embeddings kept"
+                    )
+                    return self.stats
+
+                # Resume: skip documents whose chunks are all in the target already.
+                chunks_info: Dict[str, Dict[str, Any]] = {}
+                to_process: List[DocumentInfo] = []
+                for doc_info in all_documents:
+                    stored = await qdrant_manager.count_document_chunks(
+                        plan.target_collection, doc_info.document_hash
+                    )
+                    if stored is None:
+                        to_process.append(doc_info)
+                    else:
+                        chunks_info[doc_info.document_hash] = {"chunk_count": stored}
+                        self.stats.documents_processed += 1
+                        self.stats.total_chunks_processed += stored
+                already = len(all_documents) - len(to_process)
+                if already:
+                    # An earlier run of this re-index failed or was interrupted
+                    # (possibly killed without a chance to log it).
+                    logger.warning(
+                        f"KB re-index RESUMED: {plan.describe()} - {already} of "
+                        f"{len(all_documents)} documents already re-indexed by an "
+                        "earlier run that did not finish"
+                    )
+                logger.info(
+                    f"KB re-index: {len(all_documents)} documents, "
+                    f"{already} already re-indexed, "
+                    f"{len(to_process)} to process"
+                )
+
+                _, processed_chunks = await self._process_documents(
+                    to_process, qdrant_manager
+                )
+                chunks_info.update(processed_chunks)
+                self.stats.end_time = datetime.now()
+
+                if self.stats.documents_failed > 0:
+                    logger.error(
+                        f"KB re-index INCOMPLETE: {plan.describe()} - "
+                        f"{self.stats.documents_failed} of {len(all_documents)} documents "
+                        "failed. Old embeddings kept; the next sync retries and skips "
+                        "the documents already re-indexed."
+                    )
+                    self.error_logger.log_processing_stats(self.stats)
+                    return self.stats
+
+                # Every document is in the target: remove the old model's
+                # embeddings and chunks of documents no longer in the dataset.
+                for collection_name in plan.old_collections:
+                    await qdrant_manager.clear_collection(collection_name)
+                    logger.info(
+                        f"KB re-index: removed old embeddings in {collection_name}"
+                    )
+                await qdrant_manager.delete_chunks_not_in(
+                    plan.target_collection,
+                    {doc_info.document_hash for doc_info in all_documents},
+                )
+
+            await self._record_full_reindex_metadata(all_documents, chunks_info)
+
+            self.error_logger.log_processing_stats(self.stats)
+            logger.warning(
+                f"KB re-index COMPLETED: {plan.describe()} - "
+                f"{len(all_documents)} documents, "
+                f"{sum(info['chunk_count'] for info in chunks_info.values())} chunks"
+            )
+            self._cleanup_datasets()
+            return self.stats
+
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            # SIGTERM (see main) or Ctrl+C: not an Exception, so logged here
+            logger.error(
+                f"KB re-index INTERRUPTED: {plan.describe()}. Old embeddings kept; "
+                "the next sync resumes it."
+            )
+            raise
+        except Exception as e:
+            logger.error(
+                f"KB re-index FAILED: {plan.describe()} - {e}. Old embeddings kept; "
+                "the next sync retries."
+            )
+            raise
+
+    async def _wait_for_reindex_embeddings(
+        self, plan: ReindexPlan, expected_dimensions: int
+    ) -> None:
+        """Make one test embedding before re-indexing anything.
+
+        A re-index is triggered as soon as a production connection is saved,
+        but the GUI stores the connection's credentials in Vault right after
+        the save, asynchronously. Waiting here for a working embedding keeps
+        the run from failing every document on missing credentials. The vector
+        size must match the target collection, or nothing could be stored.
+
+        Raises:
+            RuntimeError: No working embedding within the wait, or one of the
+                wrong size.
+        """
+        last_error: Optional[Exception] = None
+        for attempt in range(1, REINDEX_EMBEDDING_READY_ATTEMPTS + 1):
+            try:
+                result = await self.api_client.create_embeddings_batch(
+                    ["Knowledge base re-index check"]
+                )
+                dimensions = len(result["embeddings"][0])
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    f"KB re-index: test embedding attempt {attempt}/"
+                    f"{REINDEX_EMBEDDING_READY_ATTEMPTS} failed: {e}"
+                )
+                if attempt < REINDEX_EMBEDDING_READY_ATTEMPTS:
+                    await asyncio.sleep(REINDEX_EMBEDDING_READY_DELAY_SECONDS)
+                continue
+
+            if dimensions != expected_dimensions:
+                raise RuntimeError(
+                    f"the indexing connection's embeddings have {dimensions} "
+                    f"dimensions, but {plan.target_collection} needs "
+                    f"{expected_dimensions}"
+                )
+            logger.info(
+                f"KB re-index: test embedding OK ({dimensions} dimensions, "
+                f"model {result.get('model_used', 'unknown')})"
+            )
+            return
+        raise RuntimeError(
+            f"no working embedding with the indexing connection: {last_error}"
+        )
+
+    async def _record_full_reindex_metadata(
+        self,
+        documents: List[DocumentInfo],
+        chunks_info: Dict[str, Dict[str, Any]],
+    ) -> None:
+        """Make the processed-files metadata match the re-indexed dataset.
+
+        Non-fatal like the normal path: the knowledge base is already complete;
+        stale metadata only makes a later run re-process some files.
+        """
+        try:
+            diff_detector = DiffDetector(create_diff_config())
+            await diff_detector.mark_files_processed(
+                [doc_info.cleaned_txt_path for doc_info in documents],
+                chunks_info=chunks_info,
+            )
+            # Drops entries for files that are no longer in the dataset.
+            await diff_detector.mark_files_processed([], force_metadata_update=True)
+        except Exception as e:
+            logger.warning(
+                f"KB re-index: failed to update processed files tracking: {e}"
+            )
 
     async def _process_single_document(
         self,
@@ -790,6 +1069,18 @@ async def main() -> int:
     if lock_file is None:
         return 3
 
+    # SIGTERM (container stop, cron-manager shutdown) would otherwise end the
+    # process without logging; cancel the run instead so it is logged as
+    # interrupted (issue #588) and the lock and clients are released.
+    main_task = asyncio.current_task()
+    if main_task is not None:
+        try:
+            asyncio.get_running_loop().add_signal_handler(
+                signal.SIGTERM, main_task.cancel
+            )
+        except (NotImplementedError, RuntimeError):
+            pass  # no signal support here (e.g. Windows or not the main thread)
+
     indexer = None
     try:
         # Initialize vector indexer with signed URL
@@ -824,12 +1115,18 @@ async def main() -> int:
         indexer.config.connection_id = connection.vault_uuid
         logger.info(
             f"Indexing with the {connection.environment} LLM connection "
-            f"(embedding model: {connection.embedding_model or 'unknown'})"
+            f"(embedding model: {connection.embedding_model or 'unknown'}, "
+            f"platform: {connection.embedding_platform or 'unknown'})"
         )
+
+        # Issue #588: embeddings from another model in the knowledge base mean
+        # a full re-index with this connection's model.
+        async with QdrantManager(indexer.config) as qdrant_manager:
+            reindex = await plan_reindex(qdrant_manager, connection)
 
         # Process all documents
         logger.info("Health check passed. Starting document processing...")
-        stats = await indexer.process_all_documents()
+        stats = await indexer.process_all_documents(reindex=reindex)
 
         # Exit with appropriate code
         if stats.documents_failed > 0:
@@ -841,8 +1138,10 @@ async def main() -> int:
             logger.info("Processing completed successfully")
             return 0
 
-    except KeyboardInterrupt:
-        logger.info("Processing interrupted by user")
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        logger.warning(
+            "Processing interrupted (SIGTERM or Ctrl+C) - will resume on next sync"
+        )
         return 130
     except Exception as e:
         logger.error(f"Fatal error: {e}")

@@ -21,10 +21,10 @@ import httpx
 import pytest
 
 # The indexer imports its sibling packages top-level (e.g. `diff_identifier`),
-# as cron-manager's PYTHONPATH includes /app/src/vector_indexer. Mirror that.
-sys.path.insert(
-    0, str(Path(__file__).resolve().parent.parent / "src" / "vector_indexer")
-)
+# as cron-manager's PYTHONPATH includes /app/src/vector_indexer. Mirror that,
+# appended rather than first: src/vector_indexer/models.py would otherwise
+# shadow the src/models package for every test that runs after this one.
+sys.path.append(str(Path(__file__).resolve().parent.parent / "src" / "vector_indexer"))
 
 from vector_indexer import main_indexer  # noqa: E402
 from vector_indexer.main_indexer import (  # noqa: E402
@@ -173,10 +173,19 @@ def _fake_indexer(failed_documents: int = 0) -> MagicMock:
     return indexer
 
 
-async def _run_main(indexer: MagicMock, resolver: AsyncMock) -> int:
+async def _run_main(
+    indexer: MagicMock, resolver: AsyncMock, reindex_plan: Any = None
+) -> int:
+    qdrant_manager = MagicMock()
+    qdrant_manager.__aenter__ = AsyncMock(return_value=qdrant_manager)
+    qdrant_manager.__aexit__ = AsyncMock(return_value=None)
     with (
         patch.object(main_indexer, "VectorIndexer", return_value=indexer),
         patch.object(main_indexer, "resolve_indexing_connection", resolver),
+        patch.object(main_indexer, "QdrantManager", return_value=qdrant_manager),
+        patch.object(
+            main_indexer, "plan_reindex", AsyncMock(return_value=reindex_plan)
+        ),
         patch.object(main_indexer, "_acquire_indexer_lock", return_value=MagicMock()),
         patch.object(main_indexer, "fcntl", MagicMock()),
         patch("sys.argv", ["main_indexer.py", "--signed-url", "http://x/data.zip"]),
@@ -199,7 +208,7 @@ class TestMainConnectionHandling:
         indexer = _fake_indexer()
         seen: Dict[str, Any] = {}
 
-        async def capture_config() -> SimpleNamespace:
+        async def capture_config(**_kwargs: Any) -> SimpleNamespace:
             seen["environment"] = indexer.config.environment
             seen["connection_id"] = indexer.config.connection_id
             return SimpleNamespace(documents_failed=0)

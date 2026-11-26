@@ -349,6 +349,8 @@ async function verifyEmbeddingModel(
     embedding_model: connectionData.embeddingModel,
     embedding_deployment_name: connectionData.embeddingDeploymentName || '',
     embedding_target_uri: connectionData.embeddingTargetUri || '',
+    // #588: production may use another approved model; the knowledge base is then re-indexed
+    deployment_environment: connectionData.deploymentEnvironment.toLowerCase(),
     ...(existing && { exclude_connection_id: Number(existing.id) }),
   };
 
@@ -479,10 +481,12 @@ export async function createLLMConnection(connectionData: LLMConnectionFormData)
   // 1. Save as testing
   let connection: LLMConnection | undefined;
   try {
-    const { data } = await apiDev.post(
-      llmConnectionsEndpoints.CREATE_LLM_CONNECTION(),
-      buildLLMConnectionPayload(connectionData, 'testing')
-    );
+    const { data } = await apiDev.post(llmConnectionsEndpoints.CREATE_LLM_CONNECTION(), {
+      ...buildLLMConnectionPayload(connectionData, 'testing'),
+      // Saved as testing but checked as the environment it is promoted to in step 3:
+      // production may use another embedding model than the knowledge base (#588)
+      target_environment: wantsProduction ? 'production' : 'testing',
+    });
     connection = data?.response;
   } catch (saveError) {
     // The server also checks the embedding model (in case the step above was bypassed)

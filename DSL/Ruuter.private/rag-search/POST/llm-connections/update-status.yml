@@ -19,6 +19,8 @@ extract_request_data:
   assign:
     connection_id: ${Number(incoming.body.connection_id)}
     connection_status: ${incoming.body.connection_status}
+    # Issue #588: set from the embedding check when it runs
+    reindex_required: false
   next: validate_request
 
 validate_request:
@@ -62,6 +64,7 @@ check_embedding_lock:
       embedding_model: ${existing_connection.response.body[0].embeddingModel || ""}
       existing_vault_uuid: ${existing_connection.response.body[0].vaultUuid || ""}
       exclude_connection_id: ${connection_id}
+      deployment_environment: ${existing_connection.response.body[0].environment || ""}
   result: embedding_lock_result
   next: validate_embedding_lock
   on_error: return_embedding_check_unavailable
@@ -69,10 +72,17 @@ check_embedding_lock:
 validate_embedding_lock:
   switch:
     - condition: ${embedding_lock_result.response.body != null && embedding_lock_result.response.body.allowed === true}
-      next: update_connection_status
+      next: assign_reindex_required
     - condition: ${embedding_lock_result.response.body != null && embedding_lock_result.response.body.allowed === false}
       next: return_embedding_model_locked
   next: return_embedding_check_unavailable
+
+# Issue #588: reactivating a production connection with another embedding
+# model than the knowledge base re-indexes it.
+assign_reindex_required:
+  assign:
+    reindex_required: ${embedding_lock_result.response.body.reindex_required === true}
+  next: update_connection_status
 
 update_connection_status:
   call: http.post
@@ -86,9 +96,21 @@ update_connection_status:
 
 check_update_status:
   switch:
+    - condition: ${200 <= update_result.response.statusCodeValue && update_result.response.statusCodeValue < 300 && reindex_required === true}
+      next: trigger_knowledge_base_resync
     - condition: ${200 <= update_result.response.statusCodeValue && update_result.response.statusCodeValue < 300}
       next: return_success
   next: return_update_failed
+
+# Issue #588: start the re-index now instead of at the next hourly sync.
+# Failures are ignored: the hourly sync re-checks and starts it anyway.
+trigger_knowledge_base_resync:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_CRON_MANAGER]/execute/data_resync/agency_data_resync"
+  result: resync_trigger_result
+  next: return_success
+  on_error: return_success
 
 return_success:
   return: ${update_result.response.body[0]}

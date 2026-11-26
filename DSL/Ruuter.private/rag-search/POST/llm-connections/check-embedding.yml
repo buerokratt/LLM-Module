@@ -35,6 +35,9 @@ declaration:
       - field: exclude_connection_id
         type: number
         description: "Connection being edited; not compared with itself"
+      - field: deployment_environment
+        type: string
+        description: "Environment the connection is saved in (production may re-index the knowledge base)"
 
 # Empty values, not null: Ruuter's http.post fails (NullPointerException) on null
 # body fields. The orchestration service treats "" and 0 as "not given".
@@ -49,6 +52,7 @@ extract_request_data:
     embedding_deployment_name: ${incoming.body.embedding_deployment_name || ""}
     embedding_target_uri: ${incoming.body.embedding_target_uri || ""}
     exclude_connection_id: ${incoming.body.exclude_connection_id || 0}
+    deployment_environment: ${incoming.body.deployment_environment || ""}
   next: check_temp_secret_given
 
 # A temporary secret is deleted after the check, so it must not be the secret of
@@ -89,6 +93,7 @@ check_embedding:
       embedding_deployment_name: ${embedding_deployment_name}
       embedding_target_uri: ${embedding_target_uri}
       exclude_connection_id: ${exclude_connection_id}
+      deployment_environment: ${deployment_environment}
   result: check_result
   next: assign_check_outcome
   on_error: assign_check_failed

@@ -99,6 +99,8 @@ extract_request_data:
     embedding_target_uri: ${incoming.body.embedding_target_uri || ""}
     embedding_azure_api_key: ${incoming.body.embedding_azure_api_key || ""}
     updated_at: ${new Date().toISOString()}
+    # Issue #588: set from the embedding check when it runs
+    reindex_required: false
   next: validate_environment
 
 validate_environment:
@@ -123,12 +125,15 @@ validate_connection_exists:
   next: return_not_found
 
 # Issue #806: only a changed embedding platform/model is checked against the
-# knowledge base, so other edits (budget, name, testing <-> production) keep
-# working for existing setups. The GUI checks the real model with a test
-# embedding before saving.
+# knowledge base, so other edits (budget, name) keep working for existing setups.
+# The GUI checks the real model with a test embedding before saving.
+# Issue #588: a promotion to production is checked too, since the production
+# connection decides the knowledge base's model (re-index when it differs).
 check_embedding_changed:
   switch:
     - condition: ${embedding_platform !== existing_connection.response.body[0].embeddingPlatform || embedding_model !== existing_connection.response.body[0].embeddingModel}
+      next: check_embedding_lock
+    - condition: ${environment == "production" && existing_connection.response.body[0].environment !== "production"}
       next: check_embedding_lock
   next: check_deployment_environment
 
@@ -140,6 +145,7 @@ check_embedding_lock:
       embedding_platform: ${embedding_platform}
       embedding_model: ${embedding_model}
       exclude_connection_id: ${connection_id}
+      deployment_environment: ${environment}
   result: embedding_lock_result
   next: validate_embedding_lock
   on_error: return_embedding_check_unavailable
@@ -147,10 +153,15 @@ check_embedding_lock:
 validate_embedding_lock:
   switch:
     - condition: ${embedding_lock_result.response.body != null && embedding_lock_result.response.body.allowed === true}
-      next: check_deployment_environment
+      next: assign_reindex_required
     - condition: ${embedding_lock_result.response.body != null && embedding_lock_result.response.body.allowed === false}
       next: return_embedding_model_locked
   next: return_embedding_check_unavailable
+
+assign_reindex_required:
+  assign:
+    reindex_required: ${embedding_lock_result.response.body.reindex_required === true}
+  next: check_deployment_environment
 
 check_deployment_environment:
   switch:
@@ -216,7 +227,23 @@ update_llm_connection:
       embedding_target_uri: ${embedding_target_uri}
       embedding_azure_api_key: ${embedding_azure_api_key}
   result: connection_result
+  next: check_reindex_required
+
+# Issue #588: start the re-index now instead of at the next hourly sync (see
+# add.yml). reindex_required stays false when the check did not run.
+check_reindex_required:
+  switch:
+    - condition: ${environment == "production" && reindex_required === true}
+      next: trigger_knowledge_base_resync
   next: return_success
+
+trigger_knowledge_base_resync:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_CRON_MANAGER]/execute/data_resync/agency_data_resync"
+  result: resync_trigger_result
+  next: return_success
+  on_error: return_success
 
 return_success:
   return: ${connection_result.response.body[0]}

@@ -73,6 +73,9 @@ declaration:
       - field: embedding_azure_api_key
         type: string
         description: "Azure embedding API key"
+      - field: target_environment
+        type: string
+        description: "Environment the connection is promoted to right after it is saved (the GUI saves a new production connection as testing first); used for the embedding model check"
 
 extract_request_data:
   assign:
@@ -98,6 +101,10 @@ extract_request_data:
     embedding_target_uri: ${incoming.body.embedding_target_uri || ""}
     embedding_azure_api_key: ${incoming.body.embedding_azure_api_key || ""}
     created_at: ${new Date().toISOString()}
+    # Issue #588: the embedding check uses the environment the connection ends
+    # up in. Only "saved as testing, promoted to production" differs; anything
+    # else falls back to the saved environment.
+    embedding_check_environment: "${incoming.body.deployment_environment == 'testing' && incoming.body.target_environment == 'production' ? 'production' : incoming.body.deployment_environment}"
   next: validate_environment
 
 validate_environment:
@@ -109,6 +116,8 @@ validate_environment:
 # Issue #806: every connection must use the embedding model of the knowledge base
 # (or, while it is empty, of the other active connection). This checks the form
 # values only; the GUI checks the real model with a test embedding before saving.
+# Issue #588: a production connection may use another approved model; the
+# answer then has reindex_required and the knowledge base is re-indexed.
 check_embedding_lock:
   call: http.post
   args:
@@ -116,6 +125,7 @@ check_embedding_lock:
     body:
       embedding_platform: ${embedding_platform}
       embedding_model: ${embedding_model}
+      deployment_environment: ${embedding_check_environment}
   result: embedding_lock_result
   next: validate_embedding_lock
   on_error: return_embedding_check_unavailable
@@ -193,7 +203,25 @@ add_llm_connection:
       embedding_target_uri: ${embedding_target_uri}
       embedding_azure_api_key: ${embedding_azure_api_key}
   result: connection_result
+  next: check_reindex_required
+
+# Issue #588: start the re-index now instead of at the next hourly sync. The
+# resync job only starts the indexer (in the background); the indexer waits for
+# this connection's credentials, which the GUI stores right after this call.
+# Failures are ignored: the hourly sync re-checks and starts it anyway.
+check_reindex_required:
+  switch:
+    - condition: ${deployment_environment == "production" && embedding_lock_result.response.body.reindex_required === true}
+      next: trigger_knowledge_base_resync
   next: assign_connection_response
+
+trigger_knowledge_base_resync:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_CRON_MANAGER]/execute/data_resync/agency_data_resync"
+  result: resync_trigger_result
+  next: assign_connection_response
+  on_error: assign_connection_response
 
 assign_connection_response:
   assign:
