@@ -60,3 +60,13 @@ def get_constant(name: str) -> str:
     if not value:
         raise RuntimeError(f"Required key '{name}' is not set in {CONSTANTS_INI_PATH}")
     return value
+
+
+def get_optional_constant(name: str, default: str = "") -> str:
+    """Return an optional value from the [DSL] section of constants.ini.
+
+    Unlike get_constant, a missing or empty key is not an error — it yields the
+    default. Used for settings whose empty value is meaningful, such as
+    VAULT_PATH_PREFIX (empty = secrets live at the mount root).
+    """
+    return _CONSTANTS.get(name, "").strip() or default

@@ -3,6 +3,9 @@ global:
   domain: "<your-domain>"  # Update with actual domain
   namespace: "rag-module"
   storageClass: "local-path"
+
+  # Vault KV path prefix; propagated to every subchart. Single place to set it.
+  vaultPathPrefix: "llm-module"
   
 # Individual service configurations
 database:
@@ -56,11 +59,7 @@ Langfuse-Web:
 Langfuse-Worker:
   enabled: false
 
-Vault:
-  enabled: true
-
-Vault-Init:
-  enabled: true
+# Vault / Vault-Init removed; the agents below remain (AppRole auth unchanged).
 
 Vault-Agent-LLM:
   enabled: true

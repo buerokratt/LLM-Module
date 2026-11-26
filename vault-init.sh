@@ -5,7 +5,19 @@ VAULT_ADDR="${VAULT_ADDR:-http://vault:8200}"
 UNSEAL_KEYS_FILE="/vault/data/unseal-keys.json"
 INIT_FLAG="/vault/data/.initialized"
 
+# KV path prefix. Empty reproduces the historical layout exactly. Set to
+# "llm-module" to make this local Vault mirror the shared central Vault, so the
+# policies granted here match the ones central grants and local testing
+# reproduces central's failure modes (notably missing list on metadata).
+VAULT_PATH_PREFIX="$(echo "${VAULT_PATH_PREFIX:-}" | sed 's|^/*||; s|/*$||')"
+if [ -n "$VAULT_PATH_PREFIX" ]; then
+    P="$VAULT_PATH_PREFIX/"
+else
+    P=""
+fi
+
 echo "=== Vault Initialization Script ==="
+echo "KV path prefix: ${VAULT_PATH_PREFIX:-(none)}"
 
 # ---------------------------------------------------------------------------
 # Helpers (used by the SUBSEQUENT DEPLOYMENT branch)
@@ -151,11 +163,11 @@ if [ ! -f "$INIT_FLAG" ]; then
     
     # Create GUI policy - Read public encryption key only
     echo "Creating gui-policy..."
-    GUI_POLICY='path "secret/data/encryption/public_key" { capabilities = ["read"] }
-path "secret/metadata/encryption/public_key" { capabilities = ["read"] }
-path "secret/data/encryption/private_key" { capabilities = ["deny"] }
-path "secret/data/llm/*" { capabilities = ["deny"] }
-path "secret/data/embeddings/*" { capabilities = ["deny"] }'
+    GUI_POLICY='path "secret/data/'"$P"'encryption/public_key" { capabilities = ["read"] }
+path "secret/metadata/'"$P"'encryption/public_key" { capabilities = ["read"] }
+path "secret/data/'"$P"'encryption/private_key" { capabilities = ["deny"] }
+path "secret/data/'"$P"'llm/*" { capabilities = ["deny"] }
+path "secret/data/'"$P"'embeddings/*" { capabilities = ["deny"] }'
     
     GUI_POLICY_JSON=$(echo "$GUI_POLICY" | jq -Rs '{"policy":.}')
     wget -q -O- --post-data="$GUI_POLICY_JSON" \
@@ -165,14 +177,14 @@ path "secret/data/embeddings/*" { capabilities = ["deny"] }'
     
     # Create CronManager policy - Read encryption keys + Write LLM/Embedding secrets
     echo "Creating cron-manager-policy..."
-    CRON_POLICY='path "secret/data/encryption/public_key" { capabilities = ["read"] }
-path "secret/metadata/encryption/public_key" { capabilities = ["read"] }
-path "secret/data/encryption/private_key" { capabilities = ["read"] }
-path "secret/metadata/encryption/private_key" { capabilities = ["read"] }
-path "secret/data/llm/connections/*" { capabilities = ["create", "read", "update", "delete"] }
-path "secret/metadata/llm/connections/*" { capabilities = ["read", "list", "delete"] }
-path "secret/data/embeddings/connections/*" { capabilities = ["create", "read", "update", "delete"] }
-path "secret/metadata/embeddings/connections/*" { capabilities = ["read", "list", "delete"] }
+    CRON_POLICY='path "secret/data/'"$P"'encryption/public_key" { capabilities = ["read"] }
+path "secret/metadata/'"$P"'encryption/public_key" { capabilities = ["read"] }
+path "secret/data/'"$P"'encryption/private_key" { capabilities = ["read"] }
+path "secret/metadata/'"$P"'encryption/private_key" { capabilities = ["read"] }
+path "secret/data/'"$P"'llm/connections/*" { capabilities = ["create", "read", "update", "delete"] }
+path "secret/metadata/'"$P"'llm/connections/*" { capabilities = ["read", "list", "delete"] }
+path "secret/data/'"$P"'embeddings/connections/*" { capabilities = ["create", "read", "update", "delete"] }
+path "secret/metadata/'"$P"'embeddings/connections/*" { capabilities = ["read", "list", "delete"] }
 path "auth/token/lookup-self" { capabilities = ["read"] }'
     
     CRON_POLICY_JSON=$(echo "$CRON_POLICY" | jq -Rs '{"policy":.}')
@@ -183,13 +195,13 @@ path "auth/token/lookup-self" { capabilities = ["read"] }'
     
     # Create LLM Orchestration policy - Read LLM/Embedding secrets only
     echo "Creating llm-orchestration-policy..."
-    LLM_POLICY='path "secret/data/llm/connections/*" { capabilities = ["read", "list"] }
-path "secret/metadata/llm/connections/*" { capabilities = ["read", "list"] }
-path "secret/data/embeddings/connections/*" { capabilities = ["read", "list"] }
-path "secret/metadata/embeddings/connections/*" { capabilities = ["read", "list"] }
-path "secret/data/encryption/*" { capabilities = ["deny"] }
-path "secret/data/langfuse/*" { capabilities = ["read"] }
-path "secret/metadata/langfuse/*" { capabilities = ["read", "list"] }
+    LLM_POLICY='path "secret/data/'"$P"'llm/connections/*" { capabilities = ["read", "list"] }
+path "secret/metadata/'"$P"'llm/connections/*" { capabilities = ["read", "list"] }
+path "secret/data/'"$P"'embeddings/connections/*" { capabilities = ["read", "list"] }
+path "secret/metadata/'"$P"'embeddings/connections/*" { capabilities = ["read", "list"] }
+path "secret/data/'"$P"'encryption/*" { capabilities = ["deny"] }
+path "secret/data/'"$P"'langfuse/*" { capabilities = ["read"] }
+path "secret/metadata/'"$P"'langfuse/*" { capabilities = ["read", "list"] }
 path "auth/token/lookup-self" { capabilities = ["read"] }'
     
     LLM_POLICY_JSON=$(echo "$LLM_POLICY" | jq -Rs '{"policy":.}')
@@ -282,14 +294,14 @@ path "auth/token/lookup-self" { capabilities = ["read"] }'
     wget -q -O- --post-data='{"data":{"key":"'"$PUBLIC_KEY"'","algorithm":"RSA-OAEP","key_size":2048,"key_id":"'"$KEY_ID"'","created_at":"'"$CREATED_AT"'"}}' \
         --header="X-Vault-Token: $ROOT_TOKEN" \
         --header='Content-Type: application/json' \
-        "$VAULT_ADDR/v1/secret/data/encryption/public_key" >/dev/null
+        "$VAULT_ADDR/v1/secret/data/${P}encryption/public_key" >/dev/null
     
     # Store private key in Vault
     echo "Storing private key in Vault..."
     wget -q -O- --post-data='{"data":{"key":"'"$PRIVATE_KEY"'","algorithm":"RSA-OAEP","key_size":2048,"key_id":"'"$KEY_ID"'","created_at":"'"$CREATED_AT"'"}}' \
         --header="X-Vault-Token: $ROOT_TOKEN" \
         --header='Content-Type: application/json' \
-        "$VAULT_ADDR/v1/secret/data/encryption/private_key" >/dev/null
+        "$VAULT_ADDR/v1/secret/data/${P}encryption/private_key" >/dev/null
     
     # Clean up temporary files
     rm -rf "$TEMP_KEY_DIR"

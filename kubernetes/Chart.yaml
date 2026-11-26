@@ -77,14 +77,7 @@ dependencies:
     version: 0.1.0
     repository: "file://./charts/Langfuse-Worker"
     condition: Langfuse-Worker.enabled
-  - name: Vault
-    version: 0.1.0
-    repository: "file://./charts/Vault"
-    condition: Vault.enabled
-  - name: Vault-Init
-    version: 0.1.0
-    repository: "file://./charts/Vault-Init"
-    condition: Vault-Init.enabled
+  # Vault + Vault-Init removed: Kubernetes uses the shared central Vault.
   - name: Vault-Agent-GUI
     version: 0.1.0
     repository: "file://./charts/Vault-Agent-GUI"

@@ -1,3 +1,7 @@
+# Fallback for the umbrella chart's global block when rendered standalone.
+global:
+  vaultPathPrefix: ""
+
 replicas: 1
 enabled: true
 
@@ -106,9 +110,12 @@ constants:
   QDRANT_URL: "http://qdrant:6333"
   LOKI_URL: "http://loki:3100"
   LANGFUSE_URL: "http://langfuse-web:3000"
+  VAULT_AGENT_LLM_URL: "http://localhost:8201"  # vault agent sidecar in this pod
 
 # Vault Agent sidecar configuration
 # WHY: LLM Orchestration needs read access to encrypted LLM API keys
 # Security: Agent enforces policy - read-only access to LLM secrets
 vaultAgent:
   enabled: true
+  # Secret created by the central Vault bootstrap; keys role_id, secret_id.
+  approleSecretName: "llm-module-llm-approle"

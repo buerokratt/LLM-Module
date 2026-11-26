@@ -13,7 +13,7 @@ data:
     # This agent provides GUI with access to public encryption key only
 
     vault {
-      address = "http://vault:8200"
+      address = "{{ .Values.agent.vaultAddress }}"
       retry {
         num_retries = 5
       }
@@ -24,8 +24,8 @@ data:
       method "approle" {
         mount_path = "auth/approle"
         config = {
-          role_id_file_path   = "{{ .Values.agent.credentialsPath }}/gui_role_id"
-          secret_id_file_path = "{{ .Values.agent.credentialsPath }}/gui_secret_id"
+          role_id_file_path   = "{{ .Values.agent.credentialsPath }}/{{ .Values.agent.roleIdFile }}"
+          secret_id_file_path = "{{ .Values.agent.credentialsPath }}/{{ .Values.agent.secretIdFile }}"
           remove_secret_id_file_after_reading = false
         }
       }

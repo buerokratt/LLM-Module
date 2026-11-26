@@ -13,3 +13,5 @@ data:
     {{- range $key, $value := .Values.dslConstants }}
     {{ $key }}={{ $value }}
     {{- end }}
+    # Must live here: env vars cannot reach CronManager job scripts.
+    VAULT_PATH_PREFIX={{ .Values.global.vaultPathPrefix | default "" }}

@@ -387,9 +387,9 @@ services:
       - "8100:8100"
     environment:
       # Infrastructure connections
+      # the test agent runs with api_proxy disabled (test-vault/agents/llm/agent.hcl),
       - VAULT_ADDR=http://vault:8200
-      # VaultAgentClient reads the token from /agent/llm-token/token by default
-      # (src/llm_orchestrator_config/vault/vault_client.py); mount must match.
+
       - VAULT_TOKEN_FILE=/agent/llm-token/token
       - QDRANT_URL=http://qdrant:6333
       - EVAL_MODE=true
