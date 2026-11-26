@@ -7,12 +7,14 @@ Intelligently selects optimal Qdrant collections based on:
 - No hardcoded weights or preferences
 """
 
+import asyncio
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
 from src.loki_logger import LokiLogger
 
 from contextual_retrieval.contextual_retrieval_api_client import get_http_client_manager
 from contextual_retrieval.error_handler import SecureErrorHandler
 from contextual_retrieval.constants import (
+    HttpClientConstants,
     HttpStatusConstants,
     ErrorContextConstants,
     LoggingConstants,
@@ -75,11 +77,11 @@ class DynamicProviderDetection:
             healthy_collections = await self._filter_healthy_collections(collections)
 
             if not healthy_collections:
-                logger.warning("No healthy collections found, falling back to all")
-                return [
-                    self._config.collections.azure_collection,
-                    self._config.collections.aws_collection,
-                ]
+                # No fallback to the other collection: it holds vectors of
+                # another size (3072 vs 1024), so a query embedded with this
+                # connection's model cannot be compared with them.
+                await self._log_no_matching_embeddings(default_model, collections)
+                return []
 
             logger.info(f"Selected collections: {healthy_collections}")
             return healthy_collections
@@ -91,6 +93,34 @@ class DynamicProviderDetection:
                 self._config.collections.azure_collection,
                 self._config.collections.aws_collection,
             ]
+
+    async def _log_no_matching_embeddings(
+        self, model: Optional[str], searched: List[str]
+    ) -> None:
+        """Explain why nothing can be searched: empty knowledge base, or the
+        connection's embedding model differs from the one that built it."""
+        all_collections = [
+            self._config.collections.azure_collection,
+            self._config.collections.aws_collection,
+        ]
+        others = await self._filter_healthy_collections(
+            [name for name in all_collections if name not in searched],
+            include_unchecked=False,
+        )
+        if others:
+            logger.warning(
+                f"No knowledge base embeddings for embedding model {model or 'unknown'} "
+                f"(collection {', '.join(searched)} is empty). The knowledge base is "
+                f"built in {', '.join(others)} with another embedding model, which this "
+                "connection cannot search. Use the knowledge base's embedding model for "
+                "this connection, or wait until the re-index to this model has finished. "
+                "Retrieval skipped."
+            )
+        else:
+            logger.warning(
+                "Knowledge base is empty (no embeddings in any collection) - nothing "
+                "to retrieve until the indexer has run"
+            )
 
     def _get_default_embedding_model(
         self, environment: str, connection_id: Optional[str]
@@ -136,50 +166,72 @@ class DynamicProviderDetection:
                 self._config.collections.aws_collection,
             ]
 
-    async def _filter_healthy_collections(self, collections: List[str]) -> List[str]:
-        """Filter collections to only healthy/available ones."""
+    async def _filter_healthy_collections(
+        self, collections: List[str], include_unchecked: bool = True
+    ) -> List[str]:
+        """Keep the collections that hold embeddings.
+
+        A collection Qdrant reports as empty or missing is dropped. One that
+        could not be checked (408, 5xx, dropped connection) is kept when
+        ``include_unchecked``: a transient Qdrant error must not turn into
+        "the knowledge base is empty" and an out-of-scope answer. Searching it
+        is harmless - a failed search returns no chunks.
+        """
         healthy: List[str] = []
 
         for collection_name in collections:
+            points_count = await self._collection_points_count(collection_name)
+
+            if points_count is None:
+                if include_unchecked:
+                    logger.warning(
+                        f"Could not check collection {collection_name} - "
+                        "searching it anyway"
+                    )
+                    healthy.append(collection_name)
+            elif points_count > 0:
+                healthy.append(collection_name)
+                logger.debug(f"Collection {collection_name}: {points_count} points")
+            else:
+                logger.warning(f"Collection {collection_name} is empty")
+
+        return healthy
+
+    async def _collection_points_count(self, collection_name: str) -> Optional[int]:
+        """Points in a collection: 0 if it does not exist, None if Qdrant could
+        not answer after HEALTH_CHECK_ATTEMPTS tries."""
+        health_check_url = f"{self.qdrant_url}/collections/{collection_name}"
+
+        for attempt in range(1, HttpClientConstants.HEALTH_CHECK_ATTEMPTS + 1):
             try:
                 client_manager = await self._get_http_client_manager()
                 client = await client_manager.get_client()
-
-                health_check_url = f"{self.qdrant_url}/collections/{collection_name}"
                 response = await client.get(health_check_url)
 
                 if response.status_code == HttpStatusConstants.OK:
-                    collection_info = response.json()
-                    points_count = collection_info.get("result", {}).get(
-                        "points_count", 0
+                    return int(
+                        response.json().get("result", {}).get("points_count") or 0
                     )
+                if response.status_code == HttpStatusConstants.NOT_FOUND:
+                    logger.debug(f"Collection {collection_name} does not exist")
+                    return 0
 
-                    if points_count > 0:
-                        healthy.append(collection_name)
-                        logger.debug(
-                            f"Collection {collection_name}: {points_count} points"
-                        )
-                    else:
-                        logger.warning(f"Collection {collection_name} is empty")
-                else:
-                    SecureErrorHandler.log_secure_error(
-                        error=Exception(
-                            f"Collection not accessible with status {response.status_code}"
-                        ),
-                        context=ErrorContextConstants.PROVIDER_HEALTH_CHECK,
-                        request_url=health_check_url,
-                        level=LoggingConstants.WARNING,
-                    )
-
-            except Exception as e:
-                SecureErrorHandler.log_secure_error(
-                    error=e,
-                    context=ErrorContextConstants.PROVIDER_HEALTH_CHECK,
-                    request_url=f"{self.qdrant_url}/collections/{collection_name}",
-                    level=LoggingConstants.WARNING,
+                error: Exception = Exception(
+                    f"Collection not accessible with status {response.status_code}"
                 )
+            except Exception as e:
+                error = e
 
-        return healthy
+            SecureErrorHandler.log_secure_error(
+                error=error,
+                context=ErrorContextConstants.PROVIDER_HEALTH_CHECK,
+                request_url=health_check_url,
+                level=LoggingConstants.WARNING,
+            )
+            if attempt < HttpClientConstants.HEALTH_CHECK_ATTEMPTS:
+                await asyncio.sleep(HttpClientConstants.HEALTH_CHECK_RETRY_DELAY)
+
+        return None
 
     async def get_collection_stats(self) -> Dict[str, Any]:
         """Get statistics for all contextual collections."""

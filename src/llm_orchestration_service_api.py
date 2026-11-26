@@ -852,6 +852,30 @@ async def get_knowledge_base_embedding_model() -> Dict[str, Any]:
         ) from e
 
 
+@app.get("/knowledge-base/status")
+async def get_knowledge_base_status() -> Dict[str, Any]:
+    """Whether the knowledge base must be re-indexed (issue #588).
+
+    ``reindex_required`` is true when the embedding platform of the connection
+    the indexer uses (production, else testing) differs from the platform(s)
+    holding embeddings. The data/update sync then runs the indexer even though
+    the CKB data hash is unchanged. 503 means it could not be determined;
+    callers keep their normal behaviour.
+    """
+    try:
+        return await asyncio.to_thread(
+            app.state.orchestration_service.get_knowledge_base_status
+        )
+    except Exception as e:
+        error_id = generate_error_id()
+        log_error_with_context(
+            logger, error_id, "knowledge_base_status_endpoint", None, e
+        )
+        raise HTTPException(
+            status_code=503, detail="Could not read the knowledge base status"
+        ) from e
+
+
 @app.post("/knowledge-base/check-embedding")
 async def check_embedding_lock(request: EmbeddingLockCheckRequest) -> Dict[str, Any]:
     """Check a connection's embedding model against the locked one (issue #806).
@@ -875,6 +899,7 @@ async def check_embedding_lock(request: EmbeddingLockCheckRequest) -> Dict[str, 
             {
                 "embedding_platform": request.embedding_platform,
                 "embedding_model": request.embedding_model,
+                "deployment_environment": request.deployment_environment,
             },
         )
         raise HTTPException(

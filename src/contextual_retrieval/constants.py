@@ -31,6 +31,12 @@ class HttpClientConstants:
     DEFAULT_RETRY_DELAY = 1.0
     DEFAULT_BACKOFF_FACTOR = 2.0
 
+    # Collection health check (provider detection). Qdrant can answer 408 or drop
+    # a pooled connection while the event loop is busy with other requests; one
+    # retry covers that, and a check that still fails never counts as "empty".
+    HEALTH_CHECK_ATTEMPTS = 2
+    HEALTH_CHECK_RETRY_DELAY = 0.2
+
     # Transport settings
     DEFAULT_TRANSPORT_RETRIES = 0  # Handle retries at application level
     USE_HTTP2 = False  # Use HTTP/1.1 for better Qdrant compatibility
@@ -91,6 +97,9 @@ class HttpStatusConstants:
 
     # Success codes
     OK = 200
+
+    # Client error codes
+    NOT_FOUND = 404
 
     # Error ranges
     CLIENT_ERROR_START = 400

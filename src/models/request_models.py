@@ -252,6 +252,12 @@ class EmbeddingLockCheckRequest(BaseModel):
     exclude_connection_id: Optional[int] = Field(
         None, description="Connection being edited; not compared with itself"
     )
+    deployment_environment: Optional[str] = Field(
+        None,
+        description="Environment the connection is saved in (production, testing). "
+        "Production may use another approved model than the knowledge base; the "
+        "result then has reindex_required (issue #588). Empty means testing rules.",
+    )
 
 
 class EmbeddingResponse(BaseModel):
@@ -320,8 +326,12 @@ class TestOrchestrationRequest(BaseModel):
     environment: Literal["production", "testing"] = Field(
         ..., description="Environment context"
     )
-    connectionId: Optional[int] = Field(
-        None, description="Optional connection identifier"
+    # A string, not an int: Ruuter (inference/test.yml) sends the connection's
+    # vault_uuid, a UUID. Typed as int, every test-connection query got a 422.
+    connectionId: Optional[str] = Field(
+        None,
+        description="Connection identifier: the connection's vault_uuid "
+        "(required for testing)",
     )
 
 

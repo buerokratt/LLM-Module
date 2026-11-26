@@ -59,15 +59,26 @@ class SmartBM25Search:
             logger.info("Building BM25 index from contextual collections...")
 
             # Fetch all contextual chunks from both collections
-            all_chunks = await self._fetch_all_contextual_chunks()
+            all_chunks = self._deduplicate_chunks(
+                await self._fetch_all_contextual_chunks()
+            )
 
             if not all_chunks:
+                # An empty knowledge base is a valid state (nothing indexed yet,
+                # or emptied for a re-index). Drop any old index so removed
+                # chunks are not served, and record the stats so the smart
+                # refresh fires once chunks appear instead of on every query.
                 logger.warning("No chunks found for BM25 index")
+                self.bm25_index = None
+                self.chunk_mapping = {}
+                self.last_collection_stats = await self._get_collection_stats()
                 return False
 
-            # Build corpus for BM25
+            # Build corpus and mapping aside, then swap both in together, so a
+            # query running during a refresh (e.g. while the hourly sync stores
+            # chunks) never sees a new mapping with the old index.
             corpus: List[List[str]] = []
-            self.chunk_mapping = {}
+            chunk_mapping: Dict[int, Dict[str, Any]] = {}
 
             for i, chunk in enumerate(all_chunks):
                 # Combine contextual and original content for better matching
@@ -82,10 +93,11 @@ class SmartBM25Search:
                 corpus.append(tokenized)
 
                 # Store chunk mapping with index
-                self.chunk_mapping[i] = chunk
+                chunk_mapping[i] = chunk
 
             # Create BM25 index
-            self.bm25_index = BM25Okapi(corpus)
+            bm25_index = BM25Okapi(corpus)
+            self.bm25_index, self.chunk_mapping = bm25_index, chunk_mapping
 
             # Store collection stats for smart refresh
             self.last_collection_stats = await self._get_collection_stats()
@@ -135,8 +147,14 @@ class SmartBM25Search:
                         "new background refresh task"
                     )
 
-            if not self.bm25_index:
-                logger.error("BM25 index not initialized")
+            # One consistent snapshot for this query, even if a refresh swaps in
+            # a new index meanwhile.
+            bm25_index, chunk_mapping = self.bm25_index, self.chunk_mapping
+            if not bm25_index:
+                logger.warning(
+                    "BM25 index is empty (knowledge base not indexed yet) - "
+                    "skipping BM25 search"
+                )
                 return []
 
             # Combine original and refined queries for comprehensive search
@@ -151,7 +169,7 @@ class SmartBM25Search:
                 return []
 
             # Get BM25 scores
-            scores = self.bm25_index.get_scores(tokenized_query)
+            scores = bm25_index.get_scores(tokenized_query)
 
             # Get top results (handle numpy array types)
             top_indices = scores.argsort()[-limit:][::-1]
@@ -161,7 +179,7 @@ class SmartBM25Search:
                 idx_int = int(idx)  # Convert numpy index to int
                 score = float(scores[idx_int])
                 if score > 0:  # Only positive scores
-                    chunk = self.chunk_mapping[idx_int].copy()
+                    chunk = chunk_mapping[idx_int].copy()
                     chunk["bm25_score"] = score
                     chunk["score"] = score  # Standard score field
                     chunk["search_type"] = "bm25"
@@ -213,6 +231,31 @@ class SmartBM25Search:
             logger.error(f"Background BM25 refresh failed: {e}")
         finally:
             self._refresh_in_progress = False
+
+    @staticmethod
+    def _deduplicate_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Keep one chunk per chunk_id.
+
+        Chunk ids are deterministic (document hash + index), so while the
+        knowledge base is re-indexed onto another embedding platform the same
+        chunk exists in both collections. Duplicates would take BM25 top-k slots.
+        Chunks without a chunk_id are kept as they are.
+        """
+        seen: Set[str] = set()
+        unique: List[Dict[str, Any]] = []
+        for chunk in chunks:
+            chunk_id = chunk.get("chunk_id")
+            if chunk_id:
+                if chunk_id in seen:
+                    continue
+                seen.add(chunk_id)
+            unique.append(chunk)
+        if len(unique) < len(chunks):
+            logger.info(
+                f"BM25 index: skipped {len(chunks) - len(unique)} duplicate chunks "
+                "(same chunk in more than one collection)"
+            )
+        return unique
 
     async def _fetch_all_contextual_chunks(self) -> List[Dict[str, Any]]:
         """Fetch all chunks from contextual collections."""
