@@ -4,6 +4,7 @@ import os
 import threading
 from pathlib import Path
 from typing import Optional, Dict, Any, cast
+from src.constants_loader import get_constant, get_optional_constant
 from src.loki_logger import LokiLogger
 import hvac
 from hvac.exceptions import InvalidPath, Forbidden
@@ -22,12 +23,47 @@ _vault_client_instance: Optional["VaultAgentClient"] = None
 _vault_client_lock = threading.Lock()
 
 
+def _resolve_path_prefix() -> str:
+    """Resolve the KV path prefix, normalized without surrounding slashes.
+
+    constants.ini is the source of truth so that Python and the CronManager
+    shell scripts read the same value; VAULT_PATH_PREFIX in the environment
+    overrides it for ad-hoc runs and tests. Empty means no prefix.
+    """
+    raw = os.getenv("VAULT_PATH_PREFIX")
+    if raw is None:
+        raw = get_optional_constant("VAULT_PATH_PREFIX")
+    return raw.strip().strip("/")
+
+
+def _resolve_vault_endpoint() -> str:
+    """Resolve the HTTP endpoint for KV reads, with no built-in default.
+
+    Normally the Vault Agent (VAULT_AGENT_LLM_URL in constants.ini), which proxies
+    to Vault and injects the token. VAULT_ADDR overrides it with the address of
+    Vault itself, which is how the test stacks bypass the agent.
+    """
+    return os.getenv("VAULT_ADDR", "").strip() or get_constant("VAULT_AGENT_LLM_URL")
+
+
+def _resolve_token_file() -> Optional[Path]:
+    """Path of the Vault token file, or None when a Vault Agent supplies it.
+
+    Both real deployments talk to a Vault Agent -- vault-agent-llm:8201 under
+    compose, the localhost:8201 sidecar in Kubernetes -- and the agent injects
+    its own token (api_proxy.use_auto_auth_token), so this client sends none.
+    Talking straight to Vault is the exception (the integration-test stack) and
+    it says so explicitly by setting VAULT_TOKEN_FILE.
+    """
+    path = os.getenv("VAULT_TOKEN_FILE", "").strip()
+    return Path(path) if path else None
+
+
 def get_vault_client(
-    vault_url: Optional[str] = None,
-    token_path: str = "/agent/llm-token/token",
+    vault_endpoint: Optional[str] = None,
+    token_path: Optional[str] = None,
     mount_point: str = "secret",
     timeout: int = 10,
-    use_token_file: bool = True,
 ) -> "VaultAgentClient":
     """Get or create singleton VaultAgentClient instance.
 
@@ -35,11 +71,12 @@ def get_vault_client(
     avoiding redundant token loading and health checks (~35ms overhead per instantiation).
 
     Args:
-        vault_url: Vault server URL (defaults to VAULT_ADDR env var)
-        token_path: Path to Vault Agent token file (only used if use_token_file=True)
+        vault_endpoint: Agent or Vault address (defaults to VAULT_AGENT_LLM_URL
+            from constants.ini, or VAULT_ADDR when set)
+        token_path: Token file to authenticate with (defaults to VAULT_TOKEN_FILE;
+            None means the Vault Agent supplies the token)
         mount_point: KV v2 mount point
         timeout: Request timeout in seconds
-        use_token_file: Whether to read token from file (False when using vault agent proxy)
 
     Returns:
         Singleton VaultAgentClient instance
@@ -50,11 +87,10 @@ def get_vault_client(
         with _vault_client_lock:
             if _vault_client_instance is None:
                 _vault_client_instance = VaultAgentClient(
-                    vault_url=vault_url,
+                    vault_endpoint=vault_endpoint,
                     token_path=token_path,
                     mount_point=mount_point,
                     timeout=timeout,
-                    use_token_file=use_token_file,
                 )
                 logger.info("Created singleton VaultAgentClient instance")
 
@@ -66,54 +102,57 @@ class VaultAgentClient:
 
     def __init__(
         self,
-        vault_url: Optional[str] = None,
-        token_path: str = "/agent/llm-token/token",
+        vault_endpoint: Optional[str] = None,
+        token_path: Optional[str] = None,
         mount_point: str = "secret",
         timeout: int = 10,
-        use_token_file: bool = True,
     ) -> None:
         """Initialize Vault Agent client.
 
         Args:
-            vault_url: Vault server URL (defaults to VAULT_ADDR env var)
-            token_path: Path to Vault Agent token file (only used if use_token_file=True)
+            vault_endpoint: Agent or Vault address (defaults to
+                VAULT_AGENT_LLM_URL from constants.ini, or VAULT_ADDR when set)
+            token_path: Token file to authenticate with (defaults to
+                VAULT_TOKEN_FILE; None means the Vault Agent supplies the token)
             mount_point: KV v2 mount point
             timeout: Request timeout in seconds
-            use_token_file: Whether to read token from file (False when using vault agent proxy)
         """
-        self.vault_url = vault_url or os.getenv("VAULT_ADDR", "http://vault:8200")
-        self.token_path = Path(token_path)
+        self.vault_endpoint = vault_endpoint or _resolve_vault_endpoint()
+        self.token_path = Path(token_path) if token_path else _resolve_token_file()
         self.mount_point = mount_point
         self.timeout = timeout
-        self.use_token_file = use_token_file
+        self.use_token_file = self.token_path is not None
 
-        # Auto-detect proxy mode: if URL points to vault-agent, don't use token file
-        if "vault-agent" in self.vault_url.lower():
-            self.use_token_file = False
-            logger.info(
-                "Detected vault agent proxy in URL, token authentication will be handled by proxy"
-            )
+        # Applied here, at the single chokepoint for every Vault read. Callers
+        # (SecretResolver, the Langfuse lookup) pass unprefixed logical paths
+        # and must not prefix them again.
+        self.path_prefix = _resolve_path_prefix()
+        if self.path_prefix:
+            logger.info(f"Vault path prefix active: {self.path_prefix}/")
 
         # Initialize hvac client
         self.client = hvac.Client(
-            url=self.vault_url,
+            url=self.vault_endpoint,
             timeout=timeout,
         )
 
-        # Load token from file only if not using proxy
         if self.use_token_file:
             self._load_token()
-        else:
-            logger.info("Using vault agent proxy - no token file required")
 
-        logger.info(f"Vault Agent client initialized: {self.vault_url}")
+        logger.info(f"Vault Agent client initialized: {self.vault_endpoint}")
 
     def _load_token(self) -> None:
-        """Load token from Vault Agent token file.
+        """Load the token from the configured token file.
+
+        No-op when no token file is configured: the Vault Agent is then the one
+        authenticating, and there is nothing on disk to read.
 
         Raises:
             VaultTokenError: If token file is missing or unreadable
         """
+        if self.token_path is None:
+            return
+
         try:
             if not self.token_path.exists():
                 raise VaultTokenError(
@@ -143,9 +182,8 @@ class VaultAgentClient:
             True if authenticated, False otherwise
         """
         try:
-            # If using proxy mode, skip token checks
+            # Agent mode: nothing to verify here, the agent attaches the token.
             if not self.use_token_file:
-                # Just verify vault is accessible (no token needed with proxy)
                 return self.is_vault_available()
 
             # Check token is available
@@ -202,11 +240,39 @@ class VaultAgentClient:
             logger.warning(f"Vault not available: {e}")
             return False
 
+    def _apply_prefix(self, path: str) -> str:
+        """Prepend the configured KV path prefix to a logical secret path.
+
+        Mount-relative in, mount-relative out: "llm/connections/azure_openai/x"
+        becomes "llm-module/llm/connections/azure_openai/x". hvac still adds the
+        mount and the data/ or metadata/ segment on top.
+        """
+        clean = path.strip("/")
+        if not self.path_prefix:
+            return clean
+        return f"{self.path_prefix}/{clean}"
+
+    def _require_vault(self) -> None:
+        """Guard every read: Vault reachable, and authenticated if we hold a token.
+
+        Raises:
+            VaultConnectionError: If Vault is unreachable or authentication failed
+        """
+        if not self.is_vault_available():
+            raise VaultConnectionError("Vault is not available")
+
+        if not self.is_authenticated():
+            self._load_token()  # the agent may have rotated it on disk
+            if not self.is_authenticated():
+                raise VaultConnectionError("Vault authentication failed")
+
     def get_secret(self, path: str) -> Optional[Dict[str, Any]]:
         """Retrieve secret from Vault KV v2 store.
 
         Args:
-            path: Secret path (e.g., "llm/connections/azure_openai/production/gpt-4o")
+            path: Mount-relative logical path WITHOUT the configured prefix,
+                e.g. "llm/connections/azure_openai/<vault_uuid>". The prefix is
+                applied internally.
 
         Returns:
             Secret data or None if not found
@@ -215,37 +281,33 @@ class VaultAgentClient:
             VaultConnectionError: If Vault is not available
             VaultSecretError: If secret retrieval fails
         """
-        if not self.is_vault_available():
-            raise VaultConnectionError("Vault is not available")
-
-        if not self.is_authenticated():
-            # Try to reload token
-            self._load_token()
-            if not self.is_authenticated():
-                raise VaultConnectionError("Vault authentication failed")
+        self._require_vault()
+        full_path = self._apply_prefix(path)
 
         try:
             # Use KV v2 API
             response = self.client.secrets.kv.v2.read_secret_version(
-                path=path,
+                path=full_path,
                 mount_point=self.mount_point,
             )
 
             if response and "data" in response:
                 secret_data = response["data"]["data"]
-                logger.debug(f"Successfully retrieved secret from path: {path}")
+                logger.debug(f"Successfully retrieved secret from path: {full_path}")
                 return secret_data
             else:
-                logger.debug(f"Secret not found at path: {path}")
+                logger.debug(f"Secret not found at path: {full_path}")
                 return None
 
         except InvalidPath:
-            logger.debug(f"Secret not found at path: {path}")
+            logger.debug(f"Secret not found at path: {full_path}")
             return None
         except Forbidden as e:
-            raise VaultSecretError(f"Access denied to secret path {path}: {e}") from e
+            raise VaultSecretError(
+                f"Access denied to secret path {full_path}: {e}"
+            ) from e
         except Exception as e:
-            logger.error(f"Error retrieving secret from path {path}: {e}")
+            logger.error(f"Error retrieving secret from path {full_path}: {e}")
             raise VaultSecretError(f"Failed to retrieve secret: {e}") from e
 
     def list_secrets(self, path: str) -> Optional[list[str]]:
@@ -261,40 +323,35 @@ class VaultAgentClient:
             VaultConnectionError: If Vault is not available
             VaultSecretError: If listing fails
         """
-        if not self.is_vault_available():
-            raise VaultConnectionError("Vault is not available")
-
-        if not self.is_authenticated():
-            self._load_token()
-            if not self.is_authenticated():
-                raise VaultConnectionError("Vault authentication failed")
+        self._require_vault()
+        full_path = self._apply_prefix(path)
 
         try:
             response = self.client.secrets.kv.v2.list_secrets(
-                path=path,
+                path=full_path,
                 mount_point=self.mount_point,
             )
 
             if response and "data" in response:
                 keys = response["data"].get("keys", [])
-                logger.debug(f"Listed {len(keys)} secrets at path: {path}")
+                logger.debug(f"Listed {len(keys)} secrets at path: {full_path}")
                 return keys
             else:
-                logger.debug(f"No secrets found at path: {path}")
+                logger.debug(f"No secrets found at path: {full_path}")
                 return None
 
         except InvalidPath:
-            logger.debug(f"Path not found: {path}")
+            logger.debug(f"Path not found: {full_path}")
             return None
         except Exception as e:
-            logger.error(f"Error listing secrets at path {path}: {e}")
+            logger.error(f"Error listing secrets at path {full_path}: {e}")
             raise VaultSecretError(f"Failed to list secrets: {e}") from e
 
     def refresh_token(self) -> bool:
-        """Refresh token from Vault Agent.
+        """Re-read the token file, if one is configured.
 
         Returns:
-            True if token was refreshed successfully
+            True if the client is authenticated afterwards
         """
         try:
             self._load_token()

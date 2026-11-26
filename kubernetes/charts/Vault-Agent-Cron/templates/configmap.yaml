@@ -14,7 +14,7 @@ data:
     # This agent provides CronManager with access to encryption keys and write access to secrets
 
     vault {
-      address = "http://vault:8200"
+      address = "{{ .Values.agent.vaultAddress }}"
       retry {
         num_retries = 5
       }
@@ -25,8 +25,8 @@ data:
       method "approle" {
         mount_path = "auth/approle"
         config = {
-          role_id_file_path   = "{{ .Values.agent.credentialsPath }}/cron_role_id"
-          secret_id_file_path = "{{ .Values.agent.credentialsPath }}/cron_secret_id"
+          role_id_file_path   = "{{ .Values.agent.credentialsPath }}/{{ .Values.agent.roleIdFile }}"
+          secret_id_file_path = "{{ .Values.agent.credentialsPath }}/{{ .Values.agent.secretIdFile }}"
           remove_secret_id_file_after_reading = false
         }
       }

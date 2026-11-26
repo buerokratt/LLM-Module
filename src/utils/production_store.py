@@ -276,9 +276,7 @@ class ProductionInferenceStore:
                         }
 
         except Exception as e:
-            error_msg = (
-                f"Error while storing production inference result (async): {str(e)}"
-            )
+            error_msg = f"Error while storing production inference result (async): {type(e).__name__}: {e}"
             logger.error(error_msg)
             return {
                 "success": False,
