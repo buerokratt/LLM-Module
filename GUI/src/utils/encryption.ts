@@ -9,6 +9,21 @@
 let publicKey: CryptoKey | null = null;
 
 /**
+ * KV path prefix inside the Vault mount. Empty for the module-owned Vault,
+ * 'llm-module' for the shared central Vault. Must match VAULT_PATH_PREFIX used
+ * by the orchestration service and the CronManager scripts.
+ *
+ * Leave this variable UNSET at build time so Vite emits a placeholder that
+ * nginx's env.sh can rewrite at container start; defining it during the build
+ * inlines the value and makes it unchangeable.
+ */
+function vaultPathPrefix(): string {
+    const raw = import.meta.env.REACT_APP_VAULT_PATH_PREFIX ?? '';
+    const trimmed = raw.replace(/^\/+|\/+$/g, '');
+    return trimmed ? `${trimmed}/` : '';
+}
+
+/**
  * Load the RSA public key from Vault via Vite proxy
  */
 async function fetchPublicKey() {
@@ -21,7 +36,7 @@ async function fetchPublicKey() {
         // Use Vite proxy to access vault-agent-gui
         // Proxy configured in vite.config.ts: /vault-agent-gui -> http://vault-agent-gui:8202
         const response = await fetch(
-            '/vault-agent-gui/v1/secret/data/encryption/public_key',
+            `/vault-agent-gui/v1/secret/data/${vaultPathPrefix()}encryption/public_key`,
             {
                 method: 'GET',
                 headers: {

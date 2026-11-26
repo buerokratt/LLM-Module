@@ -10,8 +10,13 @@ agent:
   # Token TTL for GUI (short-lived)
   tokenTTL: "15m"
   
-  # Credentials location (shared volume from vault-init)
-  credentialsPath: "/agent/credentials"
-  
+  # PLACEHOLDER: production vault address
+  vaultAddress: "http://vault-central.central-vault.svc.cluster.local:8200"
+
+  # From the AppRole Secret mounted by the consuming Deployment.
+  credentialsPath: "/vault/approle"
+  roleIdFile: "role_id"
+  secretIdFile: "secret_id"
+
   # Token cache location (separate volume for GUI)
   tokenPath: "/agent/gui-token"
