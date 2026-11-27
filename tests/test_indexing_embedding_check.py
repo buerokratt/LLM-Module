@@ -42,7 +42,9 @@ class FakeQdrant:
 
 def _indexer(platform: Optional[str], dimensions: int) -> Any:
     indexer = object.__new__(main_indexer.VectorIndexer)
-    indexer.config = SimpleNamespace(max_concurrent_documents=2, dataset_base_path="/tmp/ds")
+    indexer.config = SimpleNamespace(
+        max_concurrent_documents=2, dataset_base_path="/tmp/ds"
+    )
     indexer.signed_url = None
     indexer.indexing_platform = platform
     indexer.stats = ProcessingStats()
@@ -147,7 +149,9 @@ async def test_main_passes_the_connection_platform_to_the_indexer() -> None:
     with (
         patch.object(main_indexer, "VectorIndexer", return_value=indexer),
         patch.object(
-            main_indexer, "resolve_indexing_connection", AsyncMock(return_value=connection)
+            main_indexer,
+            "resolve_indexing_connection",
+            AsyncMock(return_value=connection),
         ),
         patch.object(main_indexer, "QdrantManager", FakeQdrant),
         patch.object(main_indexer, "plan_reindex", AsyncMock(return_value=None)),

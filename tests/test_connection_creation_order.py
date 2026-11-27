@@ -82,7 +82,9 @@ class Environment:
 
     def locked_models(self) -> List[LockedModel]:
         return [
-            LockedModel(s.platform, s.embedding_model, s.vector_dimensions, s.point_count)
+            LockedModel(
+                s.platform, s.embedding_model, s.vector_dimensions, s.point_count
+            )
             for s in self.stored
         ]
 
@@ -100,12 +102,12 @@ class Environment:
 
     def status_requires_reindex(self) -> bool:
         """What /knowledge-base/status answers the data/update sync."""
-        indexing = self.connections.get("production") or self.connections.get(
-            "testing"
-        )
+        indexing = self.connections.get("production") or self.connections.get("testing")
         return bool(
             indexing
-            and reindex_required_for(indexing["embeddingPlatform"], self.locked_models())
+            and reindex_required_for(
+                indexing["embeddingPlatform"], self.locked_models()
+            )
         )
 
     # -- the hourly sync's indexer run --------------------------------------
@@ -222,7 +224,9 @@ class Environment:
             patch.object(main_indexer, "QdrantManager", FakeQdrant),
             patch.object(main_indexer, "DiffDetector", return_value=diff_detector),
             patch.object(main_indexer, "create_diff_config", return_value=None),
-            patch.object(main_indexer, "_acquire_indexer_lock", return_value=MagicMock()),
+            patch.object(
+                main_indexer, "_acquire_indexer_lock", return_value=MagicMock()
+            ),
             patch.object(main_indexer, "fcntl", MagicMock()),
             patch("sys.argv", ["main_indexer.py"]),
         ):
@@ -245,7 +249,11 @@ class Environment:
         return exit_code
 
 
-DATASET = ["/data/doc-a/cleaned.txt", "/data/doc-b/cleaned.txt", "/data/doc-c/cleaned.txt"]
+DATASET = [
+    "/data/doc-a/cleaned.txt",
+    "/data/doc-b/cleaned.txt",
+    "/data/doc-c/cleaned.txt",
+]
 
 
 def _assert_one_knowledge_base(env: Environment, chunks: int) -> None:
@@ -348,7 +356,10 @@ async def test_no_connection_yet_is_skipped_and_indexed_once_one_exists() -> Non
     env = Environment()
 
     # Exit 4: vector_indexer_pipeline.sh does not save the agency hash.
-    assert await env.run_indexer(changed_files=DATASET) == main_indexer.EXIT_NO_LLM_CONNECTION
+    assert (
+        await env.run_indexer(changed_files=DATASET)
+        == main_indexer.EXIT_NO_LLM_CONNECTION
+    )
     assert env.stored == []
 
     assert env.create_connection("testing").allowed

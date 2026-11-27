@@ -41,9 +41,7 @@ def ensure_same_endpoint_host(saved_endpoint: str, requested_endpoint: str) -> N
     saved = urlparse(saved_endpoint.strip())
     requested = urlparse(requested_endpoint.strip())
     if requested.scheme.lower() != "https" or not requested.hostname:
-        raise EndpointHostChangedError(
-            "The embedding endpoint must be an https URL"
-        )
+        raise EndpointHostChangedError("The embedding endpoint must be an https URL")
     if (requested.hostname.lower(), requested.port) != (
         (saved.hostname or "").lower(),
         saved.port,
@@ -335,7 +333,9 @@ class EmbeddingManager:
         )
         given = {key: value for key, value in (overrides or {}).items() if value}
         if "endpoint" in given:
-            ensure_same_endpoint_host(str(config.get("endpoint") or ""), given["endpoint"])
+            ensure_same_endpoint_host(
+                str(config.get("endpoint") or ""), given["endpoint"]
+            )
         config.update(given)
 
         # Not cached: a cached result for the same text could hide bad credentials.

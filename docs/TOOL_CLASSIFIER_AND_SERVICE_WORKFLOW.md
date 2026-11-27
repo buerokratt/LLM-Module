@@ -155,7 +155,7 @@ Uses Qdrant vector database to find relevant services:
 #    request carries no connection)
 embedding = orchestration_service.create_embeddings_for_indexer(
     texts=[query],
-    environment=request.environment,      # "production" | "testing"
+    environment=request.environment,  # "production" | "testing"
     connection_id=request.connection_id,  # the connection's vault UUID
     batch_size=1,
 )

@@ -48,7 +48,9 @@ def test_redact_url_handles_urls_inside_messages() -> None:
     message = f"404 Client Error: Not Found for url: {SIGNED_URL}"
 
     assert SIGNATURE not in redact_url(message)
-    assert redact_url(message).startswith("404 Client Error: Not Found for url: http://")
+    assert redact_url(message).startswith(
+        "404 Client Error: Not Found for url: http://"
+    )
 
 
 @pytest.mark.parametrize("busy", [False, True])
