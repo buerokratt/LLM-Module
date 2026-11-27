@@ -99,6 +99,10 @@ extract_request_data:
     embedding_target_uri: ${incoming.body.embedding_target_uri || ""}
     embedding_azure_api_key: ${incoming.body.embedding_azure_api_key || ""}
     updated_at: ${new Date().toISOString()}
+    # Issue #588: set from the embedding check when it runs
+    reindex_required: false
+    # True when the request keeps every saved credential (set with the check)
+    credentials_unchanged: false
   next: validate_environment
 
 validate_environment:
@@ -119,8 +123,67 @@ check_connection_exists:
 validate_connection_exists:
   switch:
     - condition: "${existing_connection.response.body.length > 0}"
-      next: check_deployment_environment
+      next: check_embedding_changed
   next: return_not_found
+
+# Issue #806: only a changed embedding setting is checked against the knowledge
+# base, so other edits (budget, name) keep working for existing setups. The Azure
+# deployment name and endpoint count: on Azure they decide the real model.
+# Issue #588: a promotion to production is checked too, since the production
+# connection decides the knowledge base's model (re-index when it differs).
+check_embedding_changed:
+  switch:
+    - condition: ${embedding_platform !== existing_connection.response.body[0].embeddingPlatform || embedding_model !== existing_connection.response.body[0].embeddingModel}
+      next: assign_test_vault_uuid
+    - condition: ${embedding_deployment_name !== (existing_connection.response.body[0].embeddingDeploymentName || "") || embedding_target_uri !== (existing_connection.response.body[0].embeddingTargetUri || "")}
+      next: assign_test_vault_uuid
+    - condition: ${environment == "production" && existing_connection.response.body[0].environment !== "production"}
+      next: assign_test_vault_uuid
+  next: check_deployment_environment
+
+# Issue #587: check the model really behind the connection, not only the
+# dropdown. The saved credentials in Vault are tested with the new deployment
+# name and endpoint, so this only applies while the platform and the embedding
+# keys are unchanged (keys arrive masked; a different mask means a new key, which
+# is not in Vault yet - the GUI tests that one itself before saving).
+assign_test_vault_uuid:
+  assign:
+    test_vault_uuid: "${embedding_platform === existing_connection.response.body[0].embeddingPlatform && embedding_azure_api_key === (existing_connection.response.body[0].embeddingAzureApiKey || '') && embedding_access_key === (existing_connection.response.body[0].embeddingAccessKey || '') && embedding_secret_key === (existing_connection.response.body[0].embeddingSecretKey || '') ? (existing_connection.response.body[0].vaultUuid || '') : ''}"
+    # Review finding M1: the GUI writes new credentials to Vault only after this
+    # edit returns. The indexer needs both the LLM and the embedding credentials,
+    # so a re-index may only start here when none of them change; otherwise the
+    # GUI starts it (llm-connections/start-reindex) once the secret is stored.
+    credentials_unchanged: "${llm_platform === existing_connection.response.body[0].llmPlatform && embedding_platform === existing_connection.response.body[0].embeddingPlatform && api_key === (existing_connection.response.body[0].apiKey || '') && access_key === (existing_connection.response.body[0].accessKey || '') && secret_key === (existing_connection.response.body[0].secretKey || '') && embedding_azure_api_key === (existing_connection.response.body[0].embeddingAzureApiKey || '') && embedding_access_key === (existing_connection.response.body[0].embeddingAccessKey || '') && embedding_secret_key === (existing_connection.response.body[0].embeddingSecretKey || '')}"
+  next: check_embedding_lock
+
+check_embedding_lock:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_LLM_SERVICE]/knowledge-base/check-embedding"
+    body:
+      embedding_platform: ${embedding_platform}
+      embedding_model: ${embedding_model}
+      existing_vault_uuid: ${test_vault_uuid}
+      embedding_deployment_name: ${embedding_deployment_name}
+      embedding_target_uri: ${embedding_target_uri}
+      exclude_connection_id: ${connection_id}
+      deployment_environment: ${environment}
+  result: embedding_lock_result
+  next: validate_embedding_lock
+  on_error: return_embedding_check_unavailable
+
+validate_embedding_lock:
+  switch:
+    - condition: ${embedding_lock_result.response.body != null && embedding_lock_result.response.body.allowed === true}
+      next: assign_reindex_required
+    - condition: ${embedding_lock_result.response.body != null && embedding_lock_result.response.body.allowed === false}
+      next: return_embedding_model_locked
+  next: return_embedding_check_unavailable
+
+assign_reindex_required:
+  assign:
+    reindex_required: ${embedding_lock_result.response.body.reindex_required === true}
+  next: check_deployment_environment
 
 check_deployment_environment:
   switch:
@@ -186,7 +249,26 @@ update_llm_connection:
       embedding_target_uri: ${embedding_target_uri}
       embedding_azure_api_key: ${embedding_azure_api_key}
   result: connection_result
+  next: check_reindex_required
+
+# Issue #588: start the re-index now instead of at the next hourly sync (see
+# add.yml). reindex_required stays false when the check did not run.
+# Only with unchanged credentials (review finding M1): new ones are not in Vault
+# yet, so the indexer would run with the old secret. The GUI then starts the
+# re-index after storing them; the hourly sync re-checks in any case.
+check_reindex_required:
+  switch:
+    - condition: ${environment == "production" && reindex_required === true && (credentials_unchanged === true || credentials_unchanged === "true")}
+      next: trigger_knowledge_base_resync
   next: return_success
+
+trigger_knowledge_base_resync:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_CRON_MANAGER]/execute/data_resync/agency_data_resync"
+  result: resync_trigger_result
+  next: return_success
+  on_error: return_success
 
 return_success:
   return: ${connection_result.response.body[0]}
@@ -200,6 +282,26 @@ return_not_found:
 return_invalid_environment:
   status: 400
   return: "error: environment must be 'Testing' or 'Production'"
+  next: end
+
+# 400/500: Ruuter only passes the codes in application.httpCodesAllowList.
+return_embedding_model_locked:
+  status: 400
+  return: ${embedding_lock_result.response.body}
+  next: end
+
+# Fail closed: without the check the connection is not changed.
+return_embedding_check_unavailable:
+  assign:
+    embedding_check_unavailable:
+      allowed: false
+      check_unavailable: true
+      reason: "The embedding model could not be checked against the knowledge base. Please try again later."
+  next: return_embedding_check_unavailable_response
+
+return_embedding_check_unavailable_response:
+  status: 500
+  return: ${embedding_check_unavailable}
   next: end
 
 return_unauthorized:

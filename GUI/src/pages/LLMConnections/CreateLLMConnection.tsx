@@ -4,14 +4,21 @@ import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useDialog } from 'hooks/useDialog';
-import { createLLMConnection, CreateLLMConnectionError, getProductionConnection } from 'services/llmConnections';
+import {
+  createLLMConnection,
+  CreateLLMConnectionError,
+  getProductionConnection,
+} from 'services/llmConnections';
+import { embeddingLockMessage, knowledgeBaseReindexMessages } from 'utils/embeddingLockMessage';
 import { llmConnectionsQueryKeys } from 'utils/queryKeys';
-import { ButtonAppearanceTypes } from 'enums/commonEnums';
+import { ButtonAppearanceTypes, ToastTypes } from 'enums/commonEnums';
 import { Button } from 'components';
+import { useToast } from 'hooks/useToast';
 
 const CreateLLMConnection = () => {
     const { t } = useTranslation();
     const navigate = useNavigate();
+    const toast = useToast();
     const { open: openDialog, close: closeDialog } = useDialog();
     const queryClient = useQueryClient();
     
@@ -23,14 +30,21 @@ const CreateLLMConnection = () => {
     
     const createConnectionMutation = useMutation({
       mutationFn: createLLMConnection,
-      onSuccess: async () => {
+      onSuccess: async (result) => {
         await queryClient.invalidateQueries({
           queryKey: llmConnectionsQueryKeys.all()
         });
-        
+
+        // A production connection with another embedding model re-indexes the knowledge base (#588)
+        const reindexMessages = knowledgeBaseReindexMessages(t, result.reindex);
         openDialog({
           title: t('llmConnectionForm.createConnection.successDialogTitle') || 'Connection Succeeded',
-          content: <p>{t('llmConnectionForm.createConnection.successDialogMessage') || 'The provided LLM configuration is successfully configured'}</p>,
+          content: (
+            <div>
+              <p>{t('llmConnectionForm.createConnection.successDialogMessage') || 'The provided LLM configuration is successfully configured'}</p>
+              {reindexMessages.map((message) => <p key={message}>{message}</p>)}
+            </div>
+          ),
           footer: (
             <Button
               appearance={ButtonAppearanceTypes.PRIMARY}
@@ -54,6 +68,20 @@ const CreateLLMConnection = () => {
 
         const stage = error instanceof CreateLLMConnectionError ? error.stage : 'save';
         const noProductionConnection = error instanceof CreateLLMConnectionError && error.noProductionConnection;
+
+        // Embedding model refused or not checkable (#806): a toast, like the
+        // activation toggle; nothing was saved, so the form stays as it is
+        const embeddingMessage =
+          error instanceof CreateLLMConnectionError &&
+          embeddingLockMessage(t, error.originalError, 'notSaved');
+        if (embeddingMessage) {
+          toast.open({
+            type: ToastTypes.ERROR,
+            title: t('toast.error.title'),
+            message: embeddingMessage,
+          });
+          return;
+        }
 
         openDialog({
           title: stage === 'promote'

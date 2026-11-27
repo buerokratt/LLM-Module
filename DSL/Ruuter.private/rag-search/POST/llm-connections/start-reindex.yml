@@ -1,0 +1,63 @@
+declaration:
+  call: declare
+  version: 0.1
+  description: "Start the knowledge base re-index now, if one is required (issue #588)"
+  method: post
+  accepts: json
+  returns: json
+  namespace: rag-search
+
+# Called by the GUI after a production connection's new credentials are stored
+# in Vault (review finding M1). edit.yml cannot start the re-index itself in that
+# case: the GUI writes the secret only after the edit returns, so the indexer
+# would run with the old one. Starting it here is only a shortcut - the hourly
+# sync checks the same status and starts it anyway.
+
+get_knowledge_base_status:
+  call: http.get
+  args:
+    url: "[#RAG_SEARCH_LLM_SERVICE]/knowledge-base/status"
+  result: kb_status_result
+  next: check_reindex_required
+  on_error: return_not_started
+
+check_reindex_required:
+  switch:
+    - condition: ${kb_status_result.response.body != null && kb_status_result.response.body.reindex_required === true}
+      next: trigger_knowledge_base_resync
+  next: return_not_started
+
+trigger_knowledge_base_resync:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_CRON_MANAGER]/execute/data_resync/agency_data_resync"
+  result: resync_trigger_result
+  next: return_started
+  on_error: return_not_started
+
+return_started:
+  assign:
+    started_response:
+      started: true
+  next: return_started_response
+
+return_started_response:
+  status: 200
+  return: ${started_response}
+  next: end
+
+return_not_started:
+  assign:
+    not_started_response:
+      started: false
+  next: return_not_started_response
+
+return_not_started_response:
+  status: 200
+  return: ${not_started_response}
+  next: end
+
+return_unauthorized:
+  status: 401
+  return: "error: unauthorized"
+  next: end

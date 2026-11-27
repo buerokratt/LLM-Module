@@ -47,6 +47,14 @@ from src.utils.stream_timeout import stream_timeout, with_heartbeat
 from src.utils.observation_utils import safe_observation_context
 from src.utils.error_utils import generate_error_id, log_error_with_context
 from src.utils.rate_limiter import RateLimiter
+from src.utils.indexer_pools import (
+    context_budget,
+    context_pool,
+    embedding_pool,
+    estimate_context_tokens,
+    run_in_pool,
+    shutdown_pools,
+)
 from src.utils.prompt_config_loader import RefreshStatus
 from models.request_models import (
     OrchestrationRequest,
@@ -55,6 +63,7 @@ from models.request_models import (
     TestOrchestrationResponse,
     EmbeddingRequest,
     EmbeddingResponse,
+    EmbeddingLockCheckRequest,
     ContextGenerationRequest,
     ContextGenerationResponse,
     EmbeddingErrorResponse,
@@ -165,6 +174,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await close_dragonfly_client()
     except Exception as e:
         logger.warning(f"Error closing Dragonfly client during shutdown: {e}")
+
+    shutdown_pools()
 
 
 # Create FastAPI application
@@ -794,19 +805,23 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
 
     Supports Azure OpenAI, AWS Bedrock, and OpenAI embedding models.
     Includes automatic retry with exponential backoff.
+
+    Issue #589: runs on the indexer's own small pool. Called inline, the
+    blocking embedding call froze the event loop, so user queries stalled
+    while the hourly sync was indexing.
     """
     try:
         logger.info(
             f"Creating embeddings for {len(request.texts)} texts in {request.environment} environment"
         )
 
-        result: Dict[str, Any] = (
-            app.state.orchestration_service.create_embeddings_for_indexer(
-                texts=request.texts,
-                environment=request.environment,
-                connection_id=request.connection_id,
-                batch_size=request.batch_size or 50,
-            )
+        result: Dict[str, Any] = await run_in_pool(
+            embedding_pool,
+            app.state.orchestration_service.create_embeddings_for_indexer,
+            texts=request.texts,
+            environment=request.environment,
+            connection_id=request.connection_id,
+            batch_size=request.batch_size or 50,
         )
 
         return EmbeddingResponse(**result)
@@ -830,6 +845,83 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
         ) from e
 
 
+@app.get("/knowledge-base/embedding-model")
+async def get_knowledge_base_embedding_model() -> Dict[str, Any]:
+    """The embedding model that built the knowledge base (issue #806).
+
+    Read from the knowledge base itself (Qdrant). ``locked`` is false while it
+    is empty; then any approved model may be used and the first index locks it.
+    """
+    try:
+        return await asyncio.to_thread(
+            app.state.orchestration_service.get_knowledge_base_embedding_model
+        )
+    except Exception as e:
+        error_id = generate_error_id()
+        log_error_with_context(
+            logger, error_id, "knowledge_base_embedding_model_endpoint", None, e
+        )
+        raise HTTPException(
+            status_code=503, detail="Could not read the knowledge base"
+        ) from e
+
+
+@app.get("/knowledge-base/status")
+async def get_knowledge_base_status() -> Dict[str, Any]:
+    """Whether the knowledge base must be re-indexed (issue #588).
+
+    ``reindex_required`` is true when the embedding platform of the connection
+    the indexer uses (production, else testing) differs from the platform(s)
+    holding embeddings. The data/update sync then runs the indexer even though
+    the CKB data hash is unchanged. 503 means it could not be determined;
+    callers keep their normal behaviour.
+    """
+    try:
+        return await asyncio.to_thread(
+            app.state.orchestration_service.get_knowledge_base_status
+        )
+    except Exception as e:
+        error_id = generate_error_id()
+        log_error_with_context(
+            logger, error_id, "knowledge_base_status_endpoint", None, e
+        )
+        raise HTTPException(
+            status_code=503, detail="Could not read the knowledge base status"
+        ) from e
+
+
+@app.post("/knowledge-base/check-embedding")
+async def check_embedding_lock(request: EmbeddingLockCheckRequest) -> Dict[str, Any]:
+    """Check a connection's embedding model against the locked one (issue #806).
+
+    Returns 200 with ``allowed`` and, when blocked, a ``reason`` meant for the
+    user. 503 means the check itself could not run; callers must then not save.
+    Runs in a worker thread: it may wait for a secret that is still being stored.
+    """
+    try:
+        return await asyncio.to_thread(
+            app.state.orchestration_service.check_embedding_lock, request
+        )
+    except Exception as e:
+        error_id = generate_error_id()
+        log_error_with_context(
+            logger,
+            error_id,
+            "check_embedding_lock_endpoint",
+            None,
+            e,
+            {
+                "embedding_platform": request.embedding_platform,
+                "embedding_model": request.embedding_model,
+                "deployment_environment": request.deployment_environment,
+            },
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="The embedding model could not be checked against the knowledge base",
+        ) from e
+
+
 @app.post("/generate-context", response_model=ContextGenerationResponse)
 async def generate_context_with_caching(
     request: ContextGenerationRequest,
@@ -839,9 +931,29 @@ async def generate_context_with_caching(
 
     Uses exact Anthropic prompt templates and supports structure for
     future prompt caching implementation for cost optimization.
+
+    Issue #589: user queries must keep working while the hourly sync indexes.
+    The call waits for the indexer's token budget (so the shared model quota
+    is left to queries) and then runs on the indexer's own small pool. Called
+    inline, the blocking LLM call froze the event loop and queries timed out.
     """
     try:
-        result = app.state.orchestration_service.generate_context_for_chunks(request)
+        if context_budget is not None:
+            waited = await context_budget.acquire(
+                estimate_context_tokens(
+                    request.document_prompt, request.chunk_prompt, request.max_tokens
+                )
+            )
+            if waited > 0:
+                logger.info(
+                    f"Context generation waited {waited:.1f}s for the indexer token budget"
+                )
+
+        result = await run_in_pool(
+            context_pool,
+            app.state.orchestration_service.generate_context_for_chunks,
+            request,
+        )
 
         return ContextGenerationResponse(**result)
 

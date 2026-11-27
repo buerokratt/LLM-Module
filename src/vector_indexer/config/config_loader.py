@@ -83,9 +83,13 @@ class VectorIndexerConfig(BaseModel):
     # API Configuration (defaults from constants.ini)
     api_base_url: str = get_constant("RAG_SEARCH_LLM_SERVICE")
     qdrant_url: str = get_constant("QDRANT_URL")
+    # Resql is queried at startup to pick the LLM connection to index with.
+    resql_url: str = get_constant("RAG_SEARCH_RESQL")
     api_timeout: int = 300
 
-    # Processing Configuration
+    # Processing Configuration. Placeholders only: main_indexer.main() replaces
+    # both with the active connection from Resql (production, else testing)
+    # before any document is processed, and exits if there is none.
     environment: str = "production"
     connection_id: Optional[str] = None
 

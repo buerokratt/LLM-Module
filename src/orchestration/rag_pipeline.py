@@ -137,7 +137,10 @@ class RagPipeline:
             store=service.conversation_history_store,
             fallback=request.conversationHistory,
         )
-        refined_output, refiner_usage = service._refine_user_prompt(
+        # Sync LLM call: run it off the event loop so concurrent requests keep
+        # moving (the request's LM reaches the thread via contextvars).
+        refined_output, refiner_usage = await asyncio.to_thread(
+            service._refine_user_prompt,
             llm_manager=components["llm_manager"],
             original_message=request.message,
             conversation_history=conversation_history,
@@ -482,7 +485,8 @@ class RagPipeline:
             store=service.conversation_history_store,
             fallback=request.conversationHistory,
         )
-        refined_output, refiner_usage = service._refine_user_prompt(
+        refined_output, refiner_usage = await asyncio.to_thread(
+            service._refine_user_prompt,
             llm_manager=components["llm_manager"],
             original_message=request.message,
             conversation_history=conversation_history,

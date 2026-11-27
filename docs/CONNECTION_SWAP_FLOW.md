@@ -292,6 +292,8 @@ sequenceDiagram
     participant CronMgr as CronManager
     participant Vault
 
+    GUI->>Ruuter: POST /llm-connections/check-embedding (temporary secret, test embedding)
+    Note over GUI: Refused → nothing is created (see Embedding Model Check below)
     GUI->>Ruuter: POST /llm-connections/add (environment = testing)
     Ruuter->>Resql: INSERT into llm_connections (generates vault_uuid)
     Resql-->>Ruuter: {id, vaultUuid, ...}
@@ -316,7 +318,23 @@ sequenceDiagram
 
 If the promotion to production fails, the connection stays as testing (with its credentials stored) and the GUI tells the user to switch it to production via edit.
 
+When an **edit** enters new keys, the GUI stores them only after `/llm-connections/edit` has returned. If that store request fails, the GUI says "The connection was saved, but its new keys could not be stored. Enter the keys again and save." instead of reporting success.
+
 **Limitation:** CronManager runs `store_secrets` asynchronously, so `/vault/secret/create` returns success once the job is accepted. A failure inside the script itself (e.g. the Vault write) is only visible in the CronManager logs and is not rolled back.
+
+## Embedding Model Check and Re-index on Save
+
+All connections share one knowledge base, so every save that can change the embedding model behind a connection is checked against it (create, an edit of the embedding platform/model/deployment/endpoint, a promotion to production, re-activation). A testing connection with another model than the knowledge base is refused with the reason; a production connection may switch model and the knowledge base is then fully re-indexed with it. Details, including the real-model check and the rule that a saved key is never sent to a new endpoint host: [Vector Indexer: Locked Embedding Model](../src/vector_indexer/vector_indexer_integration.md#-locked-embedding-model).
+
+When a save makes a re-index necessary, it starts right away instead of at the next hourly sync:
+
+| Save | Who starts the re-index |
+|------|-------------------------|
+| `add` with environment = production, `update-status` (re-activation) | Ruuter, right after the save |
+| `edit` that keeps every saved credential (e.g. a promotion) | Ruuter (`edit.yml`), right after the save |
+| `edit` with new keys or another platform | The GUI, via `POST /llm-connections/start-reindex`, once the new keys are stored in Vault. `edit.yml` does not, since the indexer would still find the old secret. |
+
+`start-reindex` only starts the job when `GET /knowledge-base/status` still reports `reindex_required`. If none of these fire, the hourly `data/update` sync checks the same status and starts it.
 
 ## Key Design Decisions
 

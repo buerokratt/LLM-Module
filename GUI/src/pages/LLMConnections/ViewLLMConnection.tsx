@@ -4,16 +4,24 @@ import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useDialog } from 'hooks/useDialog';
 import { Button } from 'components';
-import { ButtonAppearanceTypes } from 'enums/commonEnums';
+import { ButtonAppearanceTypes, ToastTypes } from 'enums/commonEnums';
 import BackArrowButton from 'assets/BackArrowButton';
 import LLMConnectionForm, { LLMConnectionFormData } from 'components/molecules/LLMConnectionForm';
-import { getLLMConnection, updateLLMConnection, deleteLLMConnection } from 'services/llmConnections';
+import {
+  getLLMConnection,
+  updateLLMConnection,
+  deleteLLMConnection,
+  CredentialsNotStoredError,
+} from 'services/llmConnections';
+import { embeddingLockMessage, knowledgeBaseReindexMessages } from 'utils/embeddingLockMessage';
 import { llmConnectionsQueryKeys } from 'utils/queryKeys';
 import CircularSpinner from 'components/molecules/CircularSpinner/CircularSpinner';
+import { useToast } from 'hooks/useToast';
 
 const ViewLLMConnection = () => {
   const navigate = useNavigate();
   const { t } = useTranslation();
+  const toast = useToast();
   const { open: openDialog, close: closeDialog } = useDialog();
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
@@ -72,14 +80,21 @@ const ViewLLMConnection = () => {
   // Update mutation
   const updateConnectionMutation = useMutation({
     mutationFn: (data: LLMConnectionFormData) => updateLLMConnection(connectionId!, data),
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       await queryClient.invalidateQueries({
         queryKey: llmConnectionsQueryKeys.all()
       });
 
+      // A production connection with another embedding model re-indexes the knowledge base (#588)
+      const reindexMessages = knowledgeBaseReindexMessages(t, result.reindex);
       openDialog({
         title: t('llmConnectionForm.viewConnection.updateSuccessTitle') || 'Connection Update Succeeded',
-        content: <p>{t('llmConnectionForm.viewConnection.updateSuccessMessage') || 'LLM configuration updated successfully!'}</p>,
+        content: (
+          <div>
+            <p>{t('llmConnectionForm.viewConnection.updateSuccessMessage') || 'LLM configuration updated successfully!'}</p>
+            {reindexMessages.map((message) => <p key={message}>{message}</p>)}
+          </div>
+        ),
         footer: (
           <Button
             appearance={ButtonAppearanceTypes.PRIMARY}
@@ -93,8 +108,29 @@ const ViewLLMConnection = () => {
         ),
       });
     },
-    onError: (error: any) => {
+    onError: async (error: any) => {
       console.error('Error updating LLM connection:', error);
+      // Saved, but the new keys are not in Vault: say so, the keys must be entered again
+      if (error instanceof CredentialsNotStoredError) {
+        await queryClient.invalidateQueries({ queryKey: llmConnectionsQueryKeys.all() });
+        toast.open({
+          type: ToastTypes.ERROR,
+          title: t('toast.error.title'),
+          message: t('llmConnectionForm.viewConnection.credentialsNotStored'),
+        });
+        return;
+      }
+      // Embedding model refused or not checkable (#806): a toast, like the
+      // activation toggle; nothing was changed, so the form stays as it is
+      const embeddingMessage = embeddingLockMessage(t, error, 'notChanged');
+      if (embeddingMessage) {
+        toast.open({
+          type: ToastTypes.ERROR,
+          title: t('toast.error.title'),
+          message: embeddingMessage,
+        });
+        return;
+      }
       openDialog({
         title: t('llmConnectionForm.viewConnection.updateErrorTitle') || 'Connection Update Failed',
         content: <p>{t('llmConnectionForm.viewConnection.updateErrorMessage') || 'Failed to update LLM connection. Please try again.'}</p>,

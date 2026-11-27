@@ -1,5 +1,6 @@
 """Service workflow executor - Layer 1: External service/API calls."""
 
+import asyncio
 import json
 from typing import Any, AsyncIterator, Dict, List, Optional, Protocol, Union
 
@@ -161,7 +162,9 @@ class ServiceWorkflowExecutor(BaseWorkflow):
             return None
 
         try:
-            embedding_result = self.orchestration_service.create_embeddings_for_indexer(
+            # Sync embedding call: off the event loop.
+            embedding_result = await asyncio.to_thread(
+                self.orchestration_service.create_embeddings_for_indexer,
                 texts=[query],
                 environment=request.environment,
                 connection_id=request.connection_id,

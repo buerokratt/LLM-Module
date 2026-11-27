@@ -56,7 +56,9 @@ check_ckb_response:
   switch:
     - condition: ${importResult.response.body == null || importResult.response.body.response == null || importResult.response.body.response == "Internal Server Error" || importResult.response.body.response.response == null}
       next: return_ckb_error_response
-    - condition: ${importResult.response.body.response.response.length === 0}
+    # CKB answered but has nothing to index: no rows, or a row without a
+    # dataset URL (the indexer pipeline would reject it and fail every hour).
+    - condition: ${importResult.response.body.response.response.length === 0 || !importResult.response.body.response.response[0].signedS3Url}
       next: return_no_ckb_data
   next: assign_import_agency_data
 
@@ -68,19 +70,45 @@ return_ckb_error_response:
       error: "CKB_ERROR"
   next: return_bad_request
 
+# Empty CKB is not a failure: nothing is indexed and the hash is left as is,
+# so the sync runs again normally once CKB has content.
 return_no_ckb_data:
+  log: "CKB returned no content - nothing to index, skipping vector indexing"
   assign:
-    error_response:
-      success: false
-      message: "Data synchronization failed - CKB agency data not found"
-  next: return_ckb_data_error
+    response_data:
+      success: true
+      message: "CKB returned no content - nothing to index"
+  next: return_no_ckb_content
 
 assign_import_agency_data:
   assign:
     ckb_data_hash: ${importResult.response.body.response.response[0].agencyDataHash}
     signed_s3_url: ${importResult.response.body.response.response[0].signedS3Url}
+  next: get_knowledge_base_status
+
+# Issue #588: the knowledge base must be re-indexed when it holds embeddings
+# from another model than the indexing connection's (production, else testing),
+# even though the CKB data is unchanged. The indexer detects this itself; here
+# it only decides whether to run it. If the status cannot be read, the normal
+# hash comparison decides.
+get_knowledge_base_status:
+  call: http.get
+  args:
+    url: "[#RAG_SEARCH_LLM_SERVICE]/knowledge-base/status"
+  result: kb_status_result
+  next: check_reindex_required
+  on_error: check_has_match
+
+check_reindex_required:
+  switch:
+    - condition: ${kb_status_result.response.body != null && kb_status_result.response.body.reindex_required === true}
+      next: log_reindex_required
   next: check_has_match
-  
+
+log_reindex_required:
+  log: "Knowledge base re-index required (embedding model changed) - running the vector indexer although the CKB data hash is unchanged"
+  next: execute_cron_manager
+
 check_has_match:
   switch:
     - condition: ${current_data_hash !== null && current_data_hash === importResult.response.body.response.response[0].agencyDataHash}
@@ -154,7 +182,7 @@ return_no_sync_needed:
   return: ${response_data}
   next: end
 
-return_ckb_data_error:
-  status: 404
-  return: ${error_response}
+return_no_ckb_content:
+  status: 200
+  return: ${response_data}
   next: end

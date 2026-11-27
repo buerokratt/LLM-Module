@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, AsyncIterator, Dict, List, Optional
+import asyncio
 import json
 import dspy
 import dspy.streaming
@@ -389,7 +390,10 @@ class ContextAnalyzer:
                     self._detection_module = dspy.ChainOfThought(
                         ContextDetectionSignature
                     )
-                response = self._detection_module(
+                # Sync LLM call: off the event loop, so concurrent requests
+                # keep moving. dspy.context reaches the thread via contextvars.
+                response = await asyncio.to_thread(
+                    self._detection_module,
                     conversation_history=formatted_history,
                     user_query=query,
                 )

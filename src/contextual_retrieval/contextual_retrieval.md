@@ -998,7 +998,7 @@ def handle_qdrant_failure_scenario():
 - **Memory Usage**: Stable memory profile (no leaks under sustained load)
 
 ### Resource Optimization
-- **Smart BM25 Refresh**: Only refreshes index when data changes
+- **Smart BM25 Refresh**: One BM25 index is shared by all connections and rebuilt only when the chunk count of the collections changes (Qdrant's collection status is ignored: it flips between green and yellow while Qdrant optimises). While the index has content it is rebuilt at most every `BM25_MIN_REFRESH_INTERVAL_SECONDS` (60 s), since the hourly sync changes the count after nearly every document; an empty index refreshes on the first change. The index is built in a worker thread and swapped in, so queries are never blocked and never see a half-built index. If a collection cannot be read completely, the previous index is kept and the refresh is retried later, instead of recording a truncated index as current.
 - **Circuit Breaker**: Prevents resource exhaustion during failures
 - **Connection Limits**: Configurable connection pool sizes (default: 100)
 - **Memory Management**: Automatic cleanup after retrieval sessions

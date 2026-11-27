@@ -19,6 +19,8 @@ extract_request_data:
   assign:
     connection_id: ${Number(incoming.body.connection_id)}
     connection_status: ${incoming.body.connection_status}
+    # Issue #588: set from the embedding check when it runs
+    reindex_required: false
   next: validate_request
 
 validate_request:
@@ -41,8 +43,46 @@ check_connection_exists:
 validate_connection_exists:
   switch:
     - condition: "${existing_connection.response.body.length > 0}"
-      next: update_connection_status
+      next: check_reactivation
   next: return_not_found
+
+# Issue #806: an inactive connection is not compared when others are created or
+# edited, so activating it must pass the same embedding model check. It tests
+# the saved credentials (real model), excluding the connection itself.
+check_reactivation:
+  switch:
+    - condition: ${connection_status === "active" && existing_connection.response.body[0].connectionStatus !== "active"}
+      next: check_embedding_lock
+  next: update_connection_status
+
+check_embedding_lock:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_LLM_SERVICE]/knowledge-base/check-embedding"
+    body:
+      embedding_platform: ${existing_connection.response.body[0].embeddingPlatform || ""}
+      embedding_model: ${existing_connection.response.body[0].embeddingModel || ""}
+      existing_vault_uuid: ${existing_connection.response.body[0].vaultUuid || ""}
+      exclude_connection_id: ${connection_id}
+      deployment_environment: ${existing_connection.response.body[0].environment || ""}
+  result: embedding_lock_result
+  next: validate_embedding_lock
+  on_error: return_embedding_check_unavailable
+
+validate_embedding_lock:
+  switch:
+    - condition: ${embedding_lock_result.response.body != null && embedding_lock_result.response.body.allowed === true}
+      next: assign_reindex_required
+    - condition: ${embedding_lock_result.response.body != null && embedding_lock_result.response.body.allowed === false}
+      next: return_embedding_model_locked
+  next: return_embedding_check_unavailable
+
+# Issue #588: reactivating a production connection with another embedding
+# model than the knowledge base re-indexes it.
+assign_reindex_required:
+  assign:
+    reindex_required: ${embedding_lock_result.response.body.reindex_required === true}
+  next: update_connection_status
 
 update_connection_status:
   call: http.post
@@ -56,9 +96,21 @@ update_connection_status:
 
 check_update_status:
   switch:
+    - condition: ${200 <= update_result.response.statusCodeValue && update_result.response.statusCodeValue < 300 && reindex_required === true}
+      next: trigger_knowledge_base_resync
     - condition: ${200 <= update_result.response.statusCodeValue && update_result.response.statusCodeValue < 300}
       next: return_success
   next: return_update_failed
+
+# Issue #588: start the re-index now instead of at the next hourly sync.
+# Failures are ignored: the hourly sync re-checks and starts it anyway.
+trigger_knowledge_base_resync:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_CRON_MANAGER]/execute/data_resync/agency_data_resync"
+  result: resync_trigger_result
+  next: return_success
+  on_error: return_success
 
 return_success:
   return: ${update_result.response.body[0]}
@@ -83,6 +135,26 @@ return_invalid_status:
 return_update_failed:
   status: 500
   return: "error: failed to update connection status"
+  next: end
+
+# 400/500: Ruuter only passes the codes in application.httpCodesAllowList.
+return_embedding_model_locked:
+  status: 400
+  return: ${embedding_lock_result.response.body}
+  next: end
+
+# Fail closed: without the check the connection is not activated.
+return_embedding_check_unavailable:
+  assign:
+    embedding_check_unavailable:
+      allowed: false
+      check_unavailable: true
+      reason: "The embedding model could not be checked against the knowledge base. Please try again later."
+  next: return_embedding_check_unavailable_response
+
+return_embedding_check_unavailable_response:
+  status: 500
+  return: ${embedding_check_unavailable}
   next: end
 
 return_unauthorized:

@@ -17,3 +17,5 @@ databaseChangeLog:
       file: changelog/rag-search-script-v8-uuid-vault-path.sql
   - include:
       file: changelog/rag-search-script-v9-gpt5-models.sql
+  - include:
+      file: changelog/rag-search-script-v10-reset-agency-hash.sql

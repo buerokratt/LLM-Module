@@ -321,6 +321,27 @@
       "updateConnection": "Update connection",
       "createConnection": "Create connection"
     },
+    "embeddingLock": {
+      "differentModel": "This connection uses {{current}}, but the knowledge base was built with {{model}}. All connections must use the knowledge base's embedding model, because embeddings from different models cannot be searched together.",
+      "differentModelConnection": "This connection uses {{current}}, but the other active connection uses {{model}}. Test and production connections must use the same embedding model, because they share one knowledge base.",
+      "wrongDeployment": "The embedding deployment is not {{model}} (it returns {{dims}}-dimensional vectors).",
+      "testFailed": "The embedding model could not be verified with these credentials.",
+      "endpointHostChanged": "The embedding endpoint is on a different host than the saved API key. Enter the API key again to use this endpoint.",
+      "unavailable": "The embedding model could not be checked. Please try again.",
+      "notSaved": "The connection was not saved.",
+      "notChanged": "The changes were not saved.",
+      "notActivated": "The connection was not activated."
+    },
+    "knowledgeBaseModel": {
+      "locked": "Knowledge base embeddings were created with {{models}}. Connections must use this embedding model.",
+      "model": "{{model}} ({{platform}}, {{dims}} dimensions)",
+      "notLocked": "The knowledge base has no embeddings yet. The first indexing locks the embedding model of the connection it uses.",
+      "unavailable": "The knowledge base's embedding model could not be read."
+    },
+    "knowledgeBaseReindex": {
+      "started": "The knowledge base was built with {{from}}. It is being fully re-indexed with {{to}} in the background.",
+      "connectionMismatch": "The {{environment}} connection \"{{name}}\" uses {{model}} and will not find knowledge base content until it uses {{to}}."
+    },
     "environments": {
       "testing": "Testing",
       "production": "Production"
@@ -339,6 +360,8 @@
       "cancelButton": "Cancel",
       "confirmReplaceButton": "Yes, replace production connection",
       "errors": {
+        "embeddingLocked": "All connections must use the same embedding model. The connection was not saved.",
+        "embeddingCheck": "The embedding model could not be checked. The connection was not saved. Please try again.",
         "save": "The connection could not be saved. Nothing was created. Please try again.",
         "vault": "The connection credentials could not be stored securely, so the connection was not created. Please try again.",
         "vaultRollbackFailed": "The connection credentials could not be stored securely, and the incomplete connection could not be removed. Please delete it from the LLM connections list.",
@@ -352,6 +375,7 @@
       "updateSuccessMessage": "LLM configuration updated successfully!",
       "updateErrorTitle": "Connection update failed",
       "updateErrorMessage": "Failed to update LLM connection. Please try again.",
+      "credentialsNotStored": "The connection was saved, but its new keys could not be stored. Enter the keys again and save.",
       "deleteSuccessTitle": "Connection deletion succeeded",
       "deleteSuccessMessage": "LLM connection deleted successfully!",
       "deleteErrorTitle": "Error",

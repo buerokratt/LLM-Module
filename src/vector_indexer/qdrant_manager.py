@@ -1,6 +1,7 @@
 """Qdrant vector database manager for storing contextual chunks."""
 
-from typing import List, Dict, Any, Optional
+from dataclasses import dataclass
+from typing import List, Dict, Any, Optional, Set
 from loki_logger import LokiLogger
 import httpx
 import uuid
@@ -16,6 +17,33 @@ class QdrantOperationError(Exception):
     """Custom exception for Qdrant operations."""
 
     pass
+
+
+# Embedding platform of an LLM connection (llm_connections.embedding_platform)
+# -> the collection its vectors are stored in. Must match PLATFORMS in
+# src/llm_orchestrator_config/knowledge_base_lock.py (not imported: the indexer
+# venv has no dspy, which that package imports).
+PLATFORM_COLLECTIONS: Dict[str, str] = {
+    "azure": "contextual_chunks_azure",
+    "aws": "contextual_chunks_aws",
+}
+
+
+@dataclass(frozen=True)
+class StoredEmbeddings:
+    """A collection that holds embeddings, and the model that made them."""
+
+    collection: str
+    platform: str
+    embedding_model: str
+    vector_dimensions: int
+    point_count: int
+
+    def describe(self) -> str:
+        return (
+            f"{self.embedding_model} ({self.platform}, {self.vector_dimensions} "
+            f"dimensions, {self.point_count} chunks)"
+        )
 
 
 class QdrantManager:
@@ -560,6 +588,126 @@ class QdrantManager:
                 f"Error getting chunks for document {document_hash[:12]}...: {e}"
             )
             return []
+
+    # ------------------------------------------------------------------
+    # Full re-index onto another embedding model (issue #588)
+    # ------------------------------------------------------------------
+
+    async def get_stored_embeddings(self) -> List[StoredEmbeddings]:
+        """Collections that hold embeddings, with the model that created them.
+
+        Raises:
+            QdrantOperationError: Qdrant could not be read. Callers must not
+                guess: deciding wrongly would re-index or delete for nothing.
+        """
+        stored: List[StoredEmbeddings] = []
+        for platform, collection_name in PLATFORM_COLLECTIONS.items():
+            base = f"{self.qdrant_url}/collections/{collection_name}/points"
+            try:
+                count_response = await self.client.post(
+                    f"{base}/count", json={"exact": True}
+                )
+                if count_response.status_code == 404:
+                    continue
+                count_response.raise_for_status()
+                point_count = int(count_response.json()["result"]["count"])
+                if point_count == 0:
+                    continue
+                scroll_response = await self.client.post(
+                    f"{base}/scroll",
+                    json={
+                        "limit": 1,
+                        "with_payload": ["embedding_model", "vector_dimensions"],
+                        "with_vector": False,
+                    },
+                )
+                scroll_response.raise_for_status()
+                points = scroll_response.json()["result"]["points"]
+                payload = points[0].get("payload", {}) if points else {}
+            except (httpx.HTTPError, KeyError, ValueError, TypeError) as e:
+                raise QdrantOperationError(
+                    f"Could not read collection {collection_name}: {e}"
+                ) from e
+
+            config = self.collections_config[collection_name]
+            stored.append(
+                StoredEmbeddings(
+                    collection=collection_name,
+                    platform=platform,
+                    # The indexer stores "provider/model"
+                    embedding_model=str(
+                        payload.get("embedding_model") or config["models"][0]
+                    ).split("/")[-1],
+                    vector_dimensions=int(
+                        payload.get("vector_dimensions") or config["vector_size"]
+                    ),
+                    point_count=point_count,
+                )
+            )
+        return stored
+
+    async def count_document_chunks(
+        self, collection_name: str, document_hash: str
+    ) -> Optional[int]:
+        """Number of chunks a document has in a collection if all are there.
+
+        Returns the stored chunk count when it equals the document's
+        ``total_chunks`` (the document is complete), otherwise None. Used to
+        resume an interrupted re-index without redoing finished documents.
+        """
+        chunks = await self.get_chunks_for_document(collection_name, document_hash)
+        if not chunks:
+            return None
+        expected = chunks[0].get("payload", {}).get("total_chunks")
+        indexes = {point.get("payload", {}).get("chunk_index") for point in chunks}
+        if isinstance(expected, int) and expected > 0 and len(indexes) == expected:
+            return expected
+        return None
+
+    async def clear_collection(self, collection_name: str) -> None:
+        """Remove every point: delete the collection and create it empty again.
+
+        Raises:
+            QdrantOperationError: The collection could not be deleted.
+        """
+        if not await self.delete_collection(collection_name):
+            raise QdrantOperationError(f"Could not delete collection {collection_name}")
+        await self._create_collection_if_not_exists(
+            collection_name, self.collections_config[collection_name]
+        )
+
+    async def delete_chunks_not_in(
+        self, collection_name: str, keep_document_hashes: Set[str]
+    ) -> None:
+        """Delete chunks of documents that are no longer in the dataset.
+
+        Does nothing for an empty ``keep_document_hashes``: that would delete
+        the whole collection, which is never the intent here.
+
+        Raises:
+            QdrantOperationError: The delete failed.
+        """
+        if not keep_document_hashes:
+            return
+        response = await self.client.post(
+            f"{self.qdrant_url}/collections/{collection_name}/points/delete",
+            params={"wait": "true"},
+            json={
+                "filter": {
+                    "must_not": [
+                        {
+                            "key": "document_hash",
+                            "match": {"any": sorted(keep_document_hashes)},
+                        }
+                    ]
+                }
+            },
+        )
+        if response.status_code not in (200, 201):
+            raise QdrantOperationError(
+                f"Deleting stale chunks from {collection_name} failed: "
+                f"HTTP {response.status_code} {response.text}"
+            )
 
     async def delete_collection(self, collection_name: str) -> bool:
         """Delete a collection (for cleanup/testing)."""

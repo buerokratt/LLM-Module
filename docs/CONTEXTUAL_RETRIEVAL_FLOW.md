@@ -110,6 +110,9 @@ Results are deduplicated across the 6 queries based on `chunk_id`, keeping the h
 |----------|-------|-----------|
 | `DEFAULT_TOPK_BM25` | 40 | Matches semantic search to ensure balanced representation in fusion |
 | `DEFAULT_SCROLL_BATCH_SIZE` | 100 | Qdrant pagination size for fetching all chunks during index building. Balances API call efficiency with memory usage. |
+| `BM25_MIN_REFRESH_INTERVAL_SECONDS` | 60 | Minimum time between rebuilds while the index has content. The hourly sync changes the chunk count after nearly every document; without this, the whole knowledge base was re-read back to back. An empty index still refreshes on the first change. |
+
+The index is rebuilt only when the chunk count changes, in a worker thread, and swapped in when complete; if a collection cannot be read completely, the previous index is kept.
 
 #### Index Building
 ```python

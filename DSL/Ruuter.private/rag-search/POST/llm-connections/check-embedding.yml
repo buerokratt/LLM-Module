@@ -1,0 +1,173 @@
+declaration:
+  call: declare
+  version: 0.1
+  description: "Check a connection's embedding model against the model locked by the knowledge base"
+  method: post
+  accepts: json
+  returns: json
+  namespace: rag-search
+  allowlist:
+    body:
+      - field: embedding_platform
+        type: string
+        description: "Embedding platform key (azure, aws)"
+      - field: embedding_model
+        type: string
+        description: "Embedding model from the connection form"
+      - field: llm_platform
+        type: string
+        description: "LLM platform of the temporary secret (needed to delete it)"
+      - field: llm_model
+        type: string
+        description: "LLM model of the temporary secret (needed to delete it)"
+      - field: vault_uuid
+        type: string
+        description: "Vault id of newly entered credentials stored as a temporary secret; deleted after the check"
+      - field: existing_vault_uuid
+        type: string
+        description: "Vault id of the saved connection when its key is kept; never deleted"
+      - field: embedding_deployment_name
+        type: string
+        description: "Azure embedding deployment name to test"
+      - field: embedding_target_uri
+        type: string
+        description: "Azure embedding endpoint to test"
+      - field: exclude_connection_id
+        type: number
+        description: "Connection being edited; not compared with itself"
+      - field: deployment_environment
+        type: string
+        description: "Environment the connection is saved in (production may re-index the knowledge base)"
+
+# Empty values, not null: Ruuter's http.post fails (NullPointerException) on null
+# body fields. The orchestration service treats "" and 0 as "not given".
+extract_request_data:
+  assign:
+    embedding_platform: ${incoming.body.embedding_platform || ""}
+    embedding_model: ${incoming.body.embedding_model || ""}
+    llm_platform: ${incoming.body.llm_platform || ""}
+    llm_model: ${incoming.body.llm_model || ""}
+    vault_uuid: ${incoming.body.vault_uuid || ""}
+    existing_vault_uuid: ${incoming.body.existing_vault_uuid || ""}
+    embedding_deployment_name: ${incoming.body.embedding_deployment_name || ""}
+    embedding_target_uri: ${incoming.body.embedding_target_uri || ""}
+    exclude_connection_id: ${incoming.body.exclude_connection_id || 0}
+    deployment_environment: ${incoming.body.deployment_environment || ""}
+  next: check_temp_secret_given
+
+# A temporary secret is deleted after the check, so it must not be the secret of
+# a saved connection.
+check_temp_secret_given:
+  switch:
+    - condition: ${vault_uuid !== ""}
+      next: find_connection_for_temp_secret
+  next: check_embedding
+
+find_connection_for_temp_secret:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_RESQL]/get-llm-connection-by-vault-uuid"
+    body:
+      vault_uuid: ${vault_uuid}
+  result: temp_owner_result
+  next: validate_temp_secret
+  on_error: return_invalid_temp_secret
+
+validate_temp_secret:
+  switch:
+    - condition: ${temp_owner_result.response.body && temp_owner_result.response.body.length > 0}
+      next: return_invalid_temp_secret
+  next: check_embedding
+
+# The orchestration service makes the test embedding (it can read Vault) and
+# compares it with the knowledge base and the other active connection.
+check_embedding:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_LLM_SERVICE]/knowledge-base/check-embedding"
+    body:
+      embedding_platform: ${embedding_platform}
+      embedding_model: ${embedding_model}
+      vault_uuid: ${vault_uuid}
+      existing_vault_uuid: ${existing_vault_uuid}
+      embedding_deployment_name: ${embedding_deployment_name}
+      embedding_target_uri: ${embedding_target_uri}
+      exclude_connection_id: ${exclude_connection_id}
+      deployment_environment: ${deployment_environment}
+  result: check_result
+  next: assign_check_outcome
+  on_error: assign_check_failed
+
+assign_check_outcome:
+  assign:
+    check_ok: ${check_result.response.body != null && check_result.response.body.allowed !== undefined}
+  next: check_cleanup_needed
+
+assign_check_failed:
+  assign:
+    check_ok: false
+  next: check_cleanup_needed
+
+# Always remove the temporary secret, whatever the check said.
+check_cleanup_needed:
+  switch:
+    - condition: ${vault_uuid !== ""}
+      next: delete_temp_secret
+  next: return_outcome
+
+delete_temp_secret:
+  call: http.post
+  args:
+    url: "[#RAG_SEARCH_CRON_MANAGER]/execute/delete_from_vault/delete_secrets"
+    query:
+      vaultUuid: ${vault_uuid}
+      llmPlatform: ${llm_platform}
+      llmModel: ${llm_model}
+      embeddingModel: ${embedding_model}
+      embeddingPlatform: ${embedding_platform}
+  result: temp_delete_result
+  next: return_outcome
+  on_error: return_outcome
+
+return_outcome:
+  switch:
+    - condition: ${check_ok}
+      next: return_check_result
+  next: return_check_unavailable
+
+return_check_result:
+  return: ${check_result.response.body}
+  next: end
+
+# Fail closed: when the check cannot run, the GUI must not save the connection.
+# 500/400: Ruuter only passes the codes in application.httpCodesAllowList.
+return_check_unavailable:
+  assign:
+    unavailable_response:
+      allowed: false
+      check_unavailable: true
+      reason: "The embedding model could not be checked against the knowledge base. Please try again later."
+  next: return_unavailable
+
+return_unavailable:
+  status: 500
+  return: ${unavailable_response}
+  next: end
+
+return_invalid_temp_secret:
+  assign:
+    invalid_temp_response:
+      allowed: false
+      check_unavailable: true
+      reason: "vault_uuid must be a new temporary id, not the id of a saved connection."
+  next: return_invalid_temp
+
+return_invalid_temp:
+  status: 400
+  return: ${invalid_temp_response}
+  next: end
+
+return_unauthorized:
+  status: 401
+  return: "error: unauthorized"
+  next: end

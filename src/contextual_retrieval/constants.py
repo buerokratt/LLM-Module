@@ -31,6 +31,12 @@ class HttpClientConstants:
     DEFAULT_RETRY_DELAY = 1.0
     DEFAULT_BACKOFF_FACTOR = 2.0
 
+    # Collection health check (provider detection). Qdrant can answer 408 or drop
+    # a pooled connection while the event loop is busy with other requests; one
+    # retry covers that, and a check that still fails never counts as "empty".
+    HEALTH_CHECK_ATTEMPTS = 2
+    HEALTH_CHECK_RETRY_DELAY = 0.2
+
     # Transport settings
     DEFAULT_TRANSPORT_RETRIES = 0  # Handle retries at application level
     USE_HTTP2 = False  # Use HTTP/1.1 for better Qdrant compatibility
@@ -69,6 +75,12 @@ class SearchConstants:
     # BM25 indexing
     DEFAULT_SCROLL_BATCH_SIZE = 100  # Batch size for scrolling through collections
 
+    # Rebuild the shared BM25 index at most this often while it has content.
+    # While the hourly sync stores chunks the point count changes after nearly
+    # every document; rebuilding on each change re-read the whole knowledge base
+    # back to back. An empty index still refreshes on the first change.
+    BM25_MIN_REFRESH_INTERVAL_SECONDS = 60
+
 
 class CollectionConstants:
     """Collection and provider constants."""
@@ -91,6 +103,9 @@ class HttpStatusConstants:
 
     # Success codes
     OK = 200
+
+    # Client error codes
+    NOT_FOUND = 404
 
     # Error ranges
     CLIENT_ERROR_START = 400

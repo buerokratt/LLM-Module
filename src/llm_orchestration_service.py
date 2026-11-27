@@ -13,6 +13,7 @@ from models.request_models import (
     ConversationItem,
     PromptRefinerOutput,
     ContextGenerationRequest,
+    EmbeddingLockCheckRequest,
     TestOrchestrationResponse,
     ChunkInfo,
     DocumentReference,
@@ -271,8 +272,13 @@ class LLMOrchestrationService:
         try:
             bm25 = SmartBM25Search(qdrant_url=qdrant_url)
             success = await bm25.initialize_index()
+            # Shared even when empty: when the service starts before the first
+            # index (e.g. only a test connection exists yet), every retriever
+            # (one per environment/connection) would otherwise build and keep its
+            # own index. The shared one fills itself through its smart refresh
+            # once the indexer has stored chunks.
+            self.shared_bm25_search = bm25
             if success:
-                self.shared_bm25_search = bm25
                 elapsed = time.time() - prewarm_start
                 logger.info(
                     f"Shared BM25 index pre-warmed in {elapsed:.2f}s "
@@ -280,8 +286,8 @@ class LLMOrchestrationService:
                 )
             else:
                 logger.warning(
-                    "BM25 pre-warming produced an empty index - "
-                    "index will be built on first query instead"
+                    "BM25 pre-warming found an empty knowledge base - the shared "
+                    "index will fill itself once chunks are indexed"
                 )
         except Exception as e:
             logger.warning(
@@ -1233,6 +1239,20 @@ class LLMOrchestrationService:
     ) -> Dict[str, Any]:
         """Generate context for chunks. See IndexerSupport for details."""
         return self._indexer_support.generate_context_for_chunks(request)
+
+    def get_knowledge_base_embedding_model(self) -> Dict[str, Any]:
+        """Embedding model locked by the knowledge base. See IndexerSupport."""
+        return self._indexer_support.get_knowledge_base_embedding_model()
+
+    def check_embedding_lock(
+        self, request: EmbeddingLockCheckRequest
+    ) -> Dict[str, Any]:
+        """Check a connection's embedding model against the lock. See IndexerSupport."""
+        return self._indexer_support.check_embedding_lock(request)
+
+    def get_knowledge_base_status(self) -> Dict[str, Any]:
+        """Whether the knowledge base must be re-indexed. See IndexerSupport."""
+        return self._indexer_support.get_knowledge_base_status()
 
     def get_available_embedding_models_for_indexer(
         self, environment: str = PRODUCTION_DEPLOYMENT_ENVIRONMENT

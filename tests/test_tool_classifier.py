@@ -185,6 +185,60 @@ class TestGetQueryEmbedding:
 
         assert result is None
 
+    def test_embeds_with_the_given_connection(self) -> None:
+        """Issue #589: a test-connection query is embedded with its own
+        connection, not the production one."""
+        svc = _make_orchestration_service()
+        classifier = _make_classifier(svc)
+
+        classifier._get_query_embedding("holiday", "testing", "test-conn")
+
+        kwargs = svc.create_embeddings_for_indexer.call_args.kwargs
+        assert kwargs["environment"] == "testing"
+        assert kwargs["connection_id"] == "test-conn"
+
+    def test_defaults_to_production_without_a_connection(self) -> None:
+        svc = _make_orchestration_service()
+        classifier = _make_classifier(svc)
+
+        classifier._get_query_embedding("holiday")
+
+        kwargs = svc.create_embeddings_for_indexer.call_args.kwargs
+        assert kwargs["environment"] == "production"
+        assert kwargs["connection_id"] is None
+
+
+class TestClassifyUsesTheRequestsConnection:
+    """Issue #589: service matching embeds the query with the request's
+    connection. Hard-coded production failed with only a test connection
+    ("No production connection found") and skipped service matching."""
+
+    @pytest.mark.asyncio
+    async def test_testing_request_embeds_with_the_test_connection(self) -> None:
+        session_store = AsyncMock()
+        session_store.get = AsyncMock(return_value=None)
+        svc = _make_orchestration_service(session_store=session_store)
+        classifier = _make_classifier(svc)
+
+        with (
+            patch(
+                "tool_classifier.classifier.FeatureFlags.SERVICE_WORKFLOW_ENABLED",
+                True,
+            ),
+            patch.object(classifier, "_dense_search", AsyncMock(return_value=[])),
+            patch.object(
+                classifier, "_try_api_tool_classification", AsyncMock(return_value=None)
+            ),
+        ):
+            result = await classifier.classify(
+                query="public holidays", language="en", request=_make_request()
+            )
+
+        assert result.workflow == WorkflowType.CONTEXT
+        kwargs = svc.create_embeddings_for_indexer.call_args.kwargs
+        assert kwargs["environment"] == "testing"
+        assert kwargs["connection_id"] == "test-conn"
+
 
 # ---------------------------------------------------------------------------
 # _try_api_tool_classification
