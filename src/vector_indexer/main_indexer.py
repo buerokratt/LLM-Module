@@ -29,7 +29,7 @@ from vector_indexer.error_logger import ErrorLogger
 from vector_indexer.models import ProcessingStats, DocumentInfo
 from vector_indexer.diff_identifier import DiffDetector, create_diff_config, DiffError
 from vector_indexer.diff_identifier.diff_models import DiffResult
-from vector_indexer.dataset_download import download_and_extract_dataset
+from vector_indexer.dataset_download import download_and_extract_dataset, redact_url
 
 # Initialize Loki logger
 logger = LokiLogger(service_name="main-indexer")
@@ -194,15 +194,20 @@ def _acquire_indexer_lock(signed_url: Optional[str]) -> Optional[IO]:
     lock_file = open(lock_path, "w")
     try:
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        locked = True
     except OSError:
+        locked = False
+    # The URL's query string holds the S3 signature: never log it.
+    dataset = redact_url(signed_url) if signed_url else None
+    if not locked:
         lock_file.close()
         logger.warning(
-            f"Indexer lock busy for signed_url={signed_url!r} (lock_key={lock_key}, "
+            f"Indexer lock busy for dataset={dataset!r} (lock_key={lock_key}, "
             f"file={lock_path}) — another run holds it."
         )
         return None
     logger.info(
-        f"Indexer lock acquired for signed_url={signed_url!r} (lock_key={lock_key}, "
+        f"Indexer lock acquired for dataset={dataset!r} (lock_key={lock_key}, "
         f"file={lock_path})"
     )
     return lock_file
@@ -252,7 +257,7 @@ class VectorIndexer:
         )
 
         if self.signed_url:
-            logger.info(f"Signed URL provided: {self.signed_url[:50]}...")
+            logger.info(f"Dataset URL provided: {redact_url(self.signed_url)}")
 
     async def process_all_documents(
         self, reindex: Optional[ReindexPlan] = None
@@ -514,6 +519,9 @@ class VectorIndexer:
             Exception: Any error that stops the re-index; logged as FAILED.
         """
         logger.warning(f"KB re-index STARTED: {plan.describe()}")
+        # Old collections already emptied by this run, so failure and
+        # interruption messages say what really happened to the old embeddings.
+        cleared: List[str] = []
         try:
             async with QdrantManager(self.config) as qdrant_manager:
                 await qdrant_manager.ensure_collections_exist()
@@ -577,17 +585,23 @@ class VectorIndexer:
                     self.error_logger.log_processing_stats(self.stats)
                     return self.stats
 
-                # Every document is in the target: remove the old model's
-                # embeddings and chunks of documents no longer in the dataset.
-                for collection_name in plan.old_collections:
-                    await qdrant_manager.clear_collection(collection_name)
-                    logger.info(
-                        f"KB re-index: removed old embeddings in {collection_name}"
-                    )
+                # Every document is in the target. Prune chunks of documents no
+                # longer in the dataset BEFORE removing the old embeddings: if
+                # pruning fails or is interrupted, the old collection still
+                # exists, so the next sync plans this re-index again (every
+                # document is skipped as complete) and prunes again. Pruning
+                # last would leave stale chunks for good, since without an old
+                # collection no re-index is planned any more.
                 await qdrant_manager.delete_chunks_not_in(
                     plan.target_collection,
                     {doc_info.document_hash for doc_info in all_documents},
                 )
+                for collection_name in plan.old_collections:
+                    await qdrant_manager.clear_collection(collection_name)
+                    cleared.append(collection_name)
+                    logger.info(
+                        f"KB re-index: removed old embeddings in {collection_name}"
+                    )
 
             await self._record_full_reindex_metadata(all_documents, chunks_info)
 
@@ -603,16 +617,33 @@ class VectorIndexer:
         except (asyncio.CancelledError, KeyboardInterrupt):
             # SIGTERM (see main) or Ctrl+C: not an Exception, so logged here
             logger.error(
-                f"KB re-index INTERRUPTED: {plan.describe()}. Old embeddings kept; "
-                "the next sync resumes it."
+                f"KB re-index INTERRUPTED: {plan.describe()}. "
+                f"{self._old_embeddings_state(plan, cleared)}"
             )
             raise
         except Exception as e:
             logger.error(
-                f"KB re-index FAILED: {plan.describe()} - {e}. Old embeddings kept; "
-                "the next sync retries."
+                f"KB re-index FAILED: {plan.describe()} - {e}. "
+                f"{self._old_embeddings_state(plan, cleared)}"
             )
             raise
+
+    @staticmethod
+    def _old_embeddings_state(plan: ReindexPlan, cleared: List[str]) -> str:
+        """What a failed or interrupted re-index left of the old embeddings."""
+        kept = [name for name in plan.old_collections if name not in cleared]
+        if not cleared:
+            return "Old embeddings kept; the next sync resumes it."
+        if kept:
+            return (
+                f"New embeddings are complete; old embeddings already removed from "
+                f"{', '.join(cleared)} but still in {', '.join(kept)}, which the "
+                "next sync removes."
+            )
+        return (
+            "New embeddings are complete and the old embeddings were already "
+            "removed; only the processed-files record may be stale."
+        )
 
     async def _check_indexing_embedding_model(
         self, qdrant_manager: QdrantManager
@@ -654,12 +685,20 @@ class VectorIndexer:
         is how a deployment of another model (e.g. ada-002 behind an Azure
         connection set to text-embedding-3-large) is caught (#587).
 
+        A wrong size is retried within the same wait too (review finding M1):
+        right after a production connection switches platform, Vault can still
+        hold its old secret for a moment, which embeds with the old model. Only
+        a size that is still wrong at the end fails the run.
+
         Raises:
             RuntimeError: No working embedding within the wait, or one of the
                 wrong size.
         """
         last_error: Optional[Exception] = None
+        wrong_size: Optional[int] = None
         for attempt in range(1, REINDEX_EMBEDDING_READY_ATTEMPTS + 1):
+            if attempt > 1:
+                await asyncio.sleep(REINDEX_EMBEDDING_READY_DELAY_SECONDS)
             try:
                 result = await self.api_client.create_embeddings_batch(
                     ["Knowledge base re-index check"]
@@ -671,21 +710,27 @@ class VectorIndexer:
                     f"KB re-index: test embedding attempt {attempt}/"
                     f"{REINDEX_EMBEDDING_READY_ATTEMPTS} failed: {e}"
                 )
-                if attempt < REINDEX_EMBEDDING_READY_ATTEMPTS:
-                    await asyncio.sleep(REINDEX_EMBEDDING_READY_DELAY_SECONDS)
                 continue
 
             if dimensions != expected_dimensions:
-                raise RuntimeError(
-                    f"the indexing connection's embeddings have {dimensions} "
-                    f"dimensions, but {target_collection} needs "
-                    f"{expected_dimensions}"
+                wrong_size = dimensions
+                logger.warning(
+                    f"KB re-index: test embedding attempt {attempt}/"
+                    f"{REINDEX_EMBEDDING_READY_ATTEMPTS} has {dimensions} dimensions, "
+                    f"{target_collection} needs {expected_dimensions} (credentials "
+                    "may still be being replaced)"
                 )
+                continue
             logger.info(
                 f"Test embedding OK ({dimensions} dimensions, "
                 f"model {result.get('model_used', 'unknown')})"
             )
             return
+        if wrong_size is not None:
+            raise RuntimeError(
+                f"the indexing connection's embeddings have {wrong_size} "
+                f"dimensions, but {target_collection} needs {expected_dimensions}"
+            )
         raise RuntimeError(
             f"no working embedding with the indexing connection: {last_error}"
         )

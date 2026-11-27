@@ -75,6 +75,12 @@ class SearchConstants:
     # BM25 indexing
     DEFAULT_SCROLL_BATCH_SIZE = 100  # Batch size for scrolling through collections
 
+    # Rebuild the shared BM25 index at most this often while it has content.
+    # While the hourly sync stores chunks the point count changes after nearly
+    # every document; rebuilding on each change re-read the whole knowledge base
+    # back to back. An empty index still refreshes on the first change.
+    BM25_MIN_REFRESH_INTERVAL_SECONDS = 60
+
 
 class CollectionConstants:
     """Collection and provider constants."""

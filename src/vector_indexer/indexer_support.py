@@ -225,10 +225,16 @@ class IndexerSupport:
                 detected_dimensions = measured["vector_dimensions"]
             except Exception as e:  # missing secret, bad key, wrong endpoint, ...
                 logger.warning(f"Embedding lock check: test embedding failed: {e}")
+                # "endpoint_host_changed": the saved key was not sent to a new
+                # host (EndpointHostChangedError); the key must be entered again.
+                detail = getattr(e, "detail", None)
                 return EmbeddingCheckResult(
                     allowed=False,
                     code="test_embedding_failed",
-                    reason="A test embedding could not be made with these credentials.",
+                    detail=detail,
+                    reason=str(e)
+                    if detail
+                    else "A test embedding could not be made with these credentials.",
                     locked_models=[asdict(model) for model in locked],
                 ).to_dict()
 

@@ -314,6 +314,131 @@ class TestSharedBM25:
         assert all(cid.startswith("new_") for cid in await query())
 
 
+class TestBM25RefreshUnderLoad:
+    """Review finding H3: the rebuild froze the event loop, ran back to back
+    while the sync stored chunks, and could record a truncated index."""
+
+    @pytest.mark.asyncio
+    async def test_index_is_built_off_the_event_loop(self) -> None:
+        import threading
+
+        bm25 = _bm25([_chunk("a_chunk_000", "parking permit"), *FILLER])
+        threads: List[str] = []
+        build = bm25._build_index
+
+        def recording_build(chunks: List[Dict[str, Any]]):
+            threads.append(threading.current_thread().name)
+            return build(chunks)
+
+        bm25._build_index = recording_build  # type: ignore[method-assign]
+
+        assert await bm25.initialize_index()
+        assert threads and threads[0] != threading.main_thread().name
+
+    @pytest.mark.asyncio
+    async def test_failed_read_keeps_the_previous_index_and_stats(self) -> None:
+        from src.contextual_retrieval.bm25_search import CollectionReadError
+
+        bm25 = _bm25([_chunk("a_chunk_000", "parking permit"), *FILLER])
+        assert await bm25.initialize_index()
+        index, stats = bm25.bm25_index, bm25.last_collection_stats
+
+        bm25._fetch_all_contextual_chunks = AsyncMock(  # type: ignore[method-assign]
+            side_effect=CollectionReadError("qdrant failed after 100 chunks")
+        )
+        bm25._get_collection_stats = AsyncMock(  # type: ignore[method-assign]
+            return_value={AZURE: {"points_count": 500}}
+        )
+
+        assert not await bm25.initialize_index()
+        assert bm25.bm25_index is index
+        assert bm25.last_collection_stats == stats  # retried on the next check
+        results = await bm25.search_bm25("parking", [], limit=5)
+        assert [r["chunk_id"] for r in results] == ["a_chunk_000"]
+
+    @staticmethod
+    def _bm25_with_qdrant(responses: List[httpx.Response]) -> SmartBM25Search:
+        bm25 = SmartBM25Search("http://qdrant:6333", ContextualRetrievalConfig())
+        client = SimpleNamespace(
+            post=AsyncMock(side_effect=responses), get=AsyncMock(side_effect=responses)
+        )
+        bm25._http_client_manager = SimpleNamespace(  # type: ignore[assignment]
+            get_client=AsyncMock(return_value=client)
+        )
+        return bm25
+
+    @pytest.mark.asyncio
+    async def test_scroll_failing_part_way_raises_instead_of_returning_a_part(
+        self,
+    ) -> None:
+        from src.contextual_retrieval.bm25_search import CollectionReadError
+
+        first_page = httpx.Response(
+            200,
+            json={
+                "result": {
+                    "points": [{"payload": _chunk("a_chunk_000", "x")}],
+                    "next_page_offset": "next",
+                }
+            },
+        )
+        bm25 = self._bm25_with_qdrant([first_page, httpx.Response(500)])
+
+        with pytest.raises(CollectionReadError):
+            await bm25._scroll_collection(AZURE)
+
+    @pytest.mark.asyncio
+    async def test_missing_collection_reads_as_empty(self) -> None:
+        bm25 = self._bm25_with_qdrant([httpx.Response(404)])
+
+        assert await bm25._scroll_collection(AWS) == []
+
+    @pytest.mark.asyncio
+    async def test_status_flips_do_not_count_as_a_change(self) -> None:
+        def info(status: str) -> httpx.Response:
+            return httpx.Response(
+                200, json={"result": {"points_count": 7, "status": status}}
+            )
+
+        bm25 = self._bm25_with_qdrant(
+            [info("green"), httpx.Response(404), info("yellow"), httpx.Response(404)]
+        )
+
+        assert await bm25._get_collection_stats() == await bm25._get_collection_stats()
+
+    @pytest.mark.asyncio
+    async def test_rebuilds_are_throttled_while_the_sync_stores_chunks(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from src.contextual_retrieval import bm25_search
+
+        now = {"t": 1000.0}
+        monkeypatch.setattr(bm25_search.time, "monotonic", lambda: now["t"])
+        bm25 = _bm25([_chunk("a_chunk_000", "parking permit"), *FILLER])
+        assert await bm25.initialize_index()
+
+        # The sync stored more chunks a few seconds later
+        bm25._get_collection_stats = AsyncMock(  # type: ignore[method-assign]
+            return_value={AZURE: {"points_count": 50}}
+        )
+        now["t"] += 5
+        assert not await bm25._should_refresh_index()
+
+        now["t"] += bm25_search.SearchConstants.BM25_MIN_REFRESH_INTERVAL_SECONDS
+        assert await bm25._should_refresh_index()
+
+    @pytest.mark.asyncio
+    async def test_unreadable_stats_do_not_trigger_a_rebuild(self) -> None:
+        bm25 = _bm25([], stats={AZURE: {"points_count": 0}})
+        assert not await bm25.initialize_index()
+
+        bm25._get_collection_stats = AsyncMock(  # type: ignore[method-assign]
+            return_value={AZURE: {"points_count": None}}
+        )
+
+        assert not await bm25._should_refresh_index()
+
+
 @pytest.mark.asyncio
 async def test_prewarm_keeps_the_shared_index_when_knowledge_base_is_empty() -> None:
     from src import llm_orchestration_service as service_module

@@ -1,5 +1,6 @@
 """Simple dataset download utility using requests."""
 
+import re
 import shutil
 import zipfile
 import tempfile
@@ -11,6 +12,18 @@ from loki_logger import LokiLogger
 logger = LokiLogger(service_name="dataset-download")
 
 DATASETS_PATH = Path("/app/datasets")
+
+# The query string of a presigned URL carries the S3 credential and signature.
+_URL_QUERY = re.compile(r"(https?://[^\s?'\"<>]+)\?[^\s'\"<>]*")
+
+
+def redact_url(text: str) -> str:
+    """Replace the query string of every URL in ``text`` with ``<redacted>``.
+
+    Presigned dataset URLs must never reach the logs: anyone who can read them
+    could download the CKB dataset until the URL expires.
+    """
+    return _URL_QUERY.sub(r"\1?<redacted>", text or "")
 
 
 def _empty_folder(folder: Path) -> int:
@@ -51,7 +64,7 @@ def download_and_extract_dataset(
         raise ValueError("signed_url cannot be empty")
 
     logger.info("Starting dataset download...")
-    logger.debug(f"Download URL (first 100 chars): {signed_url[:100]}...")
+    logger.debug(f"Download URL: {redact_url(signed_url)}")
 
     # Create datasets folder
     datasets_path.mkdir(parents=True, exist_ok=True)
@@ -98,15 +111,27 @@ def download_and_extract_dataset(
 
         return str(datasets_path), files_count
 
+    # requests puts the full URL (with its signature) in error messages, and
+    # callers log them with their traceback: re-raise without the URL's query
+    # and without chaining the original exception.
     except requests.exceptions.HTTPError as e:
         logger.error(f"Download failed with HTTP error {e.response.status_code}")
-        raise
+        raise requests.exceptions.HTTPError(
+            redact_url(str(e)), response=e.response
+        ) from None
     except requests.exceptions.Timeout:
         logger.error("Download timed out after 300 seconds")
-        raise
+        raise requests.exceptions.Timeout(
+            "Dataset download timed out after 300 seconds"
+        ) from None
     except requests.RequestException as e:
-        logger.error(f"Download request failed: {e}")
-        raise
+        message = redact_url(str(e))
+        logger.error(f"Download request failed: {message}")
+        try:
+            redacted = type(e)(message)  # same type (ConnectionError, ...)
+        except Exception:
+            redacted = requests.RequestException(message)
+        raise redacted from None
     except zipfile.BadZipFile as e:
         logger.error(f"Invalid or corrupted ZIP file: {e}")
         raise

@@ -261,6 +261,32 @@ export class EmbeddingModelLockedError extends Error {
   }
 }
 
+/**
+ * The connection was saved but its new credentials could not be stored in
+ * Vault, so it would run without them. The user has to enter the keys again.
+ */
+export class CredentialsNotStoredError extends Error {
+  readonly originalError: unknown;
+
+  constructor(originalError: unknown) {
+    super('The connection was saved, but its credentials could not be stored');
+    this.name = 'CredentialsNotStoredError';
+    this.originalError = originalError;
+  }
+}
+
+/**
+ * Ask the server to start a knowledge base re-index now if one is required
+ * (#588). Never throws: the hourly sync checks the same status anyway.
+ */
+async function startKnowledgeBaseReindex(): Promise<void> {
+  try {
+    await apiDev.post(llmConnectionsEndpoints.START_KNOWLEDGE_BASE_REINDEX(), {});
+  } catch (error) {
+    console.warn('Starting the knowledge base re-index failed; the hourly sync will start it:', error);
+  }
+}
+
 /** The embedding model could not be checked (#806), so nothing was saved. */
 export class EmbeddingCheckUnavailableError extends Error {
   readonly originalError: unknown;
@@ -658,6 +684,7 @@ export async function updateLLMConnection(
   }
 
   const connection = data?.response;
+  const isProduction = connectionData.deploymentEnvironment.toLowerCase() === 'production';
 
   if (connection && (connectionData.secretKey && !connectionData.secretKey?.includes('*')
     || connectionData.accessKey && !connectionData.accessKey?.includes('*')
@@ -671,11 +698,18 @@ export async function updateLLMConnection(
         await createVaultSecret(vaultUuid, connectionData);
       }
     } catch (vaultError) {
+      // The connection itself was saved, so this must not look like success:
+      // it would run without (or with old) credentials (review finding M1)
       console.error('Failed to update secrets in vault:', vaultError);
+      throw new CredentialsNotStoredError(vaultError);
+    }
+    // New credentials are stored only now, so edit.yml left a needed re-index
+    // (#588) to us. Best effort: the hourly sync starts it anyway.
+    if (isProduction) {
+      await startKnowledgeBaseReindex();
     }
   }
 
-  const isProduction = connectionData.deploymentEnvironment.toLowerCase() === 'production';
   return {
     connection,
     reindex: isProduction ? reindexNoticeFrom(checkResult, connectionData.embeddingModelPlatform) : null,

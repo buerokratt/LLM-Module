@@ -1,5 +1,6 @@
 """Tests for the knowledge base embedding model lock (issue #806)."""
 
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 import pytest
@@ -459,3 +460,110 @@ def test_test_embedding_waits_for_a_secret_that_is_still_being_stored(
 
     assert calls["resolve"] == 3
     assert measured["vector_dimensions"] == 3072
+
+
+# Saved API keys are never sent to a new host (review finding H1)
+
+SAVED_ENDPOINT = (
+    "https://res.openai.azure.com/openai/deployments/text-embedding-3-large/"
+    "embeddings?api-version=2023-05-15"
+)
+
+
+def _manager_with_saved_key(monkeypatch: pytest.MonkeyPatch) -> Any:
+    import numpy as np
+
+    from src.llm_orchestrator_config import embedding_manager as em
+
+    class FakeLoader:
+        def resolve_embedding_model(self, environment: str, connection_id: str):
+            return "azure_openai", "text-embedding-3-large"
+
+        def get_embedding_provider_config(self, *args: Any) -> Dict[str, Any]:
+            return {
+                "endpoint": SAVED_ENDPOINT,
+                "deployment_name": "text-embedding-3-large",
+                "api_key": "saved-key",
+            }
+
+    manager = em.EmbeddingManager.__new__(em.EmbeddingManager)
+    manager.config_loader = FakeLoader()
+    manager.used_configs = []
+
+    def create_embedder(config: Dict[str, Any], caching: bool = True):
+        manager.used_configs.append(dict(config))
+        return lambda texts: np.zeros((1, 3072))
+
+    monkeypatch.setattr(manager, "_create_dspy_embedder", create_embedder)
+    return manager
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://evil.example/azure/embeddings",  # attacker's host
+        "https://res.openai.azure.com.evil.example/",  # look-alike host
+        "https://10.0.0.5/azure",  # internal address
+        "http://res.openai.azure.com/openai/deployments/x/embeddings",  # not https
+        "https://res.openai.azure.com:8443/",  # another port
+    ],
+)
+def test_saved_key_is_never_sent_to_another_endpoint_host(
+    monkeypatch: pytest.MonkeyPatch, endpoint: str
+) -> None:
+    manager = _manager_with_saved_key(monkeypatch)
+
+    with pytest.raises(Exception) as raised:
+        manager.measure_test_embedding(
+            "saved-connection", overrides={"endpoint": endpoint}
+        )
+
+    assert getattr(raised.value, "detail", None) == "endpoint_host_changed"
+    assert manager.used_configs == []  # no request was built with the key
+
+
+def test_new_deployment_on_the_saved_host_is_still_tested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _manager_with_saved_key(monkeypatch)
+    other_deployment = SAVED_ENDPOINT.replace("text-embedding-3-large/", "other/")
+
+    measured = manager.measure_test_embedding(
+        "saved-connection",
+        overrides={"endpoint": other_deployment, "deployment_name": "other"},
+    )
+
+    assert measured["vector_dimensions"] == 3072
+    assert manager.used_configs[0]["endpoint"] == other_deployment
+    assert manager.used_configs[0]["deployment_name"] == "other"
+
+
+def test_check_reports_a_changed_endpoint_host_so_the_key_is_asked_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.llm_orchestrator_config.embedding_manager import EndpointHostChangedError
+    from models.request_models import EmbeddingLockCheckRequest
+    from src.vector_indexer import indexer_support
+
+    support = indexer_support.IndexerSupport.__new__(indexer_support.IndexerSupport)
+    manager = SimpleNamespace(
+        measure_test_embedding=lambda *a, **k: (_ for _ in ()).throw(
+            EndpointHostChangedError("another host")
+        )
+    )
+    monkeypatch.setattr(support, "_get_embedding_manager", lambda: manager)
+    monkeypatch.setattr(kbl, "read_locked_models", lambda url: [AZURE])
+    monkeypatch.setattr(kbl, "read_other_connections", lambda url, exclude=None: [])
+
+    result = support.check_embedding_lock(
+        EmbeddingLockCheckRequest(
+            embedding_platform="azure",
+            embedding_model="text-embedding-3-large",
+            existing_vault_uuid="saved-connection",
+            embedding_target_uri="https://evil.example/azure",
+        )
+    )
+
+    assert result["allowed"] is False
+    assert result["code"] == "test_embedding_failed"
+    assert result["detail"] == "endpoint_host_changed"

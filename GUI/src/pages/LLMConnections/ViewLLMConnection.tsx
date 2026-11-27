@@ -11,6 +11,7 @@ import {
   getLLMConnection,
   updateLLMConnection,
   deleteLLMConnection,
+  CredentialsNotStoredError,
 } from 'services/llmConnections';
 import { embeddingLockMessage, knowledgeBaseReindexMessages } from 'utils/embeddingLockMessage';
 import { llmConnectionsQueryKeys } from 'utils/queryKeys';
@@ -107,8 +108,18 @@ const ViewLLMConnection = () => {
         ),
       });
     },
-    onError: (error: any) => {
+    onError: async (error: any) => {
       console.error('Error updating LLM connection:', error);
+      // Saved, but the new keys are not in Vault: say so, the keys must be entered again
+      if (error instanceof CredentialsNotStoredError) {
+        await queryClient.invalidateQueries({ queryKey: llmConnectionsQueryKeys.all() });
+        toast.open({
+          type: ToastTypes.ERROR,
+          title: t('toast.error.title'),
+          message: t('llmConnectionForm.viewConnection.credentialsNotStored'),
+        });
+        return;
+      }
       // Embedding model refused or not checkable (#806): a toast, like the
       // activation toggle; nothing was changed, so the form stays as it is
       const embeddingMessage = embeddingLockMessage(t, error, 'notChanged');

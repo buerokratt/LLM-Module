@@ -23,7 +23,10 @@ export function embeddingLockMessage(
 ): string | null {
   let cause: string;
   if (error instanceof EmbeddingModelLockedError) {
-    if (error.code === 'test_embedding_failed') {
+    if (error.code === 'test_embedding_failed' && error.detail === 'endpoint_host_changed') {
+      // The saved key is never sent to a new host; it must be entered again
+      cause = t('llmConnectionForm.embeddingLock.endpointHostChanged');
+    } else if (error.code === 'test_embedding_failed') {
       cause = t('llmConnectionForm.embeddingLock.testFailed');
     } else if (error.detail === 'wrong_deployment') {
       cause = t('llmConnectionForm.embeddingLock.wrongDeployment', {

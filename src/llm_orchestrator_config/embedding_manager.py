@@ -3,6 +3,7 @@
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import dspy
 import numpy as np
@@ -14,6 +15,43 @@ from .exceptions import ConfigurationError
 
 # Initialize Loki logger
 logger = LokiLogger(service_name="embedding-manager")
+
+
+class EndpointHostChangedError(ConfigurationError):
+    """A test embedding with saved credentials was asked to use an endpoint on
+    another host than the one those credentials are saved for."""
+
+    # Read by callers instead of isinstance: this module is imported under two
+    # package paths (src.llm_orchestrator_config / llm_orchestrator_config).
+    detail = "endpoint_host_changed"
+
+
+def ensure_same_endpoint_host(saved_endpoint: str, requested_endpoint: str) -> None:
+    """Allow a requested endpoint only on the saved endpoint's host, over https.
+
+    A connection's saved API key must never be sent anywhere new: an endpoint
+    override comes from the request, so without this a caller could point the
+    test embedding at its own server and receive the key (and probe internal
+    hosts). A different host needs the key entered again (a new secret).
+
+    Raises:
+        EndpointHostChangedError: The requested endpoint is not https or is on
+            another host or port than the saved one.
+    """
+    saved = urlparse(saved_endpoint.strip())
+    requested = urlparse(requested_endpoint.strip())
+    if requested.scheme.lower() != "https" or not requested.hostname:
+        raise EndpointHostChangedError(
+            "The embedding endpoint must be an https URL"
+        )
+    if (requested.hostname.lower(), requested.port) != (
+        (saved.hostname or "").lower(),
+        saved.port,
+    ):
+        raise EndpointHostChangedError(
+            "The embedding endpoint is on another host than the saved API key; "
+            "enter the API key again to use it"
+        )
 
 
 class EmbeddingFailure(BaseModel):
@@ -276,13 +314,16 @@ class EmbeddingManager:
                 is written, so a missing secret is retried for ``wait_seconds``.
             overrides: Non-secret Azure fields (``deployment_name``,
                 ``endpoint``) to test instead of the stored ones, for edits that
-                keep the saved key.
+                keep the saved key. An ``endpoint`` must be on the stored
+                endpoint's host (see ensure_same_endpoint_host).
             wait_seconds: How long to wait for the secret to appear in Vault.
 
         Returns:
             ``{"provider", "model", "vector_dimensions"}``
 
         Raises:
+            EndpointHostChangedError: The endpoint override is not on the stored
+                endpoint's host; nothing was sent.
             ConfigurationError: Secret not found in time, or the test embedding failed.
         """
         provider_name, model_name = self.wait_for_embedding_secret(
@@ -292,7 +333,10 @@ class EmbeddingManager:
         config: Dict[str, Any] = self.config_loader.get_embedding_provider_config(
             provider_name, model_name, "testing", connection_id
         )
-        config.update({key: value for key, value in (overrides or {}).items() if value})
+        given = {key: value for key, value in (overrides or {}).items() if value}
+        if "endpoint" in given:
+            ensure_same_endpoint_host(str(config.get("endpoint") or ""), given["endpoint"])
+        config.update(given)
 
         # Not cached: a cached result for the same text could hide bad credentials.
         embedder = self._create_dspy_embedder(config, caching=False)

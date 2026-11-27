@@ -101,6 +101,8 @@ extract_request_data:
     updated_at: ${new Date().toISOString()}
     # Issue #588: set from the embedding check when it runs
     reindex_required: false
+    # True when the request keeps every saved credential (set with the check)
+    credentials_unchanged: false
   next: validate_environment
 
 validate_environment:
@@ -147,6 +149,11 @@ check_embedding_changed:
 assign_test_vault_uuid:
   assign:
     test_vault_uuid: "${embedding_platform === existing_connection.response.body[0].embeddingPlatform && embedding_azure_api_key === (existing_connection.response.body[0].embeddingAzureApiKey || '') && embedding_access_key === (existing_connection.response.body[0].embeddingAccessKey || '') && embedding_secret_key === (existing_connection.response.body[0].embeddingSecretKey || '') ? (existing_connection.response.body[0].vaultUuid || '') : ''}"
+    # Review finding M1: the GUI writes new credentials to Vault only after this
+    # edit returns. The indexer needs both the LLM and the embedding credentials,
+    # so a re-index may only start here when none of them change; otherwise the
+    # GUI starts it (llm-connections/start-reindex) once the secret is stored.
+    credentials_unchanged: "${llm_platform === existing_connection.response.body[0].llmPlatform && embedding_platform === existing_connection.response.body[0].embeddingPlatform && api_key === (existing_connection.response.body[0].apiKey || '') && access_key === (existing_connection.response.body[0].accessKey || '') && secret_key === (existing_connection.response.body[0].secretKey || '') && embedding_azure_api_key === (existing_connection.response.body[0].embeddingAzureApiKey || '') && embedding_access_key === (existing_connection.response.body[0].embeddingAccessKey || '') && embedding_secret_key === (existing_connection.response.body[0].embeddingSecretKey || '')}"
   next: check_embedding_lock
 
 check_embedding_lock:
@@ -246,9 +253,12 @@ update_llm_connection:
 
 # Issue #588: start the re-index now instead of at the next hourly sync (see
 # add.yml). reindex_required stays false when the check did not run.
+# Only with unchanged credentials (review finding M1): new ones are not in Vault
+# yet, so the indexer would run with the old secret. The GUI then starts the
+# re-index after storing them; the hourly sync re-checks in any case.
 check_reindex_required:
   switch:
-    - condition: ${environment == "production" && reindex_required === true}
+    - condition: ${environment == "production" && reindex_required === true && (credentials_unchanged === true || credentials_unchanged === "true")}
       next: trigger_knowledge_base_resync
   next: return_success
 

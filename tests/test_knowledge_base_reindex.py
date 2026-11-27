@@ -356,6 +356,74 @@ class TestRunFullReindex:
         indexer._record_full_reindex_metadata.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_stale_chunks_are_pruned_before_old_embeddings_are_removed(
+        self,
+    ) -> None:
+        """Review finding M6: clearing first and failing to prune afterwards
+        left stale chunks for good (no old collection means no re-index plan)."""
+        indexer = _indexer([_doc("a")])
+        qdrant = FakeQdrant()
+        order: List[str] = []
+        qdrant.delete_chunks_not_in.side_effect = lambda *a: order.append("prune")
+        qdrant.clear_collection.side_effect = lambda *a: order.append("clear")
+
+        await _reindex(indexer, qdrant)
+
+        assert order == ["prune", "clear"]
+
+    @pytest.mark.asyncio
+    async def test_failed_prune_keeps_old_embeddings_for_the_next_sync(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        errors: List[str] = []
+        monkeypatch.setattr(
+            main_indexer,
+            "logger",
+            SimpleNamespace(
+                info=lambda *a, **k: None,
+                warning=lambda *a, **k: None,
+                error=lambda message, *a, **k: errors.append(message),
+                debug=lambda *a, **k: None,
+            ),
+        )
+        indexer = _indexer([_doc("a")])
+        qdrant = FakeQdrant()
+        qdrant.delete_chunks_not_in.side_effect = RuntimeError("qdrant down")
+
+        with pytest.raises(RuntimeError, match="qdrant down"):
+            await _reindex(indexer, qdrant)
+
+        qdrant.clear_collection.assert_not_awaited()
+        assert any("FAILED" in e and "Old embeddings kept" in e for e in errors)
+
+    @pytest.mark.asyncio
+    async def test_failure_after_clearing_does_not_claim_old_embeddings_kept(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        errors: List[str] = []
+        monkeypatch.setattr(
+            main_indexer,
+            "logger",
+            SimpleNamespace(
+                info=lambda *a, **k: None,
+                warning=lambda *a, **k: None,
+                error=lambda message, *a, **k: errors.append(message),
+                debug=lambda *a, **k: None,
+            ),
+        )
+        indexer = _indexer([_doc("a")])
+        indexer._record_full_reindex_metadata = AsyncMock(
+            side_effect=RuntimeError("metadata store down")
+        )
+
+        with pytest.raises(RuntimeError, match="metadata store down"):
+            await _reindex(indexer, FakeQdrant())
+
+        failed = [e for e in errors if "FAILED" in e]
+        assert failed and "Old embeddings kept" not in failed[0]
+        assert "already removed" in failed[0]
+
+    @pytest.mark.asyncio
     async def test_empty_dataset_keeps_old_embeddings(self) -> None:
         indexer = _indexer([])
         qdrant = FakeQdrant()
@@ -365,9 +433,29 @@ class TestRunFullReindex:
         qdrant.clear_collection.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_embedding_with_wrong_vector_size_aborts_before_processing(
-        self,
+    async def test_secret_still_being_replaced_is_waited_for(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Review finding M1: right after a platform switch Vault may still hold
+        the old secret (old model's vector size) for a moment."""
+        monkeypatch.setattr(main_indexer, "REINDEX_EMBEDDING_READY_DELAY_SECONDS", 0)
+        indexer = _indexer([_doc("a")])
+        indexer.api_client.create_embeddings_batch = AsyncMock(
+            side_effect=[
+                {"embeddings": [[0.1] * 3072]},  # old Azure secret still in Vault
+                {"embeddings": [[0.1] * 1024]},  # the new AWS secret is stored
+            ]
+        )
+
+        await _reindex(indexer, FakeQdrant())
+
+        assert indexer.processed == ["a"]
+
+    @pytest.mark.asyncio
+    async def test_embedding_with_wrong_vector_size_aborts_before_processing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(main_indexer, "REINDEX_EMBEDDING_READY_DELAY_SECONDS", 0)
         indexer = _indexer([_doc("a")], embedding_dimensions=1536)
         qdrant = FakeQdrant()
 
@@ -496,7 +584,11 @@ class TestReindexLogging:
         assert _logged(log, "COMPLETED") == []
 
     @pytest.mark.asyncio
-    async def test_failure_names_both_models(self) -> None:
+    async def test_failure_names_both_models(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A wrong vector size is retried within the wait (M1); no real sleeps here
+        monkeypatch.setattr(main_indexer, "REINDEX_EMBEDDING_READY_DELAY_SECONDS", 0)
         with patch.object(main_indexer, "logger") as log:
             with pytest.raises(RuntimeError):
                 await _reindex(

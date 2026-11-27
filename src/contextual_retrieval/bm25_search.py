@@ -5,11 +5,12 @@ Implements fast lexical search on contextual content with smart refresh
 when collection data changes.
 """
 
-from typing import List, Dict, Any, Optional, Set, TYPE_CHECKING
+from typing import List, Dict, Any, Optional, Set, Tuple, TYPE_CHECKING
 from src.loki_logger import LokiLogger
 from rank_bm25 import BM25Okapi
 import re
 import asyncio
+import time
 
 from contextual_retrieval.contextual_retrieval_api_client import get_http_client_manager
 from contextual_retrieval.error_handler import SecureErrorHandler
@@ -26,6 +27,11 @@ logger = LokiLogger(service_name="bm25-search")
 
 if TYPE_CHECKING:
     from contextual_retrieval.contextual_retrieval_api_client import HTTPClientManager
+
+
+class CollectionReadError(Exception):
+    """A collection could not be read completely; an index built from it would
+    silently miss chunks."""
 
 
 class SmartBM25Search:
@@ -46,6 +52,8 @@ class SmartBM25Search:
         self._refresh_lock: asyncio.Lock = asyncio.Lock()
         # Strong references to background tasks to prevent premature GC
         self._background_tasks: Set[asyncio.Task[None]] = set()
+        # time.monotonic() of the last index build attempt (refresh throttle)
+        self._last_build_started: Optional[float] = None
 
     async def _get_http_client_manager(self) -> "HTTPClientManager":
         """Get the HTTP client manager instance."""
@@ -54,9 +62,20 @@ class SmartBM25Search:
         return self._http_client_manager
 
     async def initialize_index(self) -> bool:
-        """Build initial BM25 index from existing contextual collections."""
+        """Build the BM25 index from the contextual collections.
+
+        The index is built in a worker thread and swapped in afterwards, so
+        queries keep being served while it is built. If a collection cannot be
+        read completely, the current index and its recorded collection stats
+        are kept: a partial index must not be recorded as up to date.
+        """
+        self._last_build_started = time.monotonic()
         try:
             logger.info("Building BM25 index from contextual collections...")
+
+            # Record the stats before reading, so chunks stored while the
+            # collections are read count as a change for the next refresh.
+            stats_before = await self._get_collection_stats()
 
             # Fetch all contextual chunks from both collections
             all_chunks = self._deduplicate_chunks(
@@ -71,43 +90,47 @@ class SmartBM25Search:
                 logger.warning("No chunks found for BM25 index")
                 self.bm25_index = None
                 self.chunk_mapping = {}
-                self.last_collection_stats = await self._get_collection_stats()
+                self.last_collection_stats = stats_before
                 return False
 
-            # Build corpus and mapping aside, then swap both in together, so a
-            # query running during a refresh (e.g. while the hourly sync stores
-            # chunks) never sees a new mapping with the old index.
-            corpus: List[List[str]] = []
-            chunk_mapping: Dict[int, Dict[str, Any]] = {}
-
-            for i, chunk in enumerate(all_chunks):
-                # Combine contextual and original content for better matching
-                contextual_content = chunk.get("contextual_content", "")
-                original_content = chunk.get("original_content", "")
-
-                # Prioritize contextual content but include original for completeness
-                combined_content = f"{contextual_content} {original_content}"
-
-                # Tokenize content
-                tokenized = self._tokenize_text(combined_content)
-                corpus.append(tokenized)
-
-                # Store chunk mapping with index
-                chunk_mapping[i] = chunk
-
-            # Create BM25 index
-            bm25_index = BM25Okapi(corpus)
+            # Tokenising every chunk and building BM25Okapi is CPU work: on the
+            # event loop it froze every request for the whole build (review
+            # finding H3). Build aside in a worker thread, then swap the index
+            # and mapping in together, so a query never sees a new mapping with
+            # the old index.
+            bm25_index, chunk_mapping = await asyncio.to_thread(
+                self._build_index, all_chunks
+            )
             self.bm25_index, self.chunk_mapping = bm25_index, chunk_mapping
 
             # Store collection stats for smart refresh
-            self.last_collection_stats = await self._get_collection_stats()
+            self.last_collection_stats = stats_before
 
-            logger.info(f"BM25 index built with {len(corpus)} documents")
+            logger.info(f"BM25 index built with {len(chunk_mapping)} documents")
             return True
 
         except Exception as e:
-            logger.error(f"Failed to initialize BM25 index: {e}")
+            # The previous index (if any) keeps serving; the stats are not
+            # updated, so the next refresh check tries again.
+            logger.error(f"Failed to initialize BM25 index (previous index kept): {e}")
             return False
+
+    def _build_index(
+        self, chunks: List[Dict[str, Any]]
+    ) -> Tuple[BM25Okapi, Dict[int, Dict[str, Any]]]:
+        """Tokenise the chunks and build the BM25 index (runs in a worker thread)."""
+        corpus: List[List[str]] = []
+        chunk_mapping: Dict[int, Dict[str, Any]] = {}
+        for i, chunk in enumerate(chunks):
+            # Combine contextual and original content for better matching:
+            # contextual content first, original for completeness
+            combined_content = (
+                f"{chunk.get('contextual_content', '')} "
+                f"{chunk.get('original_content', '')}"
+            )
+            corpus.append(self._tokenize_text(combined_content))
+            chunk_mapping[i] = chunk
+        return BM25Okapi(corpus), chunk_mapping
 
     async def search_bm25(
         self, query: str, refined_queries: List[str], limit: Optional[int] = None
@@ -258,25 +281,35 @@ class SmartBM25Search:
         return unique
 
     async def _fetch_all_contextual_chunks(self) -> List[Dict[str, Any]]:
-        """Fetch all chunks from contextual collections."""
+        """Fetch all chunks from contextual collections.
+
+        Raises:
+            CollectionReadError: A collection could not be read completely. Not
+                swallowed: an index without that collection's chunks would be
+                recorded as up to date (review finding H3).
+        """
         all_chunks: List[Dict[str, Any]] = []
         collections = ["contextual_chunks_azure", "contextual_chunks_aws"]
 
         for collection_name in collections:
-            try:
-                # Use scroll to get all points from collection
-                chunks = await self._scroll_collection(collection_name)
-                all_chunks.extend(chunks)
-                logger.info(f"Fetched {len(chunks)} chunks from {collection_name}")
-
-            except Exception as e:
-                logger.warning(f"Failed to fetch chunks from {collection_name}: {e}")
+            # Use scroll to get all points from collection
+            chunks = await self._scroll_collection(collection_name)
+            all_chunks.extend(chunks)
+            logger.info(f"Fetched {len(chunks)} chunks from {collection_name}")
 
         logger.info(f"Total chunks fetched for BM25 index: {len(all_chunks)}")
         return all_chunks
 
     async def _scroll_collection(self, collection_name: str) -> List[Dict[str, Any]]:
-        """Scroll through all points in a collection with pagination."""
+        """Scroll through all points in a collection with pagination.
+
+        Returns:
+            Every chunk payload; empty when the collection does not exist.
+
+        Raises:
+            CollectionReadError: Qdrant failed part-way; the chunks read so far
+                are discarded rather than returned as if complete.
+        """
         chunks: List[Dict[str, Any]] = []
         next_page_offset = None
         batch_count = 0
@@ -303,6 +336,13 @@ class SmartBM25Search:
 
                 response = await client.post(scroll_url, json=scroll_payload)
 
+                if (
+                    response.status_code == HttpStatusConstants.NOT_FOUND
+                    and next_page_offset is None
+                ):
+                    # Collection not created yet (e.g. no chunks on this platform)
+                    return []
+
                 if response.status_code != HttpStatusConstants.OK:
                     SecureErrorHandler.log_secure_error(
                         error=Exception(
@@ -312,7 +352,10 @@ class SmartBM25Search:
                         request_url=scroll_url,
                         level=LoggingConstants.WARNING,
                     )
-                    return chunks  # Return what we have so far
+                    raise CollectionReadError(
+                        f"Scrolling {collection_name} failed with status "
+                        f"{response.status_code} after {len(chunks)} chunks"
+                    )
 
                 result = response.json()
                 points = result.get("result", {}).get("points", [])
@@ -337,6 +380,8 @@ class SmartBM25Search:
             )
             return chunks
 
+        except CollectionReadError:
+            raise
         except Exception as e:
             SecureErrorHandler.log_secure_error(
                 error=e,
@@ -344,12 +389,34 @@ class SmartBM25Search:
                 request_url=f"{self.qdrant_url}/collections/{collection_name}",
                 level="error",
             )
-            return []
+            raise CollectionReadError(
+                f"Scrolling {collection_name} failed after {len(chunks)} chunks: {e}"
+            ) from e
 
     async def _should_refresh_index(self) -> bool:
-        """Smart refresh: only when collection data changes."""
+        """Smart refresh: only when the number of chunks changes.
+
+        Only point counts are compared: a collection's status flips between
+        green and yellow while Qdrant optimises, which triggered rebuilds
+        without any change in content. While an index exists, rebuilds are at
+        most every BM25_MIN_REFRESH_INTERVAL_SECONDS (the hourly sync changes
+        the count after nearly every document); an empty index refreshes on the
+        first change so new content is searchable right away.
+        """
         try:
+            if (
+                self.bm25_index is not None
+                and self._last_build_started is not None
+                and time.monotonic() - self._last_build_started
+                < SearchConstants.BM25_MIN_REFRESH_INTERVAL_SECONDS
+            ):
+                return False
+
             current_stats = await self._get_collection_stats()
+            if any(
+                stats.get("points_count") is None for stats in current_stats.values()
+            ):
+                return False  # Qdrant could not be read; nothing to compare
 
             # Compare with last known stats
             if current_stats != self.last_collection_stats:
@@ -363,7 +430,8 @@ class SmartBM25Search:
             return False
 
     async def _get_collection_stats(self) -> Dict[str, Any]:
-        """Get current statistics for all contextual collections."""
+        """Point count per contextual collection: 0 when the collection does not
+        exist, None when Qdrant could not be read."""
         stats: Dict[str, Any] = {}
         collections = ["contextual_chunks_azure", "contextual_chunks_aws"]
 
@@ -380,20 +448,17 @@ class SmartBM25Search:
                     stats[collection_name] = {
                         "points_count": collection_info.get("result", {}).get(
                             "points_count", 0
-                        ),
-                        "status": collection_info.get("result", {}).get(
-                            "status", "unknown"
-                        ),
+                        )
+                        or 0,
                     }
+                elif response.status_code == HttpStatusConstants.NOT_FOUND:
+                    stats[collection_name] = {"points_count": 0}
                 else:
-                    stats[collection_name] = {
-                        "points_count": 0,
-                        "status": "unavailable",
-                    }
+                    stats[collection_name] = {"points_count": None}
 
             except Exception as e:
                 logger.warning(f"Failed to get stats for {collection_name}: {e}")
-                stats[collection_name] = {"points_count": 0, "status": "error"}
+                stats[collection_name] = {"points_count": None}
 
         return stats
 
