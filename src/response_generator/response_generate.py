@@ -319,10 +319,12 @@ class ResponseGeneratorAgent(dspy.Module):
                             logger.info(
                                 "Streaming complete, final Prediction object received."
                             )
-                            full_answer = getattr(chunk, "answer", "[No answer field]")
+                            full_answer = getattr(chunk, "answer", None)
                             if isinstance(full_answer, str):
                                 final_answer_text = full_answer
-                            logger.debug(f"Full streamed answer: {full_answer}")
+                            logger.debug(
+                                f"Full streamed answer: {full_answer or '[No answer field]'}"
+                            )
                 except GeneratorExit:
                     # Generator was closed early (e.g., by guardrails violation)
                     logger.info("Stream generator closed early - cleaning up")
@@ -341,6 +343,17 @@ class ResponseGeneratorAgent(dspy.Module):
                     logger.warning(
                         "Streaming call finished but no 'answer' tokens were received."
                     )
+                    # DSPy retries a failed call (e.g. an Azure 429) with its JSON
+                    # adapter, whose output the answer StreamListener cannot
+                    # parse: nothing streams although the final Prediction has
+                    # the answer. Send it as one chunk instead of an empty reply.
+                    if final_answer_text.strip():
+                        logger.info(
+                            "Sending the final answer as one chunk "
+                            f"({len(final_answer_text)} chars)"
+                        )
+                        streamed_tokens.append(final_answer_text)
+                        yield final_answer_text
 
             except Exception as e:
                 logger.error(f"Error during native DSPy streaming: {str(e)}")

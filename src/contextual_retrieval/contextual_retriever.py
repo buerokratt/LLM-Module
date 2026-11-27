@@ -393,8 +393,13 @@ class ContextualRetriever:
 
             # Step 1: Generate all embeddings in a single batch
             llm_service = self._get_session_llm_service()
-            batch_embeddings = self.qdrant_search.get_embeddings_for_queries_batch(
-                queries, llm_service, environment, connection_id
+            # Sync embedding call: off the event loop (see _search_single_query).
+            batch_embeddings = await asyncio.to_thread(
+                self.qdrant_search.get_embeddings_for_queries_batch,
+                queries,
+                llm_service,
+                environment,
+                connection_id,
             )
 
             if not batch_embeddings:
@@ -486,8 +491,14 @@ class ContextualRetriever:
         try:
             # Generate embedding for this query using cached service
             llm_service = self._get_session_llm_service()
-            embedding = self.qdrant_search.get_embedding_for_query_with_service(
-                query, llm_service, environment, connection_id
+            # Sync embedding call: run it off the event loop. Blocking the loop
+            # here stalled every concurrent request (stream timeouts, Qdrant 408s).
+            embedding = await asyncio.to_thread(
+                self.qdrant_search.get_embedding_for_query_with_service,
+                query,
+                llm_service,
+                environment,
+                connection_id,
             )
 
             if embedding is None:
