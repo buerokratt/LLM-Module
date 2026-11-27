@@ -245,6 +245,9 @@ export class EmbeddingModelLockedError extends Error {
   readonly requiredModel: string | null;
   readonly requestedModel: string | null;
   readonly detectedDimensions: number | null;
+  // 'knowledge_base' (embeddings exist) | 'connection' (knowledge base empty,
+  // must match the other active connection) | null
+  readonly lockedBy: string | null;
 
   constructor(result: EmbeddingCheckResult) {
     super(result.reason || 'The embedding model is not allowed');
@@ -254,6 +257,7 @@ export class EmbeddingModelLockedError extends Error {
     this.requiredModel = result.required_model ?? null;
     this.requestedModel = result.requested_model ?? null;
     this.detectedDimensions = result.detected_vector_dimensions ?? null;
+    this.lockedBy = result.locked_by ?? null;
   }
 }
 
@@ -268,6 +272,21 @@ export class EmbeddingCheckUnavailableError extends Error {
   }
 }
 
+interface LockedEmbeddingModel {
+  platform: string;
+  embedding_model: string;
+  vector_dimensions: number;
+  point_count: number;
+}
+
+interface MismatchedConnection {
+  connection_id: number;
+  connection_name: string;
+  environment: string;
+  platform: string;
+  embedding_model: string;
+}
+
 interface EmbeddingCheckResult {
   allowed: boolean;
   code?: string | null;
@@ -276,6 +295,60 @@ interface EmbeddingCheckResult {
   requested_model?: string | null;
   detected_vector_dimensions?: number | null;
   reason?: string | null;
+  locked_by?: string | null;
+  locked_models?: LockedEmbeddingModel[];
+  reindex_required?: boolean;
+  mismatched_connections?: MismatchedConnection[];
+}
+
+/**
+ * Saving a production connection with another embedding model than the
+ * knowledge base's starts a full re-index with the new model (#588). The GUI
+ * tells the user, since it changes what every connection can find.
+ */
+export interface KnowledgeBaseReindexNotice {
+  // e.g. "text-embedding-3-large (azure)"
+  fromModels: string[];
+  toModel: string;
+  // Other active connections that will find nothing until they use toModel
+  mismatchedConnections: { name: string; environment: string; model: string }[];
+}
+
+export interface LLMConnectionSaveResult {
+  connection: LLMConnection;
+  reindex: KnowledgeBaseReindexNotice | null;
+}
+
+function reindexNoticeFrom(
+  result: EmbeddingCheckResult | null,
+  platform: string
+): KnowledgeBaseReindexNotice | null {
+  if (!result?.reindex_required) {
+    return null;
+  }
+  return {
+    fromModels: (result.locked_models || [])
+      .filter((model) => model.platform !== platform)
+      .map((model) => `${model.embedding_model} (${model.platform})`),
+    toModel: `${result.required_model ?? result.requested_model ?? ''} (${platform})`,
+    mismatchedConnections: (result.mismatched_connections || []).map((other) => ({
+      name: other.connection_name,
+      environment: other.environment,
+      model: `${other.embedding_model} (${other.platform})`,
+    })),
+  };
+}
+
+/** The embedding model(s) that built the knowledge base (#587); empty while nothing is indexed. */
+export interface KnowledgeBaseEmbeddingModel {
+  locked: boolean;
+  models: LockedEmbeddingModel[];
+}
+
+export async function getKnowledgeBaseEmbeddingModel(): Promise<KnowledgeBaseEmbeddingModel> {
+  const { data } = await apiDev.get(llmConnectionsEndpoints.GET_KNOWLEDGE_BASE_EMBEDDING_MODEL());
+  const body = data?.response ?? data;
+  return { locked: !!body?.locked, models: body?.models ?? [] };
 }
 
 // A blocked save comes back as a 400 response with { allowed: false, code, ... }.
@@ -330,15 +403,18 @@ async function postEmbeddingCheck(body: Record<string, unknown>): Promise<Embedd
  *   test embedding, and removed again by the server.
  * - Saved key kept: the saved credentials are tested with the entered Azure
  *   deployment name and endpoint.
- * - Nothing embedding-related changed (edit only): no check.
+ * - Nothing embedding-related changed and not promoted to production (edit
+ *   only): no check, returns null.
  *
+ * Returns the check result (with reindex_required when a production connection
+ * switches the knowledge base's model, #588).
  * Throws EmbeddingModelLockedError when the model is not allowed, and
  * EmbeddingCheckUnavailableError when the check could not be made.
  */
 async function verifyEmbeddingModel(
   connectionData: LLMConnectionFormData,
   existing?: LLMConnection
-): Promise<void> {
+): Promise<EmbeddingCheckResult | null> {
   const embeddingKeyEntered =
     isNewSecret(connectionData.embeddingAzureApiKey) ||
     isNewSecret(connectionData.embeddingAccessKey) ||
@@ -365,8 +441,12 @@ async function verifyEmbeddingModel(
       existing.embeddingModel !== connectionData.embeddingModel ||
       (existing.embeddingDeploymentName || '') !== (connectionData.embeddingDeploymentName || '') ||
       (existing.embeddingTargetUri || '') !== (connectionData.embeddingTargetUri || '');
-    if (!embeddingChanged) {
-      return;
+    // A promotion decides the knowledge base's model (#588), so it is checked too
+    const promotedToProduction =
+      existing.environment !== 'production' &&
+      connectionData.deploymentEnvironment.toLowerCase() === 'production';
+    if (!embeddingChanged && !promotedToProduction) {
+      return null;
     }
     // The saved key is kept, so test the saved credentials with the new deployment/endpoint
     if (existing.vaultUuid && connectionData.embeddingModelPlatform === existing.embeddingPlatform) {
@@ -389,6 +469,7 @@ async function verifyEmbeddingModel(
   if (!result?.allowed) {
     throw toLockedError(result);
   }
+  return result;
 }
 
 /**
@@ -463,14 +544,17 @@ function buildLLMConnectionPayload(connectionData: LLMConnectionFormData, deploy
  * 3. Only if production was chosen, switch the connection to production.
  *    /llm-connections/edit then moves the previous production connection to testing.
  *
+ * Returns the connection and, when it re-indexes the knowledge base with
+ * another embedding model (#588), what changes.
  * Throws CreateLLMConnectionError with the step that failed.
  */
-export async function createLLMConnection(connectionData: LLMConnectionFormData): Promise<LLMConnection> {
+export async function createLLMConnection(connectionData: LLMConnectionFormData): Promise<LLMConnectionSaveResult> {
   const wantsProduction = connectionData.deploymentEnvironment.toLowerCase() === 'production';
 
   // 0. Check the real embedding model against the knowledge base (#806); nothing is saved yet
+  let checkResult: EmbeddingCheckResult | null = null;
   try {
-    await verifyEmbeddingModel(connectionData);
+    checkResult = await verifyEmbeddingModel(connectionData);
   } catch (checkError) {
     throw new CreateLLMConnectionError(
       checkError instanceof EmbeddingModelLockedError ? 'embeddingLocked' : 'embeddingCheck',
@@ -539,20 +623,24 @@ export async function createLLMConnection(connectionData: LLMConnectionFormData)
     }
   }
 
-  return connection as LLMConnection;
+  return {
+    connection: connection as LLMConnection,
+    reindex: wantsProduction ? reindexNoticeFrom(checkResult, connectionData.embeddingModelPlatform) : null,
+  };
 }
 
 /**
  * Update an LLM connection. When an embedding setting changed, the real embedding
  * model is checked against the knowledge base first (#806); a conflict throws
  * EmbeddingModelLockedError and nothing is changed.
+ * Returns the connection and, when it re-indexes the knowledge base (#588), what changes.
  */
 export async function updateLLMConnection(
   id: string | number,
   connectionData: LLMConnectionFormData
-): Promise<LLMConnection> {
+): Promise<LLMConnectionSaveResult> {
   const existing = await getLLMConnection(id);
-  await verifyEmbeddingModel(connectionData, existing);
+  const checkResult = await verifyEmbeddingModel(connectionData, existing);
 
   let data;
   try {
@@ -587,7 +675,11 @@ export async function updateLLMConnection(
     }
   }
 
-  return connection;
+  const isProduction = connectionData.deploymentEnvironment.toLowerCase() === 'production';
+  return {
+    connection,
+    reindex: isProduction ? reindexNoticeFrom(checkResult, connectionData.embeddingModelPlatform) : null,
+  };
 }
 
 export async function deleteLLMConnection(id: string | number): Promise<void> {
@@ -644,7 +736,8 @@ export async function checkBudgetStatus(): Promise<BudgetStatus | null> {
 export async function updateLLMConnectionStatus(
   id: string | number,
   status: 'active' | 'inactive'
-): Promise<LLMConnection> {
+): Promise<LLMConnectionSaveResult> {
+  let reindex: KnowledgeBaseReindexNotice | null = null;
   if (status === 'active') {
     const existing = await getLLMConnection(id);
     if (existing && existing.connectionStatus !== 'active') {
@@ -655,6 +748,9 @@ export async function updateLLMConnectionStatus(
           embedding_model: existing.embeddingModel,
           existing_vault_uuid: existing.vaultUuid || '',
           exclude_connection_id: Number(existing.id),
+          // Same environment as update-status.yml checks with, so a production
+          // connection's re-index (#588) is reported rather than refused
+          deployment_environment: existing.environment || '',
         });
       } catch (error) {
         if (error instanceof EmbeddingModelLockedError) {
@@ -665,6 +761,9 @@ export async function updateLLMConnectionStatus(
       if (!result?.allowed) {
         throw toLockedError(result);
       }
+      if (existing.environment === 'production') {
+        reindex = reindexNoticeFrom(result, existing.embeddingPlatform);
+      }
     }
   }
 
@@ -672,7 +771,7 @@ export async function updateLLMConnectionStatus(
     connection_id: id,
     connection_status: status,
   });
-  return data?.response;
+  return { connection: data?.response, reindex };
 }
 
 export async function fetchAllLLMConnectionsPaginated(filters: LLMConnectionFilters): Promise<LLMConnection[]> {

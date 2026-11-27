@@ -1,0 +1,32 @@
+declaration:
+  call: declare
+  version: 0.1
+  description: "The embedding model(s) that built the knowledge base, read from the knowledge base itself (issue #587)"
+  method: get
+  returns: json
+  namespace: rag-search
+
+get_knowledge_base_embedding_model:
+  call: http.get
+  args:
+    url: "[#RAG_SEARCH_LLM_SERVICE]/knowledge-base/embedding-model"
+  result: model_result
+  next: check_result
+  on_error: return_unavailable
+
+check_result:
+  switch:
+    - condition: ${model_result.response.body != null && model_result.response.body.locked !== undefined}
+      next: return_success
+  next: return_unavailable
+
+return_success:
+  return: ${model_result.response.body}
+  status: 200
+  next: end
+
+# 500: Ruuter only passes the codes in application.httpCodesAllowList.
+return_unavailable:
+  status: 500
+  return: "error: the knowledge base could not be read"
+  next: end

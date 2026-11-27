@@ -124,18 +124,30 @@ validate_connection_exists:
       next: check_embedding_changed
   next: return_not_found
 
-# Issue #806: only a changed embedding platform/model is checked against the
-# knowledge base, so other edits (budget, name) keep working for existing setups.
-# The GUI checks the real model with a test embedding before saving.
+# Issue #806: only a changed embedding setting is checked against the knowledge
+# base, so other edits (budget, name) keep working for existing setups. The Azure
+# deployment name and endpoint count: on Azure they decide the real model.
 # Issue #588: a promotion to production is checked too, since the production
 # connection decides the knowledge base's model (re-index when it differs).
 check_embedding_changed:
   switch:
     - condition: ${embedding_platform !== existing_connection.response.body[0].embeddingPlatform || embedding_model !== existing_connection.response.body[0].embeddingModel}
-      next: check_embedding_lock
+      next: assign_test_vault_uuid
+    - condition: ${embedding_deployment_name !== (existing_connection.response.body[0].embeddingDeploymentName || "") || embedding_target_uri !== (existing_connection.response.body[0].embeddingTargetUri || "")}
+      next: assign_test_vault_uuid
     - condition: ${environment == "production" && existing_connection.response.body[0].environment !== "production"}
-      next: check_embedding_lock
+      next: assign_test_vault_uuid
   next: check_deployment_environment
+
+# Issue #587: check the model really behind the connection, not only the
+# dropdown. The saved credentials in Vault are tested with the new deployment
+# name and endpoint, so this only applies while the platform and the embedding
+# keys are unchanged (keys arrive masked; a different mask means a new key, which
+# is not in Vault yet - the GUI tests that one itself before saving).
+assign_test_vault_uuid:
+  assign:
+    test_vault_uuid: "${embedding_platform === existing_connection.response.body[0].embeddingPlatform && embedding_azure_api_key === (existing_connection.response.body[0].embeddingAzureApiKey || '') && embedding_access_key === (existing_connection.response.body[0].embeddingAccessKey || '') && embedding_secret_key === (existing_connection.response.body[0].embeddingSecretKey || '') ? (existing_connection.response.body[0].vaultUuid || '') : ''}"
+  next: check_embedding_lock
 
 check_embedding_lock:
   call: http.post
@@ -144,6 +156,9 @@ check_embedding_lock:
     body:
       embedding_platform: ${embedding_platform}
       embedding_model: ${embedding_model}
+      existing_vault_uuid: ${test_vault_uuid}
+      embedding_deployment_name: ${embedding_deployment_name}
+      embedding_target_uri: ${embedding_target_uri}
       exclude_connection_id: ${connection_id}
       deployment_environment: ${environment}
   result: embedding_lock_result

@@ -268,8 +268,16 @@ class ToolClassifier:
                     reasoning="Service workflow disabled, no ATC match - fallback to Context/RAG",
                 )
 
-            # Step 1: Generate dense embedding for query
-            query_embedding = self._get_query_embedding(query)
+            # Step 1: Generate dense embedding for query (sync HTTP call, run off
+            # the event loop so concurrent requests are not stalled). Issue #589:
+            # with the request's own connection, so a test-connection query does
+            # not need (or quietly use) the production connection.
+            query_embedding = await asyncio.to_thread(
+                self._get_query_embedding,
+                query,
+                request.environment if request else "production",
+                request.connection_id if request else None,
+            )
             if query_embedding is None:
                 logger.warning(
                     "Failed to generate query embedding, falling back to CONTEXT/RAG"
@@ -432,11 +440,19 @@ class ToolClassifier:
                 reasoning=f"Classification error - falling back to Context/RAG: {e}",
             )
 
-    def _get_query_embedding(self, query: str) -> Optional[List[float]]:
+    def _get_query_embedding(
+        self,
+        query: str,
+        environment: str = "production",
+        connection_id: Optional[str] = None,
+    ) -> Optional[List[float]]:
         """Generate dense embedding for a query using the orchestration service.
 
         Args:
             query: Query text to embed
+            environment: Environment of the request ("production" | "testing").
+            connection_id: The request's connection (vault UUID); required for
+                testing, where the embedding credentials are the connection's own.
 
         Returns:
             List of floats representing the dense embedding, or None on failure
@@ -448,7 +464,8 @@ class ToolClassifier:
 
             result = self.orchestration_service.create_embeddings_for_indexer(
                 texts=[query],
-                environment="production",
+                environment=environment,
+                connection_id=connection_id,
                 batch_size=1,
             )
 

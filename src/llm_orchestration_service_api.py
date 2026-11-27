@@ -47,6 +47,14 @@ from src.utils.stream_timeout import stream_timeout, with_heartbeat
 from src.utils.observation_utils import safe_observation_context
 from src.utils.error_utils import generate_error_id, log_error_with_context
 from src.utils.rate_limiter import RateLimiter
+from src.utils.indexer_pools import (
+    context_budget,
+    context_pool,
+    embedding_pool,
+    estimate_context_tokens,
+    run_in_pool,
+    shutdown_pools,
+)
 from src.utils.prompt_config_loader import RefreshStatus
 from models.request_models import (
     OrchestrationRequest,
@@ -166,6 +174,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await close_dragonfly_client()
     except Exception as e:
         logger.warning(f"Error closing Dragonfly client during shutdown: {e}")
+
+    shutdown_pools()
 
 
 # Create FastAPI application
@@ -795,19 +805,23 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
 
     Supports Azure OpenAI, AWS Bedrock, and OpenAI embedding models.
     Includes automatic retry with exponential backoff.
+
+    Issue #589: runs on the indexer's own small pool. Called inline, the
+    blocking embedding call froze the event loop, so user queries stalled
+    while the hourly sync was indexing.
     """
     try:
         logger.info(
             f"Creating embeddings for {len(request.texts)} texts in {request.environment} environment"
         )
 
-        result: Dict[str, Any] = (
-            app.state.orchestration_service.create_embeddings_for_indexer(
-                texts=request.texts,
-                environment=request.environment,
-                connection_id=request.connection_id,
-                batch_size=request.batch_size or 50,
-            )
+        result: Dict[str, Any] = await run_in_pool(
+            embedding_pool,
+            app.state.orchestration_service.create_embeddings_for_indexer,
+            texts=request.texts,
+            environment=request.environment,
+            connection_id=request.connection_id,
+            batch_size=request.batch_size or 50,
         )
 
         return EmbeddingResponse(**result)
@@ -917,9 +931,29 @@ async def generate_context_with_caching(
 
     Uses exact Anthropic prompt templates and supports structure for
     future prompt caching implementation for cost optimization.
+
+    Issue #589: user queries must keep working while the hourly sync indexes.
+    The call waits for the indexer's token budget (so the shared model quota
+    is left to queries) and then runs on the indexer's own small pool. Called
+    inline, the blocking LLM call froze the event loop and queries timed out.
     """
     try:
-        result = app.state.orchestration_service.generate_context_for_chunks(request)
+        if context_budget is not None:
+            waited = await context_budget.acquire(
+                estimate_context_tokens(
+                    request.document_prompt, request.chunk_prompt, request.max_tokens
+                )
+            )
+            if waited > 0:
+                logger.info(
+                    f"Context generation waited {waited:.1f}s for the indexer token budget"
+                )
+
+        result = await run_in_pool(
+            context_pool,
+            app.state.orchestration_service.generate_context_for_chunks,
+            request,
+        )
 
         return ContextGenerationResponse(**result)
 

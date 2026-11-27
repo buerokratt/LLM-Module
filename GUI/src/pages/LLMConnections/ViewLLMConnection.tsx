@@ -12,7 +12,7 @@ import {
   updateLLMConnection,
   deleteLLMConnection,
 } from 'services/llmConnections';
-import { embeddingLockMessage } from 'utils/embeddingLockMessage';
+import { embeddingLockMessage, knowledgeBaseReindexMessages } from 'utils/embeddingLockMessage';
 import { llmConnectionsQueryKeys } from 'utils/queryKeys';
 import CircularSpinner from 'components/molecules/CircularSpinner/CircularSpinner';
 import { useToast } from 'hooks/useToast';
@@ -79,14 +79,21 @@ const ViewLLMConnection = () => {
   // Update mutation
   const updateConnectionMutation = useMutation({
     mutationFn: (data: LLMConnectionFormData) => updateLLMConnection(connectionId!, data),
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       await queryClient.invalidateQueries({
         queryKey: llmConnectionsQueryKeys.all()
       });
 
+      // A production connection with another embedding model re-indexes the knowledge base (#588)
+      const reindexMessages = knowledgeBaseReindexMessages(t, result.reindex);
       openDialog({
         title: t('llmConnectionForm.viewConnection.updateSuccessTitle') || 'Connection Update Succeeded',
-        content: <p>{t('llmConnectionForm.viewConnection.updateSuccessMessage') || 'LLM configuration updated successfully!'}</p>,
+        content: (
+          <div>
+            <p>{t('llmConnectionForm.viewConnection.updateSuccessMessage') || 'LLM configuration updated successfully!'}</p>
+            {reindexMessages.map((message) => <p key={message}>{message}</p>)}
+          </div>
+        ),
         footer: (
           <Button
             appearance={ButtonAppearanceTypes.PRIMARY}

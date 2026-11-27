@@ -9,7 +9,7 @@ import {
   CreateLLMConnectionError,
   getProductionConnection,
 } from 'services/llmConnections';
-import { embeddingLockMessage } from 'utils/embeddingLockMessage';
+import { embeddingLockMessage, knowledgeBaseReindexMessages } from 'utils/embeddingLockMessage';
 import { llmConnectionsQueryKeys } from 'utils/queryKeys';
 import { ButtonAppearanceTypes, ToastTypes } from 'enums/commonEnums';
 import { Button } from 'components';
@@ -30,14 +30,21 @@ const CreateLLMConnection = () => {
     
     const createConnectionMutation = useMutation({
       mutationFn: createLLMConnection,
-      onSuccess: async () => {
+      onSuccess: async (result) => {
         await queryClient.invalidateQueries({
           queryKey: llmConnectionsQueryKeys.all()
         });
-        
+
+        // A production connection with another embedding model re-indexes the knowledge base (#588)
+        const reindexMessages = knowledgeBaseReindexMessages(t, result.reindex);
         openDialog({
           title: t('llmConnectionForm.createConnection.successDialogTitle') || 'Connection Succeeded',
-          content: <p>{t('llmConnectionForm.createConnection.successDialogMessage') || 'The provided LLM configuration is successfully configured'}</p>,
+          content: (
+            <div>
+              <p>{t('llmConnectionForm.createConnection.successDialogMessage') || 'The provided LLM configuration is successfully configured'}</p>
+              {reindexMessages.map((message) => <p key={message}>{message}</p>)}
+            </div>
+          ),
           footer: (
             <Button
               appearance={ButtonAppearanceTypes.PRIMARY}

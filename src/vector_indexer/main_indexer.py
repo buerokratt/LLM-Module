@@ -223,6 +223,10 @@ class VectorIndexer:
         # Store signed URL for future dataset download implementation
         self.signed_url = signed_url
 
+        # Embedding platform of the connection this run indexes with ("azure" |
+        # "aws"); set by main(). Used to check the real embedding model (#587).
+        self.indexing_platform: Optional[str] = None
+
         # Initialize components
         self.document_loader = DocumentLoader(self.config)
         self.error_logger = ErrorLogger(self.config)
@@ -366,6 +370,11 @@ class VectorIndexer:
                 logger.info(f"Found {len(documents)} documents to process")
                 self.stats.total_documents = len(documents)
 
+                # Issue #587: the model really behind the connection (on Azure
+                # the deployment decides it, not the dropdown) must make vectors
+                # of the collection's size, or nothing could be stored.
+                await self._check_indexing_embedding_model(qdrant_manager)
+
                 # Only documents that processed successfully are marked as
                 # processed in DVC tracking, so failures are retried next run.
                 processed_documents, chunks_info = await self._process_documents(
@@ -508,8 +517,8 @@ class VectorIndexer:
         try:
             async with QdrantManager(self.config) as qdrant_manager:
                 await qdrant_manager.ensure_collections_exist()
-                await self._wait_for_reindex_embeddings(
-                    plan,
+                await self._wait_for_test_embedding(
+                    plan.target_collection,
                     qdrant_manager.collections_config[plan.target_collection][
                         "vector_size"
                     ],
@@ -605,16 +614,45 @@ class VectorIndexer:
             )
             raise
 
-    async def _wait_for_reindex_embeddings(
-        self, plan: ReindexPlan, expected_dimensions: int
+    async def _check_indexing_embedding_model(
+        self, qdrant_manager: QdrantManager
     ) -> None:
-        """Make one test embedding before re-indexing anything.
+        """Check the real embedding model of the indexing connection (#587).
+
+        Skipped when main() did not set ``indexing_platform`` or the platform
+        is unknown.
+
+        Raises:
+            RuntimeError: No working embedding, or one of the wrong size; nothing
+                is indexed and the agency hash is not saved, so the next sync
+                retries once the connection is fixed.
+        """
+        target = PLATFORM_COLLECTIONS.get(self.indexing_platform or "")
+        if target is None:
+            return
+        expected = qdrant_manager.collections_config[target]["vector_size"]
+        try:
+            await self._wait_for_test_embedding(target, expected)
+        except RuntimeError as e:
+            logger.error(
+                f"Indexing aborted before any document was processed: {e}. "
+                "Check the embedding deployment of the indexing LLM connection; "
+                "the next sync retries."
+            )
+            raise
+
+    async def _wait_for_test_embedding(
+        self, target_collection: str, expected_dimensions: int
+    ) -> None:
+        """Make one test embedding before indexing anything.
 
         A re-index is triggered as soon as a production connection is saved,
         but the GUI stores the connection's credentials in Vault right after
         the save, asynchronously. Waiting here for a working embedding keeps
         the run from failing every document on missing credentials. The vector
-        size must match the target collection, or nothing could be stored.
+        size must match the target collection, or nothing could be stored: it
+        is how a deployment of another model (e.g. ada-002 behind an Azure
+        connection set to text-embedding-3-large) is caught (#587).
 
         Raises:
             RuntimeError: No working embedding within the wait, or one of the
@@ -640,11 +678,11 @@ class VectorIndexer:
             if dimensions != expected_dimensions:
                 raise RuntimeError(
                     f"the indexing connection's embeddings have {dimensions} "
-                    f"dimensions, but {plan.target_collection} needs "
+                    f"dimensions, but {target_collection} needs "
                     f"{expected_dimensions}"
                 )
             logger.info(
-                f"KB re-index: test embedding OK ({dimensions} dimensions, "
+                f"Test embedding OK ({dimensions} dimensions, "
                 f"model {result.get('model_used', 'unknown')})"
             )
             return
@@ -1113,6 +1151,7 @@ async def main() -> int:
         # /embeddings calls of this run use the chosen connection.
         indexer.config.environment = connection.environment
         indexer.config.connection_id = connection.vault_uuid
+        indexer.indexing_platform = connection.embedding_platform
         logger.info(
             f"Indexing with the {connection.environment} LLM connection "
             f"(embedding model: {connection.embedding_model or 'unknown'}, "

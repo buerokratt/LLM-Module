@@ -322,13 +322,24 @@
       "createConnection": "Create connection"
     },
     "embeddingLock": {
-      "differentModel": "This connection uses {{current}}, but all connections must use {{model}}.",
+      "differentModel": "This connection uses {{current}}, but the knowledge base was built with {{model}}. All connections must use the knowledge base's embedding model, because embeddings from different models cannot be searched together.",
+      "differentModelConnection": "This connection uses {{current}}, but the other active connection uses {{model}}. Test and production connections must use the same embedding model, because they share one knowledge base.",
       "wrongDeployment": "The embedding deployment is not {{model}} (it returns {{dims}}-dimensional vectors).",
       "testFailed": "The embedding model could not be verified with these credentials.",
       "unavailable": "The embedding model could not be checked. Please try again.",
       "notSaved": "The connection was not saved.",
       "notChanged": "The changes were not saved.",
       "notActivated": "The connection was not activated."
+    },
+    "knowledgeBaseModel": {
+      "locked": "Knowledge base embeddings were created with {{models}}. Connections must use this embedding model.",
+      "model": "{{model}} ({{platform}}, {{dims}} dimensions)",
+      "notLocked": "The knowledge base has no embeddings yet. The first indexing locks the embedding model of the connection it uses.",
+      "unavailable": "The knowledge base's embedding model could not be read."
+    },
+    "knowledgeBaseReindex": {
+      "started": "The knowledge base was built with {{from}}. It is being fully re-indexed with {{to}} in the background.",
+      "connectionMismatch": "The {{environment}} connection \"{{name}}\" uses {{model}} and will not find knowledge base content until it uses {{to}}."
     },
     "environments": {
       "testing": "Testing",

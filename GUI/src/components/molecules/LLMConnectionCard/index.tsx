@@ -11,7 +11,7 @@ import {
   EmbeddingModelLockedError,
   EmbeddingCheckUnavailableError,
 } from 'services/llmConnections';
-import { embeddingLockMessage } from 'utils/embeddingLockMessage';
+import { embeddingLockMessage, knowledgeBaseReindexMessages } from 'utils/embeddingLockMessage';
 import { useToast } from 'hooks/useToast';
 import { ToastTypes } from 'enums/commonEnums';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -81,16 +81,21 @@ const LLMConnectionCard: FC<PropsWithChildren<LLMConnectionCardProps>> = ({
   const updateStatusMutation = useMutation({
     mutationFn: ({ id, status }: { id: string | number; status: 'active' | 'inactive' }) =>
       updateLLMConnectionStatus(id, status),
-    onSuccess: async (data, variables) => {
+    onSuccess: async (result, variables) => {
       // Invalidate queries to refresh the data
       await queryClient.invalidateQueries({
         queryKey: llmConnectionsQueryKeys.all()
       });
-      
+
+      // Activating a production connection with another embedding model re-indexes the knowledge base (#588)
+      const reindexMessages = knowledgeBaseReindexMessages(t, result.reindex);
       toast.open({
         type: ToastTypes.SUCCESS,
         title: t('toast.success.title'),
-        message: `Connection ${variables.status === 'active' ? 'activated' : 'deactivated'} successfully`,
+        message: [
+          `Connection ${variables.status === 'active' ? 'activated' : 'deactivated'} successfully`,
+          ...reindexMessages,
+        ].join(' '),
       });
       
       // Call the parent callback to update the list immediately

@@ -15,6 +15,7 @@ import {
   PlatformOption,
   ModelOption
 } from 'services/llmConfigs';
+import { getKnowledgeBaseEmbeddingModel } from 'services/llmConnections';
 import './LLMConnectionForm.scss';
 import { toOptions } from 'utils/commonUtils';
 
@@ -130,6 +131,38 @@ const LLMConnectionForm: React.FC<LLMConnectionFormProps> = ({
     queryFn: () => getEmbeddingModels(selectedEmbeddingPlatform),
     enabled: !!selectedEmbeddingPlatform,
   });
+
+  // The embedding model that built the knowledge base (#587), shown so it is
+  // clear which model the connection must use. Read from the knowledge base.
+  const { data: knowledgeBaseModel, isError: knowledgeBaseModelError } = useQuery({
+    queryKey: ['knowledge-base-embedding-model'],
+    queryFn: getKnowledgeBaseEmbeddingModel,
+    retry: false,
+  });
+
+  const renderKnowledgeBaseModelNote = () => {
+    if (knowledgeBaseModelError) {
+      return t('llmConnectionForm.knowledgeBaseModel.unavailable');
+    }
+    if (!knowledgeBaseModel) {
+      return null;
+    }
+    if (!knowledgeBaseModel.locked) {
+      return t('llmConnectionForm.knowledgeBaseModel.notLocked');
+    }
+    return t('llmConnectionForm.knowledgeBaseModel.locked', {
+      models: knowledgeBaseModel.models
+        .map((model) =>
+          t('llmConnectionForm.knowledgeBaseModel.model', {
+            model: model.embedding_model,
+            platform: model.platform,
+            dims: model.vector_dimensions,
+          })
+        )
+        .join(', '),
+    });
+  };
+  const knowledgeBaseModelNote = renderKnowledgeBaseModelNote();
 
 const llmPlatformOptions = toOptions(llmPlatformsData);
 const embeddingPlatformOptions = toOptions(embeddingPlatformsData);
@@ -604,6 +637,12 @@ const embeddingModelOptions = toOptions(embeddingModelsData);
 
         <div className="form-section">
           <h3 className="form-section-title">{t('llmConnectionForm.sections.embeddingConfiguration') || 'Embedding Model Configuration'}</h3>
+
+          {knowledgeBaseModelNote && (
+            <p className="knowledge-base-model-note" data-testid="knowledge-base-model-note">
+              {knowledgeBaseModelNote}
+            </p>
+          )}
 
           <div className="form-row">
             <p className='form-label'>{t('llmConnectionForm.fields.embeddingPlatform.label') || 'Embedding Model Platform'}</p>

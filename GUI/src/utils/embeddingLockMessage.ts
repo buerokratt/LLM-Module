@@ -1,4 +1,8 @@
-import { EmbeddingCheckUnavailableError, EmbeddingModelLockedError } from 'services/llmConnections';
+import {
+  EmbeddingCheckUnavailableError,
+  EmbeddingModelLockedError,
+  KnowledgeBaseReindexNotice,
+} from 'services/llmConnections';
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
@@ -27,10 +31,17 @@ export function embeddingLockMessage(
         dims: error.detectedDimensions ?? '',
       });
     } else {
-      cause = t('llmConnectionForm.embeddingLock.differentModel', {
-        current: error.requestedModel ?? '',
-        model: error.requiredModel ?? '',
-      });
+      // Say why: the model of the existing embeddings, or (knowledge base still
+      // empty) of the other active connection, which the first index will use
+      cause = t(
+        error.lockedBy === 'connection'
+          ? 'llmConnectionForm.embeddingLock.differentModelConnection'
+          : 'llmConnectionForm.embeddingLock.differentModel',
+        {
+          current: error.requestedModel ?? '',
+          model: error.requiredModel ?? '',
+        }
+      );
     }
   } else if (error instanceof EmbeddingCheckUnavailableError) {
     cause = t('llmConnectionForm.embeddingLock.unavailable');
@@ -38,4 +49,32 @@ export function embeddingLockMessage(
     return null;
   }
   return `${cause} ${t(`llmConnectionForm.embeddingLock.${outcome}`)}`;
+}
+
+/**
+ * What a production connection with another embedding model changes (#588):
+ * the knowledge base is re-indexed with its model, and other connections still
+ * on the old model find nothing until they are switched too. One line each.
+ */
+export function knowledgeBaseReindexMessages(
+  t: Translate,
+  notice: KnowledgeBaseReindexNotice | null
+): string[] {
+  if (!notice) {
+    return [];
+  }
+  return [
+    t('llmConnectionForm.knowledgeBaseReindex.started', {
+      from: notice.fromModels.join(', '),
+      to: notice.toModel,
+    }),
+    ...notice.mismatchedConnections.map((other) =>
+      t('llmConnectionForm.knowledgeBaseReindex.connectionMismatch', {
+        name: other.name,
+        environment: other.environment,
+        model: other.model,
+        to: notice.toModel,
+      })
+    ),
+  ];
 }

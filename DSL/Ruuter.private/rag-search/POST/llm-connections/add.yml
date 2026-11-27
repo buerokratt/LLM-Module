@@ -115,7 +115,9 @@ validate_environment:
 
 # Issue #806: every connection must use the embedding model of the knowledge base
 # (or, while it is empty, of the other active connection). This checks the form
-# values only; the GUI checks the real model with a test embedding before saving.
+# values only: the credentials are not in Vault yet. The real model (#587) is
+# checked with a test embedding by the GUI before saving, by edit.yml when the
+# new connection is promoted to production, and by the indexer before it indexes.
 # Issue #588: a production connection may use another approved model; the
 # answer then has reindex_required and the knowledge base is re-indexed.
 check_embedding_lock:

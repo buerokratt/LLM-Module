@@ -322,13 +322,24 @@
       "createConnection": "Loo ühendus"
     },
     "embeddingLock": {
-      "differentModel": "See ühendus kasutab mudelit {{current}}, kuid kõik ühendused peavad kasutama mudelit {{model}}.",
+      "differentModel": "See ühendus kasutab mudelit {{current}}, kuid teadmusbaas on loodud mudeliga {{model}}. Kõik ühendused peavad kasutama teadmusbaasi vektor-teisendusmudelit, sest eri mudelite vektoreid ei saa koos otsida.",
+      "differentModelConnection": "See ühendus kasutab mudelit {{current}}, kuid teine aktiivne ühendus kasutab mudelit {{model}}. Testimis- ja toodanguühendus peavad kasutama sama vektor-teisendusmudelit, sest neil on üks ühine teadmusbaas.",
       "wrongDeployment": "Vektor-teisenduse paigaldus ei ole {{model}} (see tagastab {{dims}}-mõõtmelisi vektoreid).",
       "testFailed": "Nende autentimisandmetega ei õnnestunud vektor-teisendusmudelit kontrollida.",
       "unavailable": "Vektor-teisendusmudelit ei õnnestunud kontrollida. Palun proovi uuesti.",
       "notSaved": "Ühendust ei salvestatud.",
       "notChanged": "Muudatusi ei salvestatud.",
       "notActivated": "Ühendust ei aktiveeritud."
+    },
+    "knowledgeBaseModel": {
+      "locked": "Teadmusbaasi vektorid on loodud mudeliga {{models}}. Ühendused peavad kasutama seda vektor-teisendusmudelit.",
+      "model": "{{model}} ({{platform}}, {{dims}} mõõdet)",
+      "notLocked": "Teadmusbaasis pole veel vektoreid. Esimene indekseerimine lukustab selle ühenduse vektor-teisendusmudeli, mida see kasutab.",
+      "unavailable": "Teadmusbaasi vektor-teisendusmudelit ei õnnestunud lugeda."
+    },
+    "knowledgeBaseReindex": {
+      "started": "Teadmusbaas on loodud mudeliga {{from}}. See indekseeritakse taustal täielikult uuesti mudeliga {{to}}.",
+      "connectionMismatch": "Ühendus \"{{name}}\" ({{environment}}) kasutab mudelit {{model}} ega leia teadmusbaasist sisu, kuni see kasutab mudelit {{to}}."
     },
     "environments": {
       "testing": "Testimine",

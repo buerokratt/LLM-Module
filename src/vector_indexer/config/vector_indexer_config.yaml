@@ -32,9 +32,14 @@ vector_indexer:
     max_repetition_ratio: 0.5  # maximum content repetition
   
   # Concurrency Configuration
+  # Context generation is limited by the service's token budget
+  # (INDEXER_CONTEXT_TOKENS_PER_MINUTE), not by these values: more calls in
+  # flight only wait longer there, and past api.timeout they fail. Every call
+  # sends the chunk's whole document (up to ~19k tokens), so at the default 20k
+  # tokens/minute keep at most 2 in flight. Raise both with the model's quota.
   concurrency:
-    max_concurrent_documents: 3  # Process 3 documents simultaneously
-    max_concurrent_chunks_per_doc: 5  # Generate context for 5 chunks simultaneously
+    max_concurrent_documents: 1  # Process 1 document at a time
+    max_concurrent_chunks_per_doc: 2  # Generate context for 2 chunks at a time
   
   # Batch Configuration (Small batches)
   batching:
