@@ -225,6 +225,15 @@ Set `VAULT_PATH_PREFIX` in **both** `.env` (vault-init policies, keypair, GUI)
 and `constants.ini` (orchestration, CronManager). A mismatch grants policies on
 paths nothing reads.
 
+Note the defaults differ: `constants.ini` ships with `llm-module`, while
+`env.example` leaves the prefix empty. With those defaults the orchestration
+service reads `secret/data/llm-module/...`, which the policies written by
+vault-init (no prefix) do not grant, and every saved LLM connection fails with
+`Access denied to secret path llm-module/...` (the GUI shows "The embedding model
+could not be checked"). vault-init writes its policies only on the first
+initialisation, so after changing the prefix on an existing Vault, either
+re-initialise it or keep the prefix that matches the stored secrets.
+
 Consequence: the credential-delivery half of the migration is not exercised
 locally — compose reads `/agent/credentials/<service>_role_id`, production reads
 `/vault/approle/role_id`. Only the prefix half is covered.

@@ -75,7 +75,7 @@ graph TD
 
 ### **🔄 Detailed Component Flow**
 1. **📄 Document Discovery** → High-performance pathlib.glob scanning
-2. **⚡ Concurrency Control** → Semaphore-based document processing (3 concurrent)
+2. **⚡ Concurrency Control** → Semaphore-based processing (1 document × 2 chunks at a time, paced by the service's token budget; see [Indexing While Users Query](#-indexing-while-users-query))
 3. **✂️ Intelligent Chunking** → Tiktoken-based with configurable overlap
 4. **🧠 Context Generation** → Anthropic methodology with prompt caching
 5. **🎯 Embedding Creation** → Multi-provider with automatic model selection
@@ -97,6 +97,12 @@ Testing and production connections must use the **same embedding model**: the
 Qdrant collection is chosen by embedding model (Azure 3072 dims vs AWS Titan 1024
 dims), so a connection with another model would search an empty collection. This
 is enforced when a connection is created or edited; see below.
+
+Before any document is processed, every run also makes one **test embedding**
+with the chosen connection and checks its vector size against the target
+collection. A connection whose deployment really serves another model is caught
+here at the latest: the run exits 1 without touching the knowledge base, and the
+next sync retries once the connection is fixed.
 
 ### **🔒 Locked Embedding Model**
 One embedding model is approved per platform: `text-embedding-3-large` (Azure,
@@ -126,8 +132,19 @@ model: ...`).
 | Step | What is checked |
 |---|---|
 | GUI, before saving (`POST /llm-connections/check-embedding`) | Real model: new credentials are stored in Vault under a temporary id, tested, and the temporary secret is deleted by Ruuter. When an edit keeps the saved key, the saved credentials are tested with the entered deployment/endpoint. |
-| `llm-connections/add` and `edit` (Ruuter) | Form values only (no credentials in Ruuter), as a backstop. `edit` checks only when the embedding platform/model changes, so other edits and testing ↔ production switches are never blocked. |
+| `llm-connections/add` (Ruuter) | Form values only, as a backstop: the new connection's credentials are not in Vault yet. |
+| `llm-connections/edit` (Ruuter) | Runs when the embedding platform, model, deployment name or endpoint changes, or on a testing → production promotion; other edits (name, budget) are never blocked. While the platform and the embedding keys are unchanged, it also makes a real test embedding with the saved credentials and the new deployment/endpoint. |
 | `llm-connections/update-status` (Ruuter), inactive → active | The saved platform/model and the saved credentials (real model). Inactive connections are not compared when others are saved, so activating one must pass the check. |
+| Indexer, before every run | A test embedding with the indexing connection must have the target collection's vector size (see above). |
+
+**A saved key never goes to a new host.** A test with saved credentials may
+change the deployment name and the endpoint's path, but the endpoint must stay
+on the host the key is saved for, over `https`
+(`ensure_same_endpoint_host` in `embedding_manager.py`). Otherwise the check
+answers `{allowed: false, code: "test_embedding_failed", detail:
+"endpoint_host_changed"}` before any request is made, and the GUI asks for the
+API key to be entered again. Without this, a request could point the test at
+another server and receive the saved key.
 
 The form values are checked first; the test embedding is only made when they pass,
 so a platform/model conflict is always reported as such.
@@ -154,24 +171,37 @@ embeddings on another platform than the indexing connection's (production, else
 testing), the run is a **full re-index** (`plan_reindex` / `_run_full_reindex`
 in `main_indexer.py`):
 
-1. A test embedding with the connection (retried for about a minute, since the
-   GUI stores the credentials right after saving) must have the target
-   collection's vector size.
+1. A test embedding with the connection must have the target collection's
+   vector size. It is retried for about a minute, both when it fails and when it
+   has the wrong size: the GUI stores the credentials right after saving, and
+   until then Vault may still hold the old secret (old model, old size).
 2. Every document of the dataset is embedded into the new platform's collection,
    ignoring the diff detector. Documents already complete there (from an
    interrupted run) are skipped.
-3. Only if all documents succeeded: the old collection is emptied, chunks of
-   documents no longer in the dataset are removed, and the processed-files
-   metadata is rewritten. Otherwise the old embeddings are kept, the run exits 2,
-   and the next sync resumes.
+3. Only if all documents succeeded: chunks of documents no longer in the dataset
+   are removed from the new collection, **then** the old collection is emptied,
+   and the processed-files metadata is rewritten. Pruning comes first so that a
+   failure there still leaves the old collection in place, and the next sync
+   plans the re-index again and finishes it. If any document failed, the old
+   embeddings are kept, the run exits 2, and the next sync resumes.
 
-Logs: `KB re-index STARTED | INCOMPLETE | FAILED | COMPLETED: old=<model> -> new=<model>`.
+Logs: `KB re-index STARTED | RESUMED | INCOMPLETE | FAILED | INTERRUPTED | COMPLETED: old=<model> -> new=<model>`.
+`FAILED` and `INTERRUPTED` say whether the old embeddings were kept or had
+already been removed.
 
 **Starting it.** `data/update` asks `GET /knowledge-base/status`
 (`reindex_required`) and runs the indexer even when the CKB data hash is
-unchanged. `add`, `edit` and `update-status` also start the `agency_data_resync`
-job right away when they saved a production connection with `reindex_required`,
-so the switch does not wait for the hourly sync.
+unchanged, so the hourly sync always picks a pending re-index up. To start it
+sooner after a production connection is saved with `reindex_required`:
+- `add` and `update-status` start the `agency_data_resync` job right away.
+- `edit` starts it only when the edit keeps every saved credential (LLM and
+  embedding keys and platforms): new keys are written to Vault by the GUI only
+  after the edit returns, so the indexer would otherwise run with the old
+  secret. In that case the GUI calls `POST /llm-connections/start-reindex` once
+  the new keys are stored; it starts the job only if the status still says a
+  re-index is required.
+- If the GUI cannot store the new keys, it says so ("The connection was saved,
+  but its new keys could not be stored…") instead of reporting success.
 
 **While it runs** production queries are embedded with the new model, so they
 only find what has been re-indexed so far. Test connections still on the old
@@ -200,6 +230,31 @@ just the documents that failed.
 
 `data/update` also returns 200 without starting the indexer when CKB returns no
 content ("CKB returned no content - nothing to index").
+
+The presigned dataset URL is never logged with its query string (it carries the
+S3 credential and signature): `vector_indexer_pipeline.sh`, the indexer's lock
+messages and dataset download errors all log it as `…/file.zip?<redacted>`
+(`redact_url` in `dataset_download.py`).
+
+### **🚦 Indexing While Users Query**
+The indexer's calls to `/generate-context` and `/embeddings` run on their own
+small thread pools in the orchestration service (`src/utils/indexer_pools.py`),
+not on the event loop and not on the pool user queries use. Context generation
+also waits for a token budget, so the indexer cannot use up the model quota it
+shares with user queries. Before this, every query timed out while the sync was
+indexing.
+
+| Variable (orchestration service) | Default | Meaning |
+|---|---|---|
+| `INDEXER_CONTEXT_CONCURRENCY` | `3` | Context-generation calls running at once |
+| `INDEXER_EMBEDDING_CONCURRENCY` | `2` | Embedding calls running at once |
+| `INDEXER_CONTEXT_TOKENS_PER_MINUTE` | `20000` | Estimated tokens per minute for context generation (prompt + `max_tokens`); `0` turns the budget off |
+
+Each context call sends the chunk's whole document, so at the default budget a
+full index takes roughly one call every 10-15 s (about 3 hours for ~800
+chunks). Raise the budget, and `concurrency` in `vector_indexer_config.yaml`
+with it, to match the deployment's tokens-per-minute quota. A normal hourly sync
+only processes changed files and is much shorter.
 
 ## 🎯 **Phase 1: Document Discovery & Loading**
 

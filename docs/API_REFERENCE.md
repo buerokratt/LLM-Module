@@ -36,8 +36,8 @@ POST /ruuter-private/llm/connections/create
 {
   "llmPlatform": "OpenAI",
   "llmModel": "GPT-4o",
-  "embeddingPlatform": "OpenAI",
-  "embeddingModel": "text-embedding-3-small",
+  "embeddingPlatform": "azure",
+  "embeddingModel": "text-embedding-3-large",
   "monthlyBudget": 1000.00,
   "deploymentEnvironment": "Testing",
   // Azure credentials (optional)
@@ -58,8 +58,8 @@ POST /ruuter-private/llm/connections/create
   "id": 1,
   "llmPlatform": "OpenAI",
   "llmModel": "GPT-4o",
-  "embeddingPlatform": "OpenAI",
-  "embeddingModel": "text-embedding-3-small",
+  "embeddingPlatform": "azure",
+  "embeddingModel": "text-embedding-3-large",
   "monthlyBudget": 1000.00,
   "usedBudget": 0.00,
   "deploymentEnvironment": "Testing",
@@ -92,8 +92,8 @@ POST /ruuter-private/llm/connections/update
   "connectionId": 1,
   "llmPlatform": "Azure AI",
   "llmModel": "GPT-4o-mini",
-  "embeddingPlatform": "Azure AI", 
-  "embeddingModel": "text-embedding-ada-002",
+  "embeddingPlatform": "azure",
+  "embeddingModel": "text-embedding-3-large",
   "monthlyBudget": 2000.00,
   "deploymentEnvironment": "Production",
   // Azure credentials (optional)
@@ -114,8 +114,8 @@ POST /ruuter-private/llm/connections/update
   "id": 1,
   "llmPlatform": "Azure AI",
   "llmModel": "GPT-4o-mini",
-  "embeddingPlatform": "Azure AI",
-  "embeddingModel": "text-embedding-ada-002",
+  "embeddingPlatform": "azure",
+  "embeddingModel": "text-embedding-3-large",
   "monthlyBudget": 2000.00,
   "usedBudget": 150.75,
   "deploymentEnvironment": "Production",
@@ -223,8 +223,8 @@ POST /ruuter-private/rag-search/llm-connections/get
   "id": 1,
   "llmPlatform": "OpenAI",
   "llmModel": "GPT-4o",
-  "embeddingPlatform": "OpenAI",
-  "embeddingModel": "text-embedding-3-small",
+  "embeddingPlatform": "azure",
+  "embeddingModel": "text-embedding-3-large",
   "monthlyBudget": 1000.00,
   "environment": "Testing",
   "status": "active",
@@ -252,8 +252,8 @@ POST /ruuter-private/rag-search/llm-connections/add
 {
   "llm_platform": "OpenAI",
   "llm_model": "GPT-4o",
-  "embedding_platform": "OpenAI",
-  "embedding_model": "text-embedding-3-small",
+  "embedding_platform": "azure",
+  "embedding_model": "text-embedding-3-large",
   "monthly_budget": 1000.00,
   "environment": "Testing"
 }
@@ -268,6 +268,9 @@ POST /ruuter-private/rag-search/llm-connections/add
 | `embedding_model` | string | Yes | Embedding model |
 | `monthly_budget` | number | Yes | Monthly budget amount |
 | `environment` | string | Yes | "Testing" or "Production" |
+| `target_environment` | string | No | Environment the connection is promoted to right after this save. The GUI saves a new production connection as testing first and sends `"production"` here, so the embedding check applies the production rules. |
+
+The embedding platform/model is checked against the knowledge base before the connection is saved (see [Embedding Model Check Responses](#embedding-model-check-responses)). A production connection with another approved model than the knowledge base is saved and starts a full re-index.
 
 ### Response (200 OK)
 ```json
@@ -275,8 +278,8 @@ POST /ruuter-private/rag-search/llm-connections/add
   "id": 3,
   "llm_platform": "OpenAI",
   "llm_model": "GPT-4o",
-  "embedding_platform": "OpenAI",
-  "embedding_model": "text-embedding-3-small",
+  "embedding_platform": "azure",
+  "embedding_model": "text-embedding-3-large",
   "monthly_budget": 1000.00,
   "environment": "Testing",
   "status": "active",
@@ -288,6 +291,45 @@ POST /ruuter-private/rag-search/llm-connections/add
 ### Response (400 Bad Request)
 ```json
 "error: environment must be 'Testing' or 'Production'"
+```
+
+### Embedding Model Check Responses
+`add`, `edit` and `update-status` (re-activation) return these when the
+embedding model check refuses the save or cannot run. Nothing is saved in either
+case.
+
+**400 Bad Request: embedding model not allowed**
+```json
+{
+  "allowed": false,
+  "code": "model_mismatch",
+  "detail": "different_model",
+  "required_model": "text-embedding-3-large",
+  "requested_model": "amazon.titan-embed-text-v2:0",
+  "reason": "Must be text-embedding-3-large (azure, 3072 dimensions), the knowledge base's embedding model.",
+  "locked_by": "knowledge_base",
+  "locked_models": [
+    {"platform": "azure", "embedding_model": "text-embedding-3-large", "vector_dimensions": 3072, "point_count": 781}
+  ],
+  "reindex_required": false,
+  "mismatched_connections": []
+}
+```
+
+| Field | Values |
+|-------|--------|
+| `code` | `model_mismatch` (wrong platform/model or wrong deployment), `test_embedding_failed` (no working test embedding with the credentials) |
+| `detail` | `different_model`, `wrong_deployment` (the test embedding has another vector size than the approved model), `endpoint_host_changed` (a saved key would be sent to another endpoint host; enter the key again) |
+| `locked_by` | `knowledge_base` (embeddings exist), `connection` (knowledge base still empty; must match the other active connection) |
+| `reindex_required` | `true` on an *allowed* production save that switches the knowledge base's model (re-index starts) |
+
+**500: the check could not run**
+```json
+{
+  "allowed": false,
+  "check_unavailable": true,
+  "reason": "The embedding model could not be checked against the knowledge base. Please try again later."
+}
 ```
 
 ---
@@ -305,12 +347,16 @@ POST /ruuter-private/rag-search/llm-connections/edit
   "connection_id": 1,
   "llm_platform": "Azure AI",
   "llm_model": "GPT-4o-mini",
-  "embedding_platform": "Azure AI",
-  "embedding_model": "Ada-200-1",
+  "embedding_platform": "azure",
+  "embedding_model": "text-embedding-3-large",
   "monthly_budget": 2000.00,
   "environment": "Production"
 }
 ```
+
+The embedding model check runs when the embedding platform, model, deployment name or endpoint changes, or when a testing connection is promoted to production (responses: [Embedding Model Check Responses](#embedding-model-check-responses)). Other edits (name, budget) are not checked. When the embedding keys are unchanged, the saved credentials are tested with the new deployment/endpoint, which must stay on the saved endpoint's host.
+
+If the save requires a re-index, `edit` starts it right away only when every saved credential is kept; otherwise the client starts it with [Start Knowledge Base Re-index](#17-start-knowledge-base-re-index) after storing the new keys in Vault.
 
 ### Response (200 OK)
 ```json
@@ -318,8 +364,8 @@ POST /ruuter-private/rag-search/llm-connections/edit
   "id": 1,
   "llm_platform": "Azure AI",
   "llm_model": "GPT-4o-mini",
-  "embedding_platform": "Azure AI",
-  "embedding_model": "Ada-200-1",
+  "embedding_platform": "azure",
+  "embedding_model": "text-embedding-3-large",
   "monthly_budget": 2000.00,
   "environment": "Production",
   "status": "active",
@@ -442,8 +488,8 @@ GET /ruuter-private/llm/connections/overview
   "id": 1,
   "llmPlatform": "OpenAI",
   "llmModel": "GPT-4o",
-  "embeddingPlatform": "OpenAI",
-  "embeddingModel": "text-embedding-3-small",
+  "embeddingPlatform": "azure",
+  "embeddingModel": "text-embedding-3-large",
   "monthlyBudget": 1000.00,
   "deploymentEnvironment": "Testing",
   "status": "active",
@@ -497,6 +543,8 @@ POST /ruuter-private/rag-search/llm-connections/update-status
 |-----------|------|----------|-------------|
 | `connection_id` | number | Yes | LLM connection ID |
 | `connection_status` | string | Yes | `"active"` or `"inactive"` |
+
+Re-activating an inactive connection runs the embedding model check with its saved credentials (responses: [Embedding Model Check Responses](#embedding-model-check-responses)). A production connection with another model than the knowledge base is re-activated and starts a full re-index.
 
 ### Response (200 OK)
 Returns the updated connection object.
@@ -776,6 +824,94 @@ None required.
 ```json
 "error: failed to reset used budget"
 ```
+
+---
+
+## 15. Check Embedding Model
+
+### Endpoint
+```http
+POST /ruuter-private/rag-search/llm-connections/check-embedding
+```
+
+Checks a connection's embedding model against the model that built the knowledge base, with a real test embedding, before anything is saved. The GUI calls it before every create, every edit of embedding settings and every re-activation.
+
+### Request Body
+```json
+{
+  "embedding_platform": "azure",
+  "embedding_model": "text-embedding-3-large",
+  "vault_uuid": "6f1c2c1e-0b5e-4b8e-9d0a-2f3e4d5c6b7a",
+  "llm_platform": "azure",
+  "llm_model": "gpt-4.1",
+  "embedding_deployment_name": "text-embedding-3-large",
+  "embedding_target_uri": "https://<resource>.openai.azure.com/openai/deployments/text-embedding-3-large/embeddings?api-version=2023-05-15",
+  "deployment_environment": "testing"
+}
+```
+
+### Request Parameters
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `embedding_platform` | string | Yes | `azure` or `aws` |
+| `embedding_model` | string | Yes | Embedding model from the form |
+| `vault_uuid` | string | No | New credentials stored as a **temporary** Vault secret under a fresh id; tested and then deleted. Must not be the id of a saved connection (400). |
+| `llm_platform`, `llm_model` | string | With `vault_uuid` | Needed to delete the temporary secret |
+| `existing_vault_uuid` | string | No | A saved connection's Vault id, when its key is kept; tested, never deleted. Its endpoint may only change within the saved host, over `https`. |
+| `embedding_deployment_name`, `embedding_target_uri` | string | No | Azure deployment and endpoint to test |
+| `exclude_connection_id` | number | No | Connection being edited; not compared with itself |
+| `deployment_environment` | string | No | `production` may switch the knowledge base's model (re-index); empty means testing rules |
+
+### Response (200 OK)
+The check result, with the fields described in [Embedding Model Check Responses](#embedding-model-check-responses): `allowed: true` (with `reindex_required: true` for a production model switch) or `allowed: false` with `code`, `detail` and `reason`.
+
+### Response (500)
+`{ "allowed": false, "check_unavailable": true, "reason": "..." }`: the check could not run; the client must not save.
+
+---
+
+## 16. Get Knowledge Base Embedding Model
+
+### Endpoint
+```http
+GET /ruuter-private/rag-search/llm-connections/knowledge-base-embedding-model
+```
+
+The embedding model(s) that built the knowledge base, read from the knowledge base itself (each stored chunk records its model and vector size). The connection form shows it above the embedding fields.
+
+### Response (200 OK)
+```json
+{
+  "locked": true,
+  "models": [
+    {"platform": "azure", "embedding_model": "text-embedding-3-large", "vector_dimensions": 3072, "point_count": 781}
+  ]
+}
+```
+`locked: false` with an empty `models` list means nothing is indexed yet: any approved model may be used, and the first index locks it.
+
+### Response (500)
+`"error: the knowledge base could not be read"`
+
+---
+
+## 17. Start Knowledge Base Re-index
+
+### Endpoint
+```http
+POST /ruuter-private/rag-search/llm-connections/start-reindex
+```
+
+Starts the knowledge base re-index now, if one is required. The GUI calls it after it has stored the new keys of an edited production connection in Vault: `edit` does not start the re-index itself in that case, because the indexer would still find the old secret. It is only a shortcut; the hourly `data/update` sync checks the same status and starts it anyway.
+
+### Request Body
+None required.
+
+### Response (200 OK)
+```json
+{ "started": true }
+```
+`started: false` when no re-index is required, or the status could not be read or the job not started (the hourly sync retries).
 
 ---
 # Inference Results API Endpoints
@@ -1588,7 +1724,9 @@ Returns all active services if the count is ≤ 10. If count > 10, signals the c
 POST /ruuter-public/rag-search/data/update
 ```
 
-Fetches the latest agency data from CKB, compares the data hash, and if changed triggers vector re-indexing via CronManager.
+The hourly sync. Fetches the latest agency data from CKB and starts the vector indexer via CronManager when the CKB data hash has changed, when no hash is stored yet, or when `GET /knowledge-base/status` (orchestration service) reports `reindex_required` (the production connection's embedding model differs from the knowledge base's).
+
+This endpoint does **not** store the new hash. `vector_indexer_pipeline.sh` stores it only after the indexer finished successfully, so a failed, skipped (no LLM connection, another run in progress) or interrupted run is retried by the next sync. The indexer uses the production connection if one exists, otherwise the testing connection.
 
 ### Request Body
 None required.
@@ -1601,6 +1739,8 @@ None required.
 }
 ```
 
+"Initiated" means the indexer was started; whether it succeeded shows in the CronManager logs and in whether the hash was stored.
+
 ### Response (200 OK) — already up to date
 ```json
 {
@@ -1609,7 +1749,16 @@ None required.
 }
 ```
 
-### Response (400 Bad Request)
+### Response (200 OK) — CKB has no content
+CKB answered but returned no agency data (or none with a dataset URL). Nothing is indexed and the stored hash is left as it is.
+```json
+{
+  "success": true,
+  "message": "CKB returned no content - nothing to index"
+}
+```
+
+### Response (400 Bad Request) — CKB error
 ```json
 {
   "message": "CKB service returned an error - data synchronization aborted",
@@ -1618,21 +1767,22 @@ None required.
 }
 ```
 
-### Response (400 Bad Request) — re-indexing trigger failed
-Returned when the data hash was updated but the CronManager call that starts the vector indexer failed (no status code, or status ≥ 400).
+### Response (400 Bad Request) — CKB not reachable
 ```json
 {
-  "message": "Data hash updated but vector indexer trigger failed - reindexing did not start",
+  "message": "Failed to fetch data from CKB - data synchronization failed",
   "operationSuccessful": false,
-  "error": "CRON_MANAGER_TRIGGER_FAILED"
+  "error": "CKB_IMPORT_FAILED"
 }
 ```
 
-### Response (404 Not Found)
+### Response (400 Bad Request) — re-indexing trigger failed
+Returned when the CronManager call that starts the vector indexer failed (no status code, or status ≥ 400). The hash is not stored, so the next sync retries.
 ```json
 {
-  "success": false,
-  "message": "Data synchronization failed - CKB agency data not found"
+  "message": "Vector indexer trigger failed - reindexing did not start",
+  "operationSuccessful": false,
+  "error": "CRON_MANAGER_TRIGGER_FAILED"
 }
 ```
 

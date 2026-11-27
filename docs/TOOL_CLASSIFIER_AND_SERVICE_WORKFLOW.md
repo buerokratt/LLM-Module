@@ -149,8 +149,16 @@ elif service_count > 10:
 Uses Qdrant vector database to find relevant services:
 
 ```python
-# 1. Generate embedding for user query
-embedding = orchestration_service.create_embeddings_for_indexer([query])
+# 1. Generate embedding for user query, with the request's own connection
+#    (a test-connection query is embedded with the test connection's
+#    credentials, not production's; production is only the default when the
+#    request carries no connection)
+embedding = orchestration_service.create_embeddings_for_indexer(
+    texts=[query],
+    environment=request.environment,      # "production" | "testing"
+    connection_id=request.connection_id,  # the connection's vault UUID
+    batch_size=1,
+)
 
 # 2. Search Qdrant collection
 search_payload = {

@@ -1012,9 +1012,9 @@ Two non-blocking file locks stop the same work from running twice at once:
 | Lock | Where | Behaviour when busy |
 |------|-------|---------------------|
 | `/app/data/agency_data_resync.lock` | `agency_data_resync.sh` (`flock -n`) | Logs that a run is already in progress and exits `0` without doing anything |
-| `/app/data/locks/<sha256(signed_url)>.lock` | `main_indexer.py` (`fcntl.flock`, one lock per dataset) | `main_indexer.py` exits with code `3`; `vector_indexer_pipeline.sh` logs `[SKIPPED]` and exits `0` |
+| `/app/data/locks/knowledge-base-indexer.lock` | `main_indexer.py` (`fcntl.flock`, one lock for the whole knowledge base) | `main_indexer.py` exits with code `3`; `vector_indexer_pipeline.sh` logs `[SKIPPED]` and exits `0` |
 
-The indexer lock is per signed URL, so different datasets can still be indexed at the same time. Locks are released when the process exits.
+There is one indexer lock for the whole knowledge base, not one per signed URL: CKB issues a fresh presigned URL on every `data/update` call, so per-URL locks let the hourly sync and an immediate re-index trigger run side by side (two full re-indexes, or one deleting the old collection while the other still reads it). A skipped run does not save the CKB data hash, so the next sync runs again. Locks are released when the process exits.
 
 **`main_indexer.py` exit codes** (as handled by `vector_indexer_pipeline.sh`):
 
